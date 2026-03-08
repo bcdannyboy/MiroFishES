@@ -34,7 +34,7 @@
                   <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? 'ENTITY' : 'RELATION' }}</span>
                   <span class="detail-name">{{ selectedOntologyItem.name }}</span>
                </div>
-               <button class="close-btn" @click="selectedOntologyItem = null">×</button>
+               <button class="close-btn" @click="selectedOntologyItem = null">x</button>
             </div>
             <div class="detail-body">
                <div class="detail-desc">{{ selectedOntologyItem.description }}</div>
@@ -65,7 +65,7 @@
                   <div class="conn-list">
                      <div v-for="(conn, idx) in selectedOntologyItem.source_targets" :key="idx" class="conn-item">
                         <span class="conn-node">{{ conn.source }}</span>
-                        <span class="conn-arrow">→</span>
+                        <span class="conn-arrow">-></span>
                         <span class="conn-node">{{ conn.target }}</span>
                      </div>
                   </div>
@@ -164,7 +164,7 @@
             @click="handleEnterEnvSetup"
           >
             <span v-if="creatingSimulation" class="spinner-sm"></span>
-            {{ creatingSimulation ? 'Creating...' : 'Enter Environment Setup ➝' }}
+            {{ creatingSimulation ? 'Creating...' : 'Open Environment Setup ->' }}
           </button>
         </div>
       </div>

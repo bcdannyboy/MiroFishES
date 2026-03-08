@@ -702,7 +702,7 @@ const sendToAgent = async (message) => {
     const historyContext = chatHistory.value
       .filter(msg => msg.content !== message)
       .slice(-6)
-      .map(msg => `${msg.role === 'user' ? 'Interviewer' : 'You'}：${msg.content}`)
+      .map(msg => `${msg.role === 'user' ? 'Interviewer' : 'You'}: ${msg.content}`)
       .join('\n')
     prompt = `Here is our previous conversation:\n${historyContext}\n\nMy new question is: ${message}`
   }

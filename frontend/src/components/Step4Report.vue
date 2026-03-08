@@ -558,7 +558,7 @@ const parseInsightForge = (text) => {
       result.subQueries = lines.map(l => l.replace(/^\d+\.\s*/, '').trim()).filter(Boolean)
     }
 
-    const factsSection = text.match(/### 【Key Facts】[\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
+    const factsSection = text.match(/### (?:\[|\u3010)Key Facts(?:\]|\u3011)[\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
     if (factsSection) {
       const lines = factsSection[1].split('\n').filter(l => l.match(/^\d+\./))
       result.facts = lines.map(l => {
@@ -567,7 +567,7 @@ const parseInsightForge = (text) => {
       }).filter(Boolean)
     }
 
-    const entitySection = text.match(/### 【Core Entities】\n([\s\S]*?)(?=\n###|$)/)
+    const entitySection = text.match(/### (?:\[|\u3010)Core Entities(?:\]|\u3011)\n([\s\S]*?)(?=\n###|$)/)
     if (entitySection) {
       const entityText = entitySection[1]
       const entityBlocks = entityText.split(/\n(?=- \*\*)/).filter(b => b.trim().startsWith('- **'))
@@ -624,7 +624,7 @@ const parsePanorama = (text) => {
     if (activeMatch) result.stats.activeFacts = parseInt(activeMatch[1])
     if (histMatch) result.stats.historicalFacts = parseInt(histMatch[1])
 
-    const activeSection = text.match(/### 【Current Valid Facts】[\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
+    const activeSection = text.match(/### (?:\[|\u3010)Current Valid Facts(?:\]|\u3011)[\s\S]*?\n([\s\S]*?)(?=\n###|$)/)
     if (activeSection) {
       const lines = activeSection[1].split('\n').filter(l => l.match(/^\d+\./))
       result.activeFacts = lines.map(l => {
@@ -642,7 +642,7 @@ const parsePanorama = (text) => {
       }).filter(Boolean)
     }
 
-    const entitySection = text.match(/### 【Entities Involved】\n([\s\S]*?)(?=\n###|$)/)
+    const entitySection = text.match(/### (?:\[|\u3010)Entities Involved(?:\]|\u3011)\n([\s\S]*?)(?=\n###|$)/)
     if (entitySection) {
       const lines = entitySection[1].split('\n').filter(l => l.trim().startsWith('-'))
       result.entities = lines.map(l => {
@@ -698,7 +698,7 @@ const parseInterview = (text) => {
         let name = null
         let reasonStart = null
 
-        headerMatch = line.match(/^\d+\.\s*\*\*([^*（(]+)(?:[（(]index\s*=?\s*\d+[)）])?\*\*[：:]\s*(.*)/)
+        headerMatch = line.match(/^\d+\.\s*\*\*([^*(\uFF08]+)(?:[(\uFF08]index\s*=?\s*\d+[)\uFF09])?\*\*[:\uFF1A]\s*(.*)/)
         if (headerMatch) {
           name = headerMatch[1].trim()
           reasonStart = headerMatch[2]
@@ -713,7 +713,7 @@ const parseInterview = (text) => {
         }
 
         if (!headerMatch) {
-          headerMatch = line.match(/^-\s*\*\*([^*（(]+)(?:[（(]index\s*=?\s*\d+[)）])?\*\*[：:]\s*(.*)/)
+          headerMatch = line.match(/^-\s*\*\*([^*(\uFF08]+)(?:[(\uFF08]index\s*=?\s*\d+[)\uFF09])?\*\*[:\uFF1A]\s*(.*)/)
           if (headerMatch) {
             name = headerMatch[1].trim()
             reasonStart = headerMatch[2]
@@ -935,7 +935,7 @@ const InsightDisplay = {
               h('span', { class: 'stat-value' }, props.result.stats.relationships || props.result.relations.length),
               h('span', { class: 'stat-label' }, 'Relations')
             ]),
-            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-divider' }, '-'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
           ])
         ]),
@@ -993,7 +993,7 @@ const InsightDisplay = {
           props.result.facts.length > INITIAL_SHOW_COUNT && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedFacts.value = !expandedFacts.value }
-          }, expandedFacts.value ? `Collapse ▲` : `Expand All ${props.result.facts.length}  ▼`)
+          }, expandedFacts.value ? `Collapse ^` : `Expand All ${props.result.facts.length}  v`)
         ]),
 
         // Entities Tab
@@ -1014,7 +1014,7 @@ const InsightDisplay = {
           props.result.entities.length > 12 && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedEntities.value = !expandedEntities.value }
-          }, expandedEntities.value ? `Collapse ▲` : `Expand All ${props.result.entities.length}  ▼`)
+          }, expandedEntities.value ? `Collapse ^` : `Expand All ${props.result.entities.length}  v`)
         ]),
 
         // Relations Tab
@@ -1039,7 +1039,7 @@ const InsightDisplay = {
           props.result.relations.length > INITIAL_SHOW_COUNT && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedRelations.value = !expandedRelations.value }
-          }, expandedRelations.value ? `Collapse ▲` : `Expand All ${props.result.relations.length}  ▼`)
+          }, expandedRelations.value ? `Collapse ^` : `Expand All ${props.result.relations.length}  v`)
         ]),
 
         // Sub-queries Tab
@@ -1101,7 +1101,7 @@ const PanoramaDisplay = {
               h('span', { class: 'stat-value' }, props.result.stats.edges),
               h('span', { class: 'stat-label' }, 'Edges')
             ]),
-            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-divider' }, '-'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
           ])
         ]),
@@ -1149,7 +1149,7 @@ const PanoramaDisplay = {
           props.result.activeFacts.length > INITIAL_SHOW_COUNT && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedActive.value = !expandedActive.value }
-          }, expandedActive.value ? `Collapse ▲` : `Expand All ${props.result.activeFacts.length}  ▼`)
+          }, expandedActive.value ? `Collapse ^` : `Expand All ${props.result.activeFacts.length}  v`)
         ]),
 
         // Historical Facts Tab
@@ -1180,7 +1180,7 @@ const PanoramaDisplay = {
           props.result.historicalFacts.length > INITIAL_SHOW_COUNT && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedHistorical.value = !expandedHistorical.value }
-          }, expandedHistorical.value ? `Collapse ▲` : `Expand All ${props.result.historicalFacts.length}  ▼`)
+          }, expandedHistorical.value ? `Collapse ^` : `Expand All ${props.result.historicalFacts.length}  v`)
         ]),
 
         // Entities Tab
@@ -1200,7 +1200,7 @@ const PanoramaDisplay = {
           props.result.entities.length > 8 && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedEntities.value = !expandedEntities.value }
-          }, expandedEntities.value ? `Collapse ▲` : `Expand All ${props.result.entities.length}  ▼`)
+          }, expandedEntities.value ? `Collapse ^` : `Expand All ${props.result.entities.length}  v`)
         ])
       ])
     ])
@@ -1223,8 +1223,8 @@ const InterviewDisplay = {
     // Clean quote text - remove leading list numbers to avoid double numbering
     const cleanQuoteText = (text) => {
       if (!text) return ''
-      // Remove leading patterns like "1. ", "2. ", "1、", "（1）", "(1)" etc.
-      return text.replace(/^\s*\d+[\.\、\)）]\s*/, '').trim()
+      // Remove leading numbering like "1. ", "(1)", or fullwidth equivalents.
+      return text.replace(/^\s*(?:\d+[.)\u3001]?|[(\uFF08]\d+[)\uFF09])\s*/, '').trim()
     }
 
     const activeIndex = ref(0)
@@ -1270,8 +1270,8 @@ const InterviewDisplay = {
       let matches = []
       let match
 
-      const cnPattern = /(?:^|[\r\n]+)Question(\d+)[：:]\s*/g
-      while ((match = cnPattern.exec(answerText)) !== null) {
+      const questionPattern = /(?:^|[\r\n]+)Question(\d+)[:\uFF1A]\s*/g
+      while ((match = questionPattern.exec(answerText)) !== null) {
         matches.push({
           num: parseInt(match[1]),
           index: match.index,
@@ -1292,7 +1292,7 @@ const InterviewDisplay = {
 
       if (matches.length <= 1) {
         const cleaned = answerText
-          .replace(/^Question\d+[：:]\s*/, '')
+          .replace(/^Question\d+[:\uFF1A]\s*/, '')
           .replace(/^\d+\.\s+/, '')
           .trim()
         return [cleaned || answerText]
@@ -1354,7 +1354,7 @@ const InterviewDisplay = {
               h('span', { class: 'stat-value' }, props.result.totalCount),
               h('span', { class: 'stat-label' }, 'Total')
             ]),
-            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-divider' }, '-'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
           ])
         ]),
@@ -1521,7 +1521,7 @@ const QuickSearchDisplay = {
               h('span', { class: 'stat-value' }, props.result.count || props.result.facts.length),
               h('span', { class: 'stat-label' }, 'Results')
             ]),
-            props.resultLength && h('span', { class: 'stat-divider' }, '·'),
+            props.resultLength && h('span', { class: 'stat-divider' }, '-'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
           ])
         ]),
@@ -1572,7 +1572,7 @@ const QuickSearchDisplay = {
           props.result.facts.length > INITIAL_SHOW_COUNT && h('button', {
             class: 'expand-btn',
             onClick: () => { expandedFacts.value = !expandedFacts.value }
-          }, expandedFacts.value ? `Collapse ▲` : `Expand All ${props.result.facts.length}  ▼`)
+          }, expandedFacts.value ? `Collapse ^` : `Expand All ${props.result.facts.length}  v`)
         ]),
 
         // Edges Tab
@@ -1978,9 +1978,9 @@ const extractFinalContent = (response) => {
     return finalAnswerMatch[1].trim()
   }
 
-  const chineseFinalMatch = response.match(/Final Answer[:：]\s*\n*([\s\S]*)$/i)
-  if (chineseFinalMatch) {
-    return chineseFinalMatch[1].trim()
+  const legacyFinalMatch = response.match(/Final Answer[:\uFF1A]\s*\n*([\s\S]*)$/i)
+  if (legacyFinalMatch) {
+    return legacyFinalMatch[1].trim()
   }
 
   const trimmedResponse = response.trim()

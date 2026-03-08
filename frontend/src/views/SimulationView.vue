@@ -194,7 +194,7 @@ const checkAndStopRunningSimulation = async () => {
         })
         
         if (closeRes.success) {
-          addLog('✓ Simulation environment closed')
+          addLog('OK Simulation environment closed')
         } else {
           addLog(`Failed to close simulation environment: ${closeRes.error || 'Unknown error'}`)
           // Fall back to a force stop if graceful shutdown fails
@@ -226,7 +226,7 @@ const forceStopSimulation = async () => {
   try {
     const stopRes = await stopSimulation({ simulation_id: currentSimulationId.value })
     if (stopRes.success) {
-      addLog('✓ Simulation force-stopped')
+      addLog('OK Simulation force-stopped')
     } else {
       addLog(`Failed to force-stop simulation: ${stopRes.error || 'Unknown error'}`)
     }

@@ -4,11 +4,11 @@
       <span class="panel-title">Graph Relationship Visualization</span>
 <div class="header-tools">
         <button class="tool-btn" @click="$emit('refresh')" :disabled="loading" title="Refresh graph">
-          <span class="icon-refresh" :class="{ 'spinning': loading }">↻</span>
+          <span class="icon-refresh" :class="{ 'spinning': loading }">R</span>
           <span class="btn-text">Refresh</span>
         </button>
         <button class="tool-btn" @click="$emit('toggle-maximize')" title="Maximize/restore">
-          <span class="icon-maximize">⛶</span>
+          <span class="icon-maximize">Max</span>
         </button>
       </div>
     </div>
@@ -47,7 +47,7 @@
             <span v-if="selectedItem.type === 'node'" class="detail-type-badge" :style="{ background: selectedItem.color, color: '#fff' }">
               {{ selectedItem.entityType }}
             </span>
-            <button class="detail-close" @click="closeDetailPanel">×</button>
+            <button class="detail-close" @click="closeDetailPanel">x</button>
           </div>
 <div v-if="selectedItem.type === 'node'" class="detail-content">
             <div class="detail-row">
@@ -110,7 +110,7 @@
                   >
                     <span class="self-loop-index">#{{ idx + 1 }}</span>
                     <span class="self-loop-name">{{ loop.name || loop.fact_type || 'RELATED' }}</span>
-                    <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '−' : '+' }}</span>
+                    <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '-' : '+' }}</span>
                   </div>
 
                   <div class="self-loop-item-content" v-show="expandedSelfLoops.has(loop.uuid || idx)">
@@ -142,7 +142,7 @@
             </template>
 <template v-else>
               <div class="edge-relation-header">
-                {{ selectedItem.data.source_name }} → {{ selectedItem.data.name || 'RELATED_TO' }} → {{ selectedItem.data.target_name }}
+                {{ selectedItem.data.source_name }} -> {{ selectedItem.data.name || 'RELATED_TO' }} -> {{ selectedItem.data.target_name }}
               </div>
 
               <div class="detail-row">
@@ -189,7 +189,7 @@
         <p>Loading graph data...</p>
       </div>
 <div v-else class="graph-state">
-        <div class="empty-icon">❖</div>
+        <div class="empty-icon">*</div>
         <p class="empty-text">Waiting for ontology generation...</p>
       </div>
     </div>
@@ -655,7 +655,7 @@ const renderGraph = () => {
   const nodeLabels = nodeGroup.selectAll('text')
     .data(nodes)
     .enter().append('text')
-    .text(d => d.name.length > 8 ? d.name.substring(0, 8) + '…' : d.name)
+    .text(d => d.name.length > 8 ? d.name.substring(0, 8) + '...' : d.name)
     .attr('font-size', '11px')
     .attr('fill', '#333')
     .attr('font-weight', '500')

@@ -162,12 +162,12 @@ const handleGoBack = async () => {
           simulation_id: currentSimulationId.value,
           timeout: 10
         })
-        addLog('✓ Simulation environment closed')
+        addLog('OK Simulation environment closed')
       } catch (closeErr) {
         addLog('Failed to close the environment, attempting a force stop...')
         try {
           await stopSimulation({ simulation_id: currentSimulationId.value })
-          addLog('✓ Simulation force-stopped')
+          addLog('OK Simulation force-stopped')
         } catch (stopErr) {
           addLog(`Force stop failed: ${stopErr.message}`)
         }
@@ -178,7 +178,7 @@ const handleGoBack = async () => {
         addLog('Stopping the simulation process...')
         try {
           await stopSimulation({ simulation_id: currentSimulationId.value })
-          addLog('✓ Simulation stopped')
+          addLog('OK Simulation stopped')
         } catch (err) {
           addLog(`Failed to stop simulation: ${err.message}`)
         }

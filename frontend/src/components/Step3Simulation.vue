@@ -93,7 +93,7 @@
         >
           <span v-if="isGeneratingReport" class="loading-spinner-small"></span>
           {{ isGeneratingReport ? 'Starting...' : 'Start generating the result report' }}
-          <span v-if="!isGeneratingReport" class="arrow-icon">→</span>
+          <span v-if="!isGeneratingReport" class="arrow-icon">-></span>
         </button>
       </div>
     </div>
@@ -233,7 +233,7 @@
               </div>
 
               <div class="card-footer">
-                <span class="time-tag">R{{ action.round_num }} • {{ formatActionTime(action.timestamp) }}</span>
+                <span class="time-tag">R{{ action.round_num }} - {{ formatActionTime(action.timestamp) }}</span>
                 <!-- Platform tag removed as it is in header now -->
               </div>
             </div>
@@ -380,10 +380,10 @@ const doStartSimulation = async () => {
 
     if (res.success && res.data) {
       if (res.data.force_restarted) {
-        addLog('✓ Cleared old simulation logs and restarted the simulation')
+        addLog('OK Cleared old simulation logs and restarted the simulation')
       }
-      addLog('✓ Simulation engine started successfully')
-      addLog(`  ├─ PID: ${res.data.process_pid || '-'}`)
+      addLog('OK Simulation engine started successfully')
+      addLog(`  - PID: ${res.data.process_pid || '-'}`)
 
       phase.value = 1
       runStatus.value = res.data
@@ -392,12 +392,12 @@ const doStartSimulation = async () => {
       startDetailPolling()
     } else {
       startError.value = res.error || 'Startup failed'
-      addLog(`✗ Startup failed: ${res.error || 'Unknown error'}`)
+      addLog(`X Startup failed: ${res.error || 'Unknown error'}`)
       emit('update-status', 'error')
     }
   } catch (err) {
     startError.value = err.message
-    addLog(`✗ Startup exception: ${err.message}`)
+    addLog(`X Startup exception: ${err.message}`)
     emit('update-status', 'error')
   } finally {
     isStarting.value = false
@@ -414,7 +414,7 @@ const handleStopSimulation = async () => {
     const res = await stopSimulation({ simulation_id: props.simulationId })
 
     if (res.success) {
-      addLog('✓ Simulation stopped')
+      addLog('OK Simulation stopped')
       phase.value = 2
       stopPolling()
       emit('update-status', 'completed')
@@ -480,9 +480,9 @@ const fetchRunStatus = async () => {
 
       if (isCompleted || platformsCompleted) {
         if (platformsCompleted && !isCompleted) {
-          addLog('✓ Detected that all platform simulations have finished')
+          addLog('OK Detected that all platform simulations have finished')
         }
-        addLog('✓ Simulation completed')
+        addLog('OK Simulation completed')
         phase.value = 2
         stopPolling()
         emit('update-status', 'completed')
@@ -611,15 +611,15 @@ const handleNextStep = async () => {
 
     if (res.success && res.data) {
       const reportId = res.data.report_id
-      addLog(`✓ Report generation task started: ${reportId}`)
+      addLog(`OK Report generation task started: ${reportId}`)
 
       router.push({ name: 'Report', params: { reportId } })
     } else {
-      addLog(`✗ Failed to start report generation: ${res.error || 'Unknown error'}`)
+      addLog(`X Failed to start report generation: ${res.error || 'Unknown error'}`)
       isGeneratingReport.value = false
     }
   } catch (err) {
-    addLog(`✗ Report generation startup exception: ${err.message}`)
+    addLog(`X Report generation startup exception: ${err.message}`)
     isGeneratingReport.value = false
   }
 }

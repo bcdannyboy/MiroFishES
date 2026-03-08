@@ -467,9 +467,9 @@ class Report:
         }
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # Prompt template constants
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 # Tool descriptions
 
@@ -621,9 +621,9 @@ Forecast scenario (simulation requirement): {simulation_requirement}
 
 Current section to write: {section_title}
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Core idea
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 The simulation world is a preview of the future. We injected a specific condition, the simulation requirement, into the world.
 Agent behavior and interactions in the simulation are predictions of future human behavior.
@@ -636,9 +636,9 @@ Your job is to:
 Do not write this as an analysis of the current real world.
 Focus on what the future will look like. The simulation results are the forecast.
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Most important rules: must follow
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 1. You must call tools to observe the simulation world.
    - You are observing a preview of the future from a god's-eye view
@@ -664,9 +664,9 @@ Most important rules: must follow
    - Do not add information that does not exist in the simulation
    - If there is not enough information about a topic, state that honestly
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Formatting rules: extremely important
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 One section is the smallest content unit.
 - Each section is the smallest building block of the report
@@ -695,16 +695,16 @@ The second platform further amplified the event's influence:
 
 Incorrect example:
 ```
-## Executive Summary          ← Wrong. Do not add any headings
-### 1. Initial Stage          ← Wrong. Do not use `###` subsections
-#### 1.1 Detailed Analysis    ← Wrong. Do not use `####` sub-subsections
+## Executive Summary          <- Wrong. Do not add any headings
+### 1. Initial Stage          <- Wrong. Do not use `###` subsections
+#### 1.1 Detailed Analysis    <- Wrong. Do not use `####` sub-subsections
 
 This section analyzes...
 ```
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Available retrieval tools (call 3 to 5 times per section)
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 {tools_description}
 
@@ -714,9 +714,9 @@ Tool usage guidance: mix different tools rather than relying on just one.
 - `quick_search`: quickly verify a specific information point
 - `interview_agents`: interview simulation agents to get first-person viewpoints and authentic reactions from different roles
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Workflow
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 In each reply, you may do only one of the following two things, never both:
 
@@ -735,9 +735,9 @@ Strictly forbidden:
 - Do not invent tool results or observations yourself; all tool results are injected by the system
 - Call at most one tool per reply
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Section content requirements
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 1. The content must be based on simulation data retrieved by tools
 2. Use many original quotations to show what the simulation produced
@@ -770,9 +770,9 @@ SECTION_USER_PROMPT_TEMPLATE = """\
 Completed section content already written. Read carefully and avoid repetition:
 {previous_content}
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Current task: write section `{section_title}`
-═══════════════════════════════════════════════════════════════
+===============================================================
 
 Important reminders:
 1. Read the completed sections above carefully and avoid repeating the same content
@@ -796,14 +796,14 @@ Begin now:
 REACT_OBSERVATION_TEMPLATE = """\
 Observation (retrieval result):
 
-═══ Tool `{tool_name}` returned ═══
+=== Tool `{tool_name}` returned ===
 {result}
 
-═══════════════════════════════════════════════════════════════
+===============================================================
 Tools called: {tool_calls_count}/{max_tool_calls} (used: {used_tools_str}){unused_hint}
 - If the information is sufficient, output the section content starting with `Final Answer:` and quote the source text above
 - If you need more information, call one more tool to continue retrieving
-═══════════════════════════════════════════════════════════════"""
+==============================================================="""
 
 REACT_INSUFFICIENT_TOOLS_MSG = (
     "Note: you have called tools only {tool_calls_count} times, but at least {min_tool_calls} calls are required. "
@@ -857,9 +857,9 @@ Answering style:
 CHAT_OBSERVATION_SUFFIX = "\n\nAnswer the question concisely."
 
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 # ReportAgent main class
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 
 
 class ReportAgent:

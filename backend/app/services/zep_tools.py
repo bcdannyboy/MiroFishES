@@ -318,7 +318,7 @@ class AgentInterview:
                 clean_quote = clean_quote.replace('\u300c', '').replace('\u300d', '')
                 clean_quote = clean_quote.strip()
                 # Strip leading punctuation.
-                while clean_quote and clean_quote[0] in '，,；;：:、。！？\n\r\t ':
+                while clean_quote and clean_quote[0] in '\uFF0C,\uFF1B;\uFF1A:\u3001\u3002\uFF01\uFF1F\n\r\t ':
                     clean_quote = clean_quote[1:]
                 # Drop junk text that includes question numbering (Question 1-9).
                 skip = False
@@ -577,7 +577,7 @@ class ZepToolsService:
         
         # Extract query keywords with simple tokenization.
         query_lower = query.lower()
-        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('，', ' ').split() if len(w.strip()) > 1]
+        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('\uFF0C', ' ').split() if len(w.strip()) > 1]
         
         def match_score(text: str) -> int:
             """Compute a relevance score between text and the query."""
@@ -1220,7 +1220,7 @@ Return the subquestion list as JSON."""
         
         # Sort by relevance to the query.
         query_lower = query.lower()
-        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('，', ' ').split() if len(w.strip()) > 1]
+        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('\uFF0C', ' ').split() if len(w.strip()) > 1]
         
         def relevance_score(fact: str) -> int:
             fact_lower = fact.lower()

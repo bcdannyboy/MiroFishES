@@ -31,16 +31,16 @@
               class="status-icon"
               :class="{ available: project.project_id, unavailable: !project.project_id }"
               title="Graph Build"
-            >◇</span>
+            >*</span>
             <span
               class="status-icon available"
               title="Environment Setup"
-            >◈</span>
+            >*</span>
             <span
               class="status-icon"
               :class="{ available: project.report_id, unavailable: !project.report_id }"
               title="Analysis Report"
-            >◆</span>
+            >*</span>
           </div>
         </div>
 <div class="card-files-wrapper">
@@ -59,7 +59,7 @@
             </div>
           </div>
 <div class="files-empty" v-else>
-            <span class="empty-file-icon">◇</span>
+            <span class="empty-file-icon">*</span>
             <span class="empty-file-text">No files</span>
           </div>
         </div>
@@ -71,7 +71,7 @@
             <span class="card-time">{{ formatTime(project.created_at) }}</span>
           </div>
           <span class="card-progress" :class="getProgressClass(project)">
-            <span class="status-dot">●</span> {{ formatRounds(project) }}
+            <span class="status-dot">*</span> {{ formatRounds(project) }}
           </span>
         </div>
 <div class="card-bottom-line"></div>
@@ -89,11 +89,11 @@
               <div class="modal-title-section">
                 <span class="modal-id">{{ formatSimulationId(selectedProject.simulation_id) }}</span>
                 <span class="modal-progress" :class="getProgressClass(selectedProject)">
-                  <span class="status-dot">●</span> {{ formatRounds(selectedProject) }}
+                  <span class="status-dot">*</span> {{ formatRounds(selectedProject) }}
                 </span>
                 <span class="modal-create-time">{{ formatDate(selectedProject.created_at) }} {{ formatTime(selectedProject.created_at) }}</span>
               </div>
-              <button class="modal-close" @click="closeModal">×</button>
+              <button class="modal-close" @click="closeModal">x</button>
             </div>
 <div class="modal-body">
 <div class="modal-section">
@@ -123,7 +123,7 @@
                 :disabled="!selectedProject.project_id"
               >
                 <span class="btn-step">Step1</span>
-                <span class="btn-icon">◇</span>
+                <span class="btn-icon">*</span>
                 <span class="btn-text">Graph Build</span>
               </button>
               <button
@@ -131,7 +131,7 @@
                 @click="goToSimulation"
               >
                 <span class="btn-step">Step2</span>
-                <span class="btn-icon">◈</span>
+                <span class="btn-icon">*</span>
                 <span class="btn-text">Environment Setup</span>
               </button>
               <button
@@ -140,7 +140,7 @@
                 :disabled="!selectedProject.report_id"
               >
                 <span class="btn-step">Step4</span>
-                <span class="btn-icon">◆</span>
+                <span class="btn-icon">*</span>
                 <span class="btn-text">Analysis Report</span>
               </button>
             </div>

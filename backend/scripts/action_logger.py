@@ -4,12 +4,12 @@ Used to record each agent action during OASIS simulations for backend monitoring
 
 Log layout:
     sim_xxx/
-    ├── twitter/
-    │   └── actions.jsonl    # Twitter action log
-    ├── reddit/
-    │   └── actions.jsonl    # Reddit action log
-    ├── simulation.log       # Main simulation process log
-    └── run_state.json       # Runtime state (for API queries)
+      twitter/
+        actions.jsonl        # Twitter action log
+      reddit/
+        actions.jsonl        # Reddit action log
+      simulation.log         # Main simulation process log
+      run_state.json         # Runtime state (for API queries)
 """
 
 import json

@@ -16,7 +16,7 @@
 <div class="left-panel" :class="{ 'full-screen': isFullScreen }">
         <div class="panel-header">
           <div class="header-left">
-            <span class="header-deco">◆</span>
+            <span class="header-deco">*</span>
             <span class="header-title">Real-time Knowledge Graph</span>
           </div>
           <div class="header-right">
@@ -28,10 +28,10 @@
             </template>
             <div class="action-buttons">
                 <button class="action-btn" @click="refreshGraph" :disabled="graphLoading" title="Refresh graph">
-                  <span class="icon-refresh" :class="{ 'spinning': graphLoading }">↻</span>
+                  <span class="icon-refresh" :class="{ 'spinning': graphLoading }">Refresh</span>
                 </button>
                 <button class="action-btn" @click="toggleFullScreen" :title="isFullScreen ? 'Exit full screen' : 'Full screen'">
-                  <span class="icon-fullscreen">{{ isFullScreen ? '↙' : '↗' }}</span>
+                  <span class="icon-fullscreen">{{ isFullScreen ? '<-' : '->' }}</span>
                 </button>
             </div>
           </div>
@@ -50,7 +50,7 @@
                 <span v-if="selectedItem.type === 'node'" class="detail-badge" :style="{ background: selectedItem.color }">
                   {{ selectedItem.entityType }}
                 </span>
-                <button class="detail-close" @click="closeDetailPanel">×</button>
+                <button class="detail-close" @click="closeDetailPanel">x</button>
               </div>
 <div v-if="selectedItem.type === 'node'" class="detail-content">
                 <div class="detail-row">
@@ -94,9 +94,9 @@
 <div v-else class="detail-content">
 <div class="edge-relation">
                   <span class="edge-source">{{ selectedItem.data.source_name || selectedItem.data.source_node_name }}</span>
-                  <span class="edge-arrow">→</span>
+                  <span class="edge-arrow">-></span>
                   <span class="edge-type">{{ selectedItem.data.name || selectedItem.data.fact_type || 'RELATED_TO' }}</span>
-                  <span class="edge-arrow">→</span>
+                  <span class="edge-arrow">-></span>
                   <span class="edge-target">{{ selectedItem.data.target_name || selectedItem.data.target_node_name }}</span>
                 </div>
 
@@ -183,7 +183,7 @@
             <p class="waiting-hint">Data will appear shortly...</p>
           </div>
 <div v-else-if="error" class="graph-error">
-            <span class="error-icon">⚠</span>
+            <span class="error-icon">!</span>
             <p>{{ error }}</p>
           </div>
         </div>
@@ -197,7 +197,7 @@
       </div>
 <div class="right-panel" :class="{ 'hidden': isFullScreen }">
         <div class="panel-header dark-header">
-          <span class="header-icon">▣</span>
+          <span class="header-icon">*</span>
           <span class="header-title">Build Flow</span>
         </div>
 
@@ -250,9 +250,9 @@
                     class="relation-item"
                   >
                     <span class="rel-source">{{ rel.source_type }}</span>
-                    <span class="rel-arrow">→</span>
+                    <span class="rel-arrow">-></span>
                     <span class="rel-name">{{ rel.name }}</span>
-                    <span class="rel-arrow">→</span>
+                    <span class="rel-arrow">-></span>
                     <span class="rel-target">{{ rel.target_type }}</span>
                   </div>
                   <div v-if="(projectData.ontology.relation_types?.length || 0) > 5" class="relation-more">
@@ -332,13 +332,13 @@
 <div class="next-step-section" v-if="currentPhase >= 2">
             <button class="next-step-btn" @click="goToNextStep" :disabled="currentPhase < 2">
               Enter Environment Setup
-              <span class="btn-arrow">→</span>
+              <span class="btn-arrow">-></span>
             </button>
           </div>
         </div>
 <div class="project-panel">
           <div class="project-header">
-            <span class="project-icon">◇</span>
+            <span class="project-icon">*</span>
             <span class="project-title">Project Information</span>
           </div>
           <div class="project-details" v-if="projectData">
@@ -706,7 +706,7 @@ const pollTaskStatus = async (taskId) => {
       console.log('Task status:', task.status, 'Progress:', task.progress)
 
       if (task.status === 'completed') {
-        console.log('✅ Graph construction complete. Loading full data...')
+        console.log('OK Graph construction complete. Loading full data...')
 
         stopPolling()
         stopGraphPolling()
@@ -722,9 +722,9 @@ const pollTaskStatus = async (taskId) => {
           projectData.value = projectResponse.data
 
           if (projectResponse.data.graph_id) {
-            console.log('📊 Loading complete graph:', projectResponse.data.graph_id)
+            console.log('[chart] Loading complete graph:', projectResponse.data.graph_id)
             await loadGraph(projectResponse.data.graph_id)
-            console.log('✅ Graph load complete')
+            console.log('OK Graph load complete')
           }
         }
 

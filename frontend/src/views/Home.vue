@@ -5,7 +5,7 @@
       <div class="nav-brand">MIROFISHES</div>
       <div class="nav-links">
         <a href="https://github.com/bcdannyboy/MiroFishES" target="_blank" class="github-link">
-          Visit the GitHub repository <span class="arrow">↗</span>
+          Visit the GitHub repository <span class="arrow">-></span>
         </a>
       </div>
     </nav>
@@ -43,7 +43,7 @@
           </div>
           
           <button class="scroll-down-btn" @click="scrollToBottom">
-            ↓
+            v
           </button>
         </div>
       </section>
@@ -53,7 +53,7 @@
         <!-- Left column: status and workflow -->
         <div class="left-panel">
           <div class="panel-header">
-            <span class="status-dot">■</span> System Status
+            <span class="status-dot">*</span> System Status
           </div>
           
           <h2 class="section-title">Ready</h2>
@@ -76,7 +76,7 @@
           <!-- Simulation workflow overview -->
           <div class="steps-container">
             <div class="steps-header">
-               <span class="diamond-icon">◇</span> Workflow Sequence
+               <span class="diamond-icon">*</span> Workflow Sequence
             </div>
             <div class="workflow-list">
               <div class="workflow-item">
@@ -147,16 +147,16 @@
                 />
                 
                 <div v-if="files.length === 0" class="upload-placeholder">
-                  <div class="upload-icon">↑</div>
+                  <div class="upload-icon">^</div>
                   <div class="upload-title">Drag files here to upload</div>
                   <div class="upload-hint">or click to browse your file system</div>
                 </div>
                 
                 <div v-else class="file-list">
                   <div v-for="(file, index) in files" :key="index" class="file-item">
-                    <span class="file-icon">📄</span>
+                    <span class="file-icon">[file]</span>
                     <span class="file-name">{{ file.name }}</span>
-                    <button @click.stop="removeFile(index)" class="remove-btn">×</button>
+                    <button @click.stop="removeFile(index)" class="remove-btn">x</button>
                   </div>
                 </div>
               </div>
@@ -193,7 +193,7 @@
               >
                 <span v-if="!loading">Start Engine</span>
                 <span v-else>Initializing...</span>
-                <span class="btn-arrow">→</span>
+                <span class="btn-arrow">-></span>
               </button>
             </div>
           </div>

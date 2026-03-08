@@ -172,7 +172,7 @@ def split_text_into_chunks(
         # Try to split on sentence boundaries.
         if end < len(text):
             # Find the nearest sentence terminator.
-            for sep in ['。', '！', '？', '.\n', '!\n', '?\n', '\n\n', '. ', '! ', '? ']:
+            for sep in ['\u3002', '\uFF01', '\uFF1F', '.\n', '!\n', '?\n', '\n\n', '. ', '! ', '? ']:
                 last_sep = text[start:end].rfind(sep)
                 if last_sep != -1 and last_sep > chunk_size * 0.3:
                     end = start + last_sep + len(sep)

@@ -153,22 +153,22 @@
                 <div class="period-item">
                   <span class="period-label">Peak Hours</span>
                   <span class="period-hours">{{ simulationConfig.time_config?.peak_hours?.join(':00, ') }}:00</span>
-                  <span class="period-multiplier">×{{ simulationConfig.time_config?.peak_activity_multiplier }}</span>
+                  <span class="period-multiplier">x{{ simulationConfig.time_config?.peak_activity_multiplier }}</span>
                 </div>
                 <div class="period-item">
                   <span class="period-label">Work Hours</span>
                   <span class="period-hours">{{ simulationConfig.time_config?.work_hours?.[0] }}:00-{{ simulationConfig.time_config?.work_hours?.slice(-1)[0] }}:00</span>
-                  <span class="period-multiplier">×{{ simulationConfig.time_config?.work_activity_multiplier }}</span>
+                  <span class="period-multiplier">x{{ simulationConfig.time_config?.work_activity_multiplier }}</span>
                 </div>
                 <div class="period-item">
                   <span class="period-label">Morning Hours</span>
                   <span class="period-hours">{{ simulationConfig.time_config?.morning_hours?.[0] }}:00-{{ simulationConfig.time_config?.morning_hours?.slice(-1)[0] }}:00</span>
-                  <span class="period-multiplier">×{{ simulationConfig.time_config?.morning_activity_multiplier }}</span>
+                  <span class="period-multiplier">x{{ simulationConfig.time_config?.morning_activity_multiplier }}</span>
                 </div>
                 <div class="period-item">
                   <span class="period-label">Off-Peak Hours</span>
                   <span class="period-hours">{{ simulationConfig.time_config?.off_peak_hours?.[0] }}:00-{{ simulationConfig.time_config?.off_peak_hours?.slice(-1)[0] }}:00</span>
-                  <span class="period-multiplier">×{{ simulationConfig.time_config?.off_peak_activity_multiplier }}</span>
+                  <span class="period-multiplier">x{{ simulationConfig.time_config?.off_peak_activity_multiplier }}</span>
                 </div>
               </div>
             </div>
@@ -473,7 +473,7 @@
                       </span>
                     </div>
                     <div class="auto-desc">
-                      <p class="highlight-tip" @click="useCustomRounds = true">For a first run, it is strongly recommended to switch to custom mode and reduce the number of simulation rounds so you can preview results quickly and reduce the chance of runtime errors ➝</p>
+                      <p class="highlight-tip" @click="useCustomRounds = true">For a first run, it is strongly recommended to switch to custom mode and reduce the number of simulation rounds so you can preview results quickly and reduce the chance of runtime errors -></p>
                     </div>
                   </div>
                 </div>
@@ -486,14 +486,14 @@
               class="action-btn secondary"
               @click="$emit('go-back')"
             >
-              ← Back to Graph Build
+              <- Back to Graph Build
             </button>
             <button
               class="action-btn primary"
               :disabled="phase < 4"
               @click="handleStartSimulation"
             >
-              Start Dual-World Parallel Simulation ➝
+              Start Dual-World Parallel Simulation ->
             </button>
           </div>
         </div>
@@ -512,7 +512,7 @@
             </div>
             <span class="modal-profession">{{ selectedProfile.profession }}</span>
           </div>
-          <button class="close-btn" @click="selectedProfile = null">×</button>
+          <button class="close-btn" @click="selectedProfile = null">x</button>
         </div>
 
         <div class="modal-body">
@@ -745,13 +745,13 @@ const startPrepareSimulation = async () => {
 
       taskId.value = res.data.task_id
       addLog(`Preparation task started`)
-      addLog(`  └─ Task ID: ${res.data.task_id}`)
+      addLog(`  - Task ID: ${res.data.task_id}`)
 
       if (res.data.expected_entities_count) {
         expectedTotal.value = res.data.expected_entities_count
         addLog(`Read ${res.data.expected_entities_count} entities from the Zep graph`)
         if (res.data.entity_types && res.data.entity_types.length > 0) {
-          addLog(`  └─ Entity Types: ${res.data.entity_types.join(', ')}`)
+          addLog(`  - Entity Types: ${res.data.entity_types.join(', ')}`)
         }
       }
 
@@ -831,12 +831,12 @@ const pollPrepareStatus = async () => {
       }
 
       if (data.status === 'completed' || data.status === 'ready' || data.already_prepared) {
-        addLog('✓ Preparation completed')
+        addLog('OK Preparation completed')
         stopPolling()
         stopProfilesPolling()
         await loadPreparedData()
       } else if (data.status === 'failed') {
-        addLog(`✗ Preparation failed: ${data.error || 'Unknown error'}`)
+        addLog(`X Preparation failed: ${data.error || 'Unknown error'}`)
         stopPolling()
         stopProfilesPolling()
       }
@@ -874,10 +874,10 @@ const fetchProfilesRealtime = async () => {
         if (currentCount === 1) {
           addLog('Starting agent profile generation...')
         }
-        addLog(`→ Agent profile ${currentCount}/${total}: ${profileName} (${latestProfile?.profession || 'Unknown profession'})`)
+        addLog(`-> Agent profile ${currentCount}/${total}: ${profileName} (${latestProfile?.profession || 'Unknown profession'})`)
 
         if (expectedTotal.value && currentCount >= expectedTotal.value) {
-          addLog(`✓ All ${currentCount} agent profiles generated`)
+          addLog(`OK All ${currentCount} agent profiles generated`)
         }
       }
     }
@@ -917,14 +917,14 @@ const fetchConfigRealtime = async () => {
 
       if (data.config_generated && data.config) {
         simulationConfig.value = data.config
-        addLog('✓ Simulation configuration generated')
+        addLog('OK Simulation configuration generated')
 
         if (data.summary) {
-          addLog(`  ├─ Agent count: ${data.summary.total_agents}`)
-          addLog(`  ├─ Simulation Duration: ${data.summary.simulation_hours} hours`)
-          addLog(`  ├─ Initial posts: ${data.summary.initial_posts_count}`)
-          addLog(`  ├─ Hot topics: ${data.summary.hot_topics_count}`)
-          addLog(`  └─ Platform configuration: Twitter ${data.summary.has_twitter_config ? '✓' : '✗'}, Reddit ${data.summary.has_reddit_config ? '✓' : '✗'}`)
+          addLog(`  - Agent count: ${data.summary.total_agents}`)
+          addLog(`  - Simulation duration: ${data.summary.simulation_hours} hours`)
+          addLog(`  - Initial posts: ${data.summary.initial_posts_count}`)
+          addLog(`  - Hot topics: ${data.summary.hot_topics_count}`)
+          addLog(`  - Platform configuration: Twitter ${data.summary.has_twitter_config ? 'OK' : 'X'}, Reddit ${data.summary.has_reddit_config ? 'OK' : 'X'}`)
         }
 
         if (data.config.time_config) {
@@ -939,7 +939,7 @@ const fetchConfigRealtime = async () => {
 
         stopConfigPolling()
         phase.value = 4
-        addLog('✓ Environment setup completed. Ready to start the simulation')
+        addLog('OK Environment setup completed. Ready to start the simulation')
         emit('update-status', 'completed')
       }
     }
@@ -960,15 +960,15 @@ const loadPreparedData = async () => {
     if (res.success && res.data) {
       if (res.data.config_generated && res.data.config) {
         simulationConfig.value = res.data.config
-        addLog('✓ Simulation configuration loaded')
+        addLog('OK Simulation configuration loaded')
 
         if (res.data.summary) {
-          addLog(`  ├─ Agent count: ${res.data.summary.total_agents}`)
-          addLog(`  ├─ Simulation Duration: ${res.data.summary.simulation_hours} hours`)
-          addLog(`  └─ Initial posts: ${res.data.summary.initial_posts_count}`)
+          addLog(`  - Agent count: ${res.data.summary.total_agents}`)
+          addLog(`  - Simulation duration: ${res.data.summary.simulation_hours} hours`)
+          addLog(`  - Initial posts: ${res.data.summary.initial_posts_count}`)
         }
 
-        addLog('✓ Environment setup completed. Ready to start the simulation')
+        addLog('OK Environment setup completed. Ready to start the simulation')
         phase.value = 4
         emit('update-status', 'completed')
       } else {
