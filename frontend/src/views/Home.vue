@@ -154,7 +154,7 @@
                 
                 <div v-else class="file-list">
                   <div v-for="(file, index) in files" :key="index" class="file-item">
-                    <span class="file-icon">[file]</span>
+                    <span class="file-icon">File</span>
                     <span class="file-name">{{ file.name }}</span>
                     <button @click.stop="removeFile(index)" class="remove-btn">x</button>
                   </div>
