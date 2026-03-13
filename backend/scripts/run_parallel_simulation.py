@@ -14,6 +14,7 @@ Usage:
     python run_parallel_simulation.py --config simulation_config.json --no-wait  # Exit immediately after completion
     python run_parallel_simulation.py --config simulation_config.json --twitter-only
     python run_parallel_simulation.py --config simulation_config.json --reddit-only
+    python run_parallel_simulation.py --config simulation_config.json --run-dir /path/to/run_root --run-id run_001 --seed 17
 
 Log layout:
     sim_xxx/
@@ -206,6 +207,27 @@ REDDIT_ACTIONS = [
 IPC_COMMANDS_DIR = "ipc_commands"
 IPC_RESPONSES_DIR = "ipc_responses"
 ENV_STATUS_FILE = "env_status.json"
+
+
+def resolve_runtime_dir(config_path: str, run_dir: Optional[str] = None) -> str:
+    """Resolve the runtime directory, defaulting to the legacy config-root layout."""
+    return os.path.abspath(run_dir or os.path.dirname(config_path) or ".")
+
+
+def apply_runtime_seed(seed: Optional[int]) -> None:
+    """
+    Seed Python's RNG for the local scheduling helpers only.
+
+    This does not make the full simulation deterministic because OASIS/LLM
+    behavior may still vary across runs.
+    """
+    if seed is not None:
+        random.seed(seed)
+
+
+def build_runtime_rng(seed: Optional[int]) -> random.Random:
+    """Create one explicit RNG stream for one platform's local scheduling logic."""
+    return random.Random(seed) if seed is not None else random.Random()
 
 class CommandType:
     """Command type constants."""
@@ -1041,7 +1063,8 @@ def get_active_agents_for_round(
     env,
     config: Dict[str, Any],
     current_hour: int,
-    round_num: int
+    round_num: int,
+    rng: random.Random,
 ) -> List:
     """Decide which agents to activate this round based on time and config"""
     time_config = config.get("time_config", {})
@@ -1060,7 +1083,7 @@ def get_active_agents_for_round(
     else:
         multiplier = 1.0
     
-    target_count = int(random.uniform(base_min, base_max) * multiplier)
+    target_count = int(rng.uniform(base_min, base_max) * multiplier)
     
     candidates = []
     for cfg in agent_configs:
@@ -1071,10 +1094,10 @@ def get_active_agents_for_round(
         if current_hour not in active_hours:
             continue
         
-        if random.random() < activity_level:
+        if rng.random() < activity_level:
             candidates.append(agent_id)
     
-    selected_ids = random.sample(
+    selected_ids = rng.sample(
         candidates, 
         min(target_count, len(candidates))
     ) if candidates else []
@@ -1103,7 +1126,8 @@ async def run_twitter_simulation(
     simulation_dir: str,
     action_logger: Optional[PlatformActionLogger] = None,
     main_logger: Optional[SimulationLogManager] = None,
-    max_rounds: Optional[int] = None
+    max_rounds: Optional[int] = None,
+    rng: Optional[random.Random] = None,
 ) -> PlatformSimulation:
     """Run the Twitter simulation
     
@@ -1113,11 +1137,13 @@ async def run_twitter_simulation(
         action_logger: Action logger
         main_logger: Main log manager
         max_rounds: Maximum number of simulation rounds (optional, used to truncate long simulations)
+        rng: Optional explicit RNG stream for local scheduling helpers
         
     Returns:
         PlatformSimulation: Result object containing env and agent_graph
     """
     result = PlatformSimulation()
+    rng = rng or build_runtime_rng(None)
     
     def log_info(msg):
         if main_logger:
@@ -1237,7 +1263,7 @@ async def run_twitter_simulation(
         simulated_day = simulated_minutes // (60 * 24) + 1
         
         active_agents = get_active_agents_for_round(
-            result.env, config, simulated_hour, round_num
+            result.env, config, simulated_hour, round_num, rng
         )
         
         # Record the round start even if no agents are active
@@ -1295,7 +1321,8 @@ async def run_reddit_simulation(
     simulation_dir: str,
     action_logger: Optional[PlatformActionLogger] = None,
     main_logger: Optional[SimulationLogManager] = None,
-    max_rounds: Optional[int] = None
+    max_rounds: Optional[int] = None,
+    rng: Optional[random.Random] = None,
 ) -> PlatformSimulation:
     """Run the Reddit simulation
     
@@ -1305,11 +1332,13 @@ async def run_reddit_simulation(
         action_logger: Action logger
         main_logger: Main log manager
         max_rounds: Maximum number of simulation rounds (optional, used to truncate long simulations)
+        rng: Optional explicit RNG stream for local scheduling helpers
         
     Returns:
         PlatformSimulation: Result object containing env and agent_graph
     """
     result = PlatformSimulation()
+    rng = rng or build_runtime_rng(None)
     
     def log_info(msg):
         if main_logger:
@@ -1436,7 +1465,7 @@ async def run_reddit_simulation(
         simulated_day = simulated_minutes // (60 * 24) + 1
         
         active_agents = get_active_agents_for_round(
-            result.env, config, simulated_hour, round_num
+            result.env, config, simulated_hour, round_num, rng
         )
         
         # Record the round start even if no agents are active
@@ -1519,6 +1548,24 @@ async def main():
         default=False,
         help='Shut down the environment immediately after the simulation instead of entering command-wait mode'
     )
+    parser.add_argument(
+        '--run-dir',
+        type=str,
+        default=None,
+        help='Optional runtime directory for run-scoped artifacts; defaults to the config directory'
+    )
+    parser.add_argument(
+        '--run-id',
+        type=str,
+        default=None,
+        help='Optional runtime run identifier for provenance/logging'
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Optional Python random seed for local scheduling helpers'
+    )
     
     args = parser.parse_args()
     
@@ -1531,8 +1578,18 @@ async def main():
         sys.exit(1)
     
     config = load_config(args.config)
-    simulation_dir = os.path.dirname(args.config) or "."
+    simulation_dir = resolve_runtime_dir(args.config, args.run_dir)
     wait_for_commands = not args.no_wait
+    apply_runtime_seed(args.seed)
+
+    twitter_seed = args.seed
+    reddit_seed = args.seed
+    if args.seed is not None and not args.twitter_only and not args.reddit_only:
+        seed_splitter = build_runtime_rng(args.seed)
+        twitter_seed = seed_splitter.randrange(0, 2**32)
+        reddit_seed = seed_splitter.randrange(0, 2**32)
+    twitter_rng = build_runtime_rng(twitter_seed)
+    reddit_rng = build_runtime_rng(reddit_seed)
     
     # Initialize logging (disable OASIS logs and clean up old files)
     init_logging_for_simulation(simulation_dir)
@@ -1547,6 +1604,17 @@ async def main():
     log_manager.info(f"Config file: {args.config}")
     log_manager.info(f"Simulation ID: {config.get('simulation_id', 'unknown')}")
     log_manager.info(f"Command wait mode: {'enabled' if wait_for_commands else 'disabled'}")
+    log_manager.info(f"Runtime directory: {simulation_dir}")
+    if args.run_id:
+        log_manager.info(f"Runtime run ID: {args.run_id}")
+    if args.seed is not None:
+        log_manager.info(
+            f"Runtime random seed: {args.seed} (Python scheduling helpers only; model/platform nondeterminism may remain)"
+        )
+        if not args.twitter_only and not args.reddit_only:
+            log_manager.info(
+                f"Derived platform scheduling seeds: twitter={twitter_seed}, reddit={reddit_seed}"
+            )
     log_manager.info("=" * 60)
     
     time_config = config.get("time_config", {})
@@ -1577,14 +1645,42 @@ async def main():
     reddit_result: Optional[PlatformSimulation] = None
     
     if args.twitter_only:
-        twitter_result = await run_twitter_simulation(config, simulation_dir, twitter_logger, log_manager, args.max_rounds)
+        twitter_result = await run_twitter_simulation(
+            config,
+            simulation_dir,
+            twitter_logger,
+            log_manager,
+            args.max_rounds,
+            rng=twitter_rng,
+        )
     elif args.reddit_only:
-        reddit_result = await run_reddit_simulation(config, simulation_dir, reddit_logger, log_manager, args.max_rounds)
+        reddit_result = await run_reddit_simulation(
+            config,
+            simulation_dir,
+            reddit_logger,
+            log_manager,
+            args.max_rounds,
+            rng=reddit_rng,
+        )
     else:
         # Run in parallel with separate action loggers per platform
         results = await asyncio.gather(
-            run_twitter_simulation(config, simulation_dir, twitter_logger, log_manager, args.max_rounds),
-            run_reddit_simulation(config, simulation_dir, reddit_logger, log_manager, args.max_rounds),
+            run_twitter_simulation(
+                config,
+                simulation_dir,
+                twitter_logger,
+                log_manager,
+                args.max_rounds,
+                rng=twitter_rng,
+            ),
+            run_reddit_simulation(
+                config,
+                simulation_dir,
+                reddit_logger,
+                log_manager,
+                args.max_rounds,
+                rng=reddit_rng,
+            ),
         )
         twitter_result, reddit_result = results
     

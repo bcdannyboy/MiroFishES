@@ -56,6 +56,10 @@ export const requestWithRetry = async (requestFn, maxRetries = 3, delay = 1000) 
     try {
       return await requestFn()
     } catch (error) {
+      if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') {
+        throw error
+      }
+
       if (i === maxRetries - 1) throw error
       
       console.warn(`Request failed, retrying (${i + 1}/${maxRetries})...`)
@@ -63,5 +67,11 @@ export const requestWithRetry = async (requestFn, maxRetries = 3, delay = 1000) 
     }
   }
 }
+
+export const isRequestCanceled = (error) => (
+  axios.isCancel(error)
+  || error?.code === 'ERR_CANCELED'
+  || error?.name === 'CanceledError'
+)
 
 export default service

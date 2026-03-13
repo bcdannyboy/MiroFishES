@@ -48,12 +48,27 @@ export function getTaskStatus(taskId) {
 /**
  * Fetch graph data.
  * @param {String} graphId - Graph ID
+ * @param {Object} options - { mode?, maxNodes?, maxEdges?, signal? }
  * @returns {Promise}
  */
-export function getGraphData(graphId) {
+export function getGraphData(graphId, options = {}) {
+  const params = {}
+
+  if (typeof options.mode === 'string' && options.mode.trim()) {
+    params.mode = options.mode.trim()
+  }
+  if (Number.isInteger(options.maxNodes) && options.maxNodes > 0) {
+    params.max_nodes = options.maxNodes
+  }
+  if (Number.isInteger(options.maxEdges) && options.maxEdges > 0) {
+    params.max_edges = options.maxEdges
+  }
+
   return service({
     url: `/api/graph/data/${graphId}`,
-    method: 'get'
+    method: 'get',
+    params: Object.keys(params).length ? params : undefined,
+    signal: options.signal
   })
 }
 

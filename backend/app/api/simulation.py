@@ -6,13 +6,34 @@ preparation and execution (fully automated).
 """
 
 import os
+import json
+import threading
 import traceback
+from datetime import datetime
+from typing import Any, Optional
 from flask import request, jsonify, send_file
 
 from . import simulation_bp
 from ..config import Config
+from ..models.probabilistic import (
+    DEFAULT_OUTCOME_METRICS,
+    DEFAULT_UNCERTAINTY_PROFILE,
+    EnsembleSpec,
+    PROBABILISTIC_GENERATOR_VERSION,
+    PROBABILISTIC_SCHEMA_VERSION,
+    build_default_run_lifecycle,
+    build_default_run_lineage,
+    get_prepare_capabilities_domain,
+    normalize_uncertainty_profile,
+    validate_outcome_metric_id,
+)
+from ..services.ensemble_manager import EnsembleManager
+from ..services.scenario_clusterer import ScenarioClusterer
+from ..services.sensitivity_analyzer import SensitivityAnalyzer
 from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
+from ..services.report_agent import ReportManager
+from ..services.runtime_graph_manager import RuntimeGraphManager
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..utils.logger import get_logger
@@ -47,7 +68,941 @@ def optimize_interview_prompt(prompt: str) -> str:
     return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
 
 
+def _normalize_requested_outcome_metrics(outcome_metrics) -> list:
+    """Extract stable metric identifiers from request payloads."""
+    if outcome_metrics is None:
+        return []
+    if not isinstance(outcome_metrics, list):
+        raise ValueError("outcome_metrics must be a list when probabilistic_mode=true")
+
+    normalized = []
+    seen = set()
+    for item in outcome_metrics:
+        metric_id = None
+        if isinstance(item, str):
+            metric_id = item.strip()
+        elif isinstance(item, dict):
+            metric_id = str(item.get("metric_id", "")).strip()
+        else:
+            raise ValueError("outcome_metrics entries must be strings or dictionaries")
+
+        if metric_id and metric_id not in seen:
+            normalized.append(metric_id)
+            seen.add(metric_id)
+
+    return normalized
+
+
+def _validate_probabilistic_prepare_request(
+    probabilistic_mode: bool,
+    uncertainty_profile,
+    outcome_metrics,
+) -> tuple[Optional[str], list]:
+    """Validate the minimal probabilistic prepare contract before work starts."""
+    if not probabilistic_mode:
+        if uncertainty_profile is not None or outcome_metrics not in (None, [], ()):
+            raise ValueError(
+                "uncertainty_profile and outcome_metrics require probabilistic_mode=true"
+            )
+        return None, []
+
+    if not Config.PROBABILISTIC_PREPARE_ENABLED:
+        raise ValueError(
+            "Probabilistic prepare is disabled. Set PROBABILISTIC_PREPARE_ENABLED=true to enable it."
+        )
+
+    normalized_profile = normalize_uncertainty_profile(uncertainty_profile)
+    normalized_outcome_metrics = _normalize_requested_outcome_metrics(outcome_metrics)
+    if not normalized_outcome_metrics:
+        normalized_outcome_metrics = list(DEFAULT_OUTCOME_METRICS)
+
+    for metric_id in normalized_outcome_metrics:
+        validate_outcome_metric_id(metric_id)
+
+    return normalized_profile, normalized_outcome_metrics
+
+
+def _require_probabilistic_ensemble_storage_enabled() -> None:
+    """Fail fast when the storage-only ensemble slice is intentionally off."""
+    if not _ensemble_storage_enabled():
+        raise ValueError(
+            "Probabilistic ensemble storage is disabled. "
+            "Set PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true to enable it "
+            "(legacy alias: ENSEMBLE_RUNTIME_ENABLED)."
+        )
+
+
+def _build_ensemble_spec_from_request(data: dict) -> EnsembleSpec:
+    """Validate and normalize the storage-layer ensemble request payload."""
+    if data.get("run_count") is None:
+        raise ValueError("run_count is required")
+
+    root_seed = data.get("root_seed")
+    if root_seed is not None:
+        root_seed = int(root_seed)
+
+    return EnsembleSpec(
+        run_count=int(data["run_count"]),
+        max_concurrency=int(data.get("max_concurrency", 1)),
+        root_seed=root_seed,
+        sampling_mode=data.get("sampling_mode", "seeded"),
+    )
+
+
+def _build_run_summary(run_payload: dict) -> dict:
+    """Expose lightweight run metadata without embedding full resolved configs."""
+    manifest = run_payload.get("run_manifest", {})
+    return {
+        "simulation_id": run_payload.get("simulation_id"),
+        "ensemble_id": run_payload.get("ensemble_id"),
+        "run_id": run_payload.get("run_id"),
+        "path": run_payload.get("path"),
+        "status": manifest.get("status"),
+        "root_seed": manifest.get("root_seed"),
+        "seed_metadata": manifest.get("seed_metadata", {}),
+        "generated_at": manifest.get("generated_at"),
+        "artifact_paths": manifest.get("artifact_paths", {}),
+        "config_artifact": manifest.get("config_artifact"),
+        "lifecycle": manifest.get("lifecycle", {}),
+        "lineage": manifest.get("lineage", {}),
+    }
+
+
+def _build_ensemble_response_payload(ensemble_payload: dict) -> dict:
+    """Shape one ensemble response for APIs without over-returning run configs."""
+    runs = [
+        _build_run_summary(run_payload)
+        for run_payload in ensemble_payload.get("runs", [])
+    ]
+    return {
+        "simulation_id": ensemble_payload.get("simulation_id"),
+        "ensemble_id": ensemble_payload.get("ensemble_id"),
+        "path": ensemble_payload.get("path"),
+        "spec": ensemble_payload.get("spec", {}),
+        "state": ensemble_payload.get("state", {}),
+        "runs": runs,
+        "total_runs": len(runs),
+    }
+
+
+def _build_requested_prepare_artifact_summary(
+    simulation_id: str,
+    probabilistic_mode: bool,
+    uncertainty_profile: Optional[str],
+    outcome_metric_ids: list,
+    existing_summary: dict,
+) -> dict:
+    """Expose the requested prepare contract even before async work completes."""
+    summary = dict(existing_summary or {})
+    if not probabilistic_mode:
+        return summary
+
+    default_metric_ids = outcome_metric_ids or list(DEFAULT_OUTCOME_METRICS)
+    profile = uncertainty_profile or DEFAULT_UNCERTAINTY_PROFILE
+    artifact_filenames = {
+        "legacy_config": "simulation_config.json",
+        "base_config": "simulation_config.base.json",
+        "uncertainty_spec": "uncertainty_spec.json",
+        "outcome_spec": "outcome_spec.json",
+        "prepared_snapshot": "prepared_snapshot.json",
+    }
+
+    artifacts = {}
+    existing_artifacts = summary.get("artifacts", {})
+    for artifact_name, filename in artifact_filenames.items():
+        artifact = dict(existing_artifacts.get(artifact_name, {}))
+        artifact.setdefault("filename", filename)
+        artifact.setdefault(
+            "path",
+            os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id, filename),
+        )
+        artifact.setdefault("relative_path", filename)
+        if artifact_name != "legacy_config":
+            artifact.setdefault("planned", True)
+        artifacts[artifact_name] = artifact
+
+    feature_metadata = dict(summary.get("feature_metadata", {}))
+    feature_metadata.update({
+        "probabilistic_mode": True,
+        "legacy_config_compatible": True,
+        "sampling_enabled": False,
+        "uncertainty_profile": profile,
+        "outcome_metrics": default_metric_ids,
+    })
+
+    summary.update({
+        "schema_version": summary.get("schema_version", PROBABILISTIC_SCHEMA_VERSION),
+        "generator_version": summary.get(
+            "generator_version", PROBABILISTIC_GENERATOR_VERSION
+        ),
+        "simulation_id": simulation_id,
+        "mode": "probabilistic",
+        "probabilistic_mode": True,
+        "uncertainty_profile": profile,
+        "outcome_metrics": default_metric_ids,
+        "lineage": summary.get("lineage", {}),
+        "feature_metadata": feature_metadata,
+        "artifacts": artifacts,
+    })
+    return summary
+
+
+def _get_simulation_or_404(simulation_id: str):
+    """Return the current simulation state or a Flask 404 response tuple."""
+    manager = SimulationManager()
+    state = manager.get_simulation(simulation_id)
+    if state:
+        return state, None
+
+    return None, (
+        jsonify({
+            "success": False,
+            "error": f"Simulation does not exist: {simulation_id}"
+        }),
+        404,
+    )
+
+
+def _get_ensemble_run_or_error(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Return one stored run payload or a Flask error tuple."""
+    try:
+        return EnsembleManager().load_run(simulation_id, ensemble_id, run_id), None
+    except ValueError as e:
+        return None, (
+            jsonify({
+                "success": False,
+                "error": str(e),
+            }),
+            _ensemble_value_error_status_code(str(e)),
+        )
+
+
+def _get_ensemble_or_error(simulation_id: str, ensemble_id: str):
+    """Return one stored ensemble payload or a Flask error tuple."""
+    try:
+        return EnsembleManager().load_ensemble(simulation_id, ensemble_id), None
+    except ValueError as e:
+        return None, (
+            jsonify({
+                "success": False,
+                "error": str(e),
+            }),
+            _ensemble_value_error_status_code(str(e)),
+        )
+
+
+def _get_runner_run_state(
+    simulation_id: str,
+    ensemble_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+):
+    """Call the runner state helper with a fallback for lightweight legacy test stubs."""
+    try:
+        return SimulationRunner.get_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+    except TypeError:
+        return SimulationRunner.get_run_state(simulation_id)
+
+
+def _ensemble_storage_enabled() -> bool:
+    """Prefer the explicit probabilistic storage flag while keeping the alias readable."""
+    return bool(
+        getattr(
+            Config,
+            "PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED",
+            getattr(Config, "ENSEMBLE_RUNTIME_ENABLED", False),
+        )
+    )
+
+
+def _resolve_base_graph_id_for_simulation(state) -> Optional[str]:
+    """Resolve the immutable base graph for one simulation."""
+    if getattr(state, "base_graph_id", None):
+        return state.base_graph_id
+    if getattr(state, "graph_id", None):
+        return state.graph_id
+
+    project = ProjectManager.get_project(state.project_id)
+    if project:
+        return project.graph_id
+    return None
+
+
+def _normalize_runtime_start_request(data: dict):
+    """Validate shared runtime launch arguments for legacy and ensemble run starts."""
+    platform = data.get('platform', 'parallel')
+    max_rounds = data.get('max_rounds')
+    enable_graph_memory_update = data.get('enable_graph_memory_update', False)
+    force = data.get('force', False)
+    close_environment_on_complete = data.get('close_environment_on_complete', False)
+
+    if max_rounds is not None:
+        try:
+            max_rounds = int(max_rounds)
+            if max_rounds <= 0:
+                raise ValueError("max_rounds must be a positive integer")
+        except (ValueError, TypeError):
+            raise ValueError("max_rounds must be a valid integer")
+
+    if platform not in ['twitter', 'reddit', 'parallel']:
+        raise ValueError(
+            f"Invalid platform type: {platform}. Allowed values: twitter/reddit/parallel"
+        )
+
+    return (
+        platform,
+        max_rounds,
+        enable_graph_memory_update,
+        force,
+        close_environment_on_complete,
+    )
+
+
+def _build_idle_ensemble_run_status_payload(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+    storage_status: str,
+    base_graph_id: Optional[str] = None,
+    runtime_graph_id: Optional[str] = None,
+) -> dict:
+    """Return a stable idle payload for stored runs that have not launched yet."""
+    return {
+        "simulation_id": simulation_id,
+        "ensemble_id": ensemble_id,
+        "run_id": run_id,
+        "graph_id": base_graph_id,
+        "base_graph_id": base_graph_id,
+        "runtime_graph_id": runtime_graph_id,
+        "runtime_scope": "ensemble_run",
+        "runtime_key": f"{simulation_id}::{ensemble_id}::{run_id}",
+        "runner_status": "idle",
+        "storage_status": storage_status,
+        "current_round": 0,
+        "total_rounds": 0,
+        "progress_percent": 0,
+        "simulated_hours": 0,
+        "total_simulation_hours": 0,
+        "twitter_actions_count": 0,
+        "reddit_actions_count": 0,
+        "total_actions_count": 0,
+    }
+
+
+def _resolve_run_graph_ids(run_payload: dict) -> tuple[Optional[str], Optional[str]]:
+    """Resolve stored run graph ownership while keeping graph_id as a base-graph alias."""
+    run_manifest = run_payload.get("run_manifest", {})
+    resolved_config = run_payload.get("resolved_config", {})
+    base_graph_id = (
+        run_manifest.get("base_graph_id")
+        or run_manifest.get("graph_id")
+        or resolved_config.get("base_graph_id")
+        or resolved_config.get("graph_id")
+    )
+    runtime_graph_id = (
+        run_manifest.get("runtime_graph_id")
+        or resolved_config.get("runtime_graph_id")
+    )
+    return base_graph_id, runtime_graph_id
+
+
+def _runner_status_name(run_state) -> str:
+    """Normalize real enum-backed runner states and lightweight test doubles."""
+    status = getattr(run_state, "runner_status", "idle")
+    return getattr(status, "value", status)
+
+
+ACTIVE_RUNNER_STATUSES = frozenset({"starting", "running", "stopping", "paused"})
+
+
+def _sort_run_payloads_by_run_id(run_payloads: list[dict]) -> list[dict]:
+    """Keep batch-start ordering stable regardless of storage or request order."""
+    return sorted(
+        run_payloads,
+        key=lambda run_payload: str(run_payload.get("run_id") or ""),
+    )
+
+
+def _normalize_requested_run_ids(data: dict) -> Optional[list[str]]:
+    """Normalize an optional explicit ensemble-run selection."""
+    requested_run_ids = data.get("run_ids")
+    if requested_run_ids is None:
+        return None
+    if not isinstance(requested_run_ids, list) or not requested_run_ids:
+        raise ValueError("run_ids must be a non-empty list when provided")
+
+    normalized: list[str] = []
+    seen = set()
+    for item in requested_run_ids:
+        run_id = str(item or "").strip()
+        if run_id.startswith("run_"):
+            run_id = run_id.removeprefix("run_")
+        if len(run_id) != 4 or not run_id.isdigit():
+            raise ValueError(f"Invalid run_id: {item}")
+        if run_id not in seen:
+            normalized.append(run_id)
+            seen.add(run_id)
+    return normalized
+
+
+def _resolve_requested_ensemble_runs(
+    ensemble_payload: dict,
+    requested_run_ids: Optional[list[str]],
+) -> list[dict]:
+    """Resolve one requested run subset in a stable, explicit order."""
+    runs = ensemble_payload.get("runs", [])
+    if not runs:
+        raise ValueError("The ensemble does not contain any stored runs")
+
+    if requested_run_ids is None:
+        return _sort_run_payloads_by_run_id(runs)
+
+    run_map = {run_payload.get("run_id"): run_payload for run_payload in runs}
+    missing_run_ids = [
+        run_id for run_id in requested_run_ids if run_id not in run_map
+    ]
+    if missing_run_ids:
+        raise ValueError(
+            "The ensemble does not contain the requested run_ids: "
+            + ", ".join(missing_run_ids)
+        )
+    return _sort_run_payloads_by_run_id(
+        [run_map[run_id] for run_id in requested_run_ids]
+    )
+
+
+def _collect_active_requested_ensemble_run_ids(
+    simulation_id: str,
+    ensemble_id: str,
+    requested_runs: list[dict],
+) -> list[str]:
+    """Report requested runs that still have active in-memory runtime state."""
+    active_run_ids: list[str] = []
+    for run_payload in _sort_run_payloads_by_run_id(requested_runs):
+        existing_state = _get_runner_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_payload["run_id"],
+        )
+        if existing_state and _runner_status_name(existing_state) in ACTIVE_RUNNER_STATUSES:
+            active_run_ids.append(run_payload["run_id"])
+    return active_run_ids
+
+
+def _plan_ensemble_batch_start(
+    simulation_id: str,
+    ensemble_id: str,
+    ensemble_payload: dict,
+    requested_runs: list[dict],
+    max_concurrency: int,
+    force: bool,
+) -> dict:
+    """Translate one batch-start request into explicit active/start/defer buckets."""
+    all_runs = _sort_run_payloads_by_run_id(ensemble_payload.get("runs", []))
+    requested_runs = _sort_run_payloads_by_run_id(requested_runs)
+    active_run_ids = _collect_active_requested_ensemble_run_ids(
+        simulation_id,
+        ensemble_id,
+        all_runs,
+    )
+    requested_run_id_set = {
+        run_payload["run_id"] for run_payload in requested_runs
+    }
+    active_requested_run_ids = [
+        run_id for run_id in active_run_ids if run_id in requested_run_id_set
+    ]
+    active_other_run_ids = [
+        run_id for run_id in active_run_ids if run_id not in requested_run_id_set
+    ]
+    active_requested_run_id_set = set(active_requested_run_ids)
+    inactive_requested_runs = [
+        run_payload
+        for run_payload in requested_runs
+        if run_payload["run_id"] not in active_requested_run_id_set
+    ]
+    available_start_slots = max(max_concurrency - len(active_run_ids), 0)
+    restart_runs = (
+        [
+            run_payload
+            for run_payload in requested_runs
+            if run_payload["run_id"] in active_requested_run_id_set
+        ]
+        if force
+        else []
+    )
+    start_runs = inactive_requested_runs[:available_start_slots]
+    deferred_runs = inactive_requested_runs[available_start_slots:]
+
+    return {
+        "requested_runs": requested_runs,
+        "restart_runs": restart_runs,
+        "start_runs": start_runs,
+        "deferred_runs": deferred_runs,
+        "active_run_ids": active_run_ids,
+        "active_requested_run_ids": active_requested_run_ids,
+        "active_other_run_ids": active_other_run_ids,
+        "available_start_slots": available_start_slots,
+    }
+
+
+def _build_ensemble_run_capacity_error(
+    simulation_id: str,
+    ensemble_payload: dict,
+    run_id: str,
+    *,
+    force: bool,
+) -> Optional[dict]:
+    """Report when a member-run launch would exceed the stored ensemble ceiling."""
+    ensemble_id = ensemble_payload.get("ensemble_id")
+    max_concurrency = int(
+        ensemble_payload.get("spec", {}).get("max_concurrency", 1) or 1
+    )
+    active_run_ids = _collect_active_requested_ensemble_run_ids(
+        simulation_id,
+        ensemble_id,
+        _sort_run_payloads_by_run_id(ensemble_payload.get("runs", [])),
+    )
+    active_other_run_ids = [
+        active_run_id
+        for active_run_id in active_run_ids
+        if active_run_id != run_id
+    ]
+
+    if run_id in active_run_ids and not force:
+        return None
+
+    if len(active_other_run_ids) < max_concurrency:
+        return None
+
+    action = "restart" if force and run_id in active_run_ids else "launch"
+    active_run_list = ", ".join(active_other_run_ids)
+    return {
+        "error": (
+            f"Cannot {action} ensemble run {run_id} because the ensemble is already at "
+            f"max_concurrency={max_concurrency}. Active run IDs: {active_run_list}."
+        ),
+        "active_run_ids": active_other_run_ids,
+        "max_concurrency": max_concurrency,
+    }
+
+
+def _build_ensemble_run_runtime_payload(
+    simulation_id: str,
+    ensemble_id: str,
+    run_payload: dict,
+) -> dict:
+    """Merge runtime state with stored-manifest metadata for one run."""
+    run_id = run_payload.get("run_id")
+    manifest = run_payload.get("run_manifest", {})
+    base_graph_id, runtime_graph_id = _resolve_run_graph_ids(run_payload)
+    runtime_state = _get_runner_run_state(
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+    )
+    if runtime_state:
+        payload = runtime_state.to_dict()
+        payload["storage_status"] = manifest.get("status", payload.get("runner_status"))
+    else:
+        payload = _build_idle_ensemble_run_status_payload(
+            simulation_id,
+            ensemble_id,
+            run_id,
+            storage_status=manifest.get("status", "prepared"),
+            base_graph_id=base_graph_id,
+            runtime_graph_id=runtime_graph_id,
+        )
+
+    payload["path"] = run_payload.get("path")
+    payload["graph_id"] = base_graph_id
+    payload["base_graph_id"] = base_graph_id
+    payload["runtime_graph_id"] = runtime_graph_id
+    payload["root_seed"] = manifest.get("root_seed")
+    payload["seed_metadata"] = manifest.get("seed_metadata", {})
+    payload["generated_at"] = manifest.get("generated_at")
+    payload["config_artifact"] = manifest.get("config_artifact")
+    payload["artifact_paths"] = manifest.get("artifact_paths", {})
+    return payload
+
+
+def _cleanup_ensemble_run_storage_fallback(run_payload: dict) -> dict:
+    """Provide storage-only cleanup when the lightweight test stub lacks runner cleanup."""
+    simulation_id = run_payload.get("simulation_id")
+    ensemble_id = run_payload.get("ensemble_id")
+    run_id = run_payload.get("run_id")
+    run_dir = run_payload.get("run_dir") or run_payload.get("path")
+    if not run_dir or not os.path.exists(run_dir):
+        _clear_runner_runtime_state_if_present(
+            simulation_id,
+            ensemble_id,
+            run_id,
+        )
+        return {
+            "success": True,
+            "cleaned_files": [],
+            "errors": None,
+        }
+
+    cleaned_files = []
+    errors = []
+    files_to_delete = [
+        "run_state.json",
+        "metrics.json",
+        "simulation.log",
+        "stdout.log",
+        "stderr.log",
+        "twitter_simulation.db",
+        "reddit_simulation.db",
+        "env_status.json",
+    ]
+    for filename in files_to_delete:
+        file_path = os.path.join(run_dir, filename)
+        if not os.path.exists(file_path):
+            continue
+        try:
+            os.remove(file_path)
+            cleaned_files.append(filename)
+        except Exception as e:
+            errors.append(f"Failed to delete {filename}: {str(e)}")
+
+    for dir_name in ("twitter", "reddit"):
+        actions_path = os.path.join(run_dir, dir_name, "actions.jsonl")
+        if not os.path.exists(actions_path):
+            continue
+        try:
+            os.remove(actions_path)
+            cleaned_files.append(f"{dir_name}/actions.jsonl")
+        except Exception as e:
+            errors.append(f"Failed to delete {dir_name}/actions.jsonl: {str(e)}")
+
+    manifest_path = os.path.join(run_dir, EnsembleManager.RUN_MANIFEST_FILENAME)
+    if os.path.exists(manifest_path):
+        with open(manifest_path, 'r', encoding='utf-8') as handle:
+            manifest = json.load(handle)
+        base_graph_id = manifest.get("base_graph_id") or manifest.get("graph_id")
+        lifecycle = build_default_run_lifecycle(manifest.get("lifecycle"))
+        lifecycle["cleanup_count"] += 1
+        manifest["lifecycle"] = lifecycle
+        manifest["lineage"] = build_default_run_lineage(
+            manifest.get("ensemble_id"),
+            manifest.get("lineage"),
+        )
+        manifest["status"] = "prepared"
+        manifest["graph_id"] = base_graph_id
+        manifest["base_graph_id"] = base_graph_id
+        manifest["runtime_graph_id"] = None
+        manifest["updated_at"] = datetime.now().isoformat()
+        artifact_paths = dict(manifest.get("artifact_paths", {}))
+        artifact_paths.pop("metrics", None)
+        manifest["artifact_paths"] = artifact_paths
+        with open(manifest_path, 'w', encoding='utf-8') as handle:
+            json.dump(manifest, handle, ensure_ascii=False, indent=2)
+
+    resolved_config_path = os.path.join(run_dir, EnsembleManager.RESOLVED_CONFIG_FILENAME)
+    if os.path.exists(resolved_config_path):
+        with open(resolved_config_path, 'r', encoding='utf-8') as handle:
+            resolved_config = json.load(handle)
+        base_graph_id = (
+            resolved_config.get("base_graph_id")
+            or resolved_config.get("graph_id")
+        )
+        resolved_config["graph_id"] = base_graph_id
+        resolved_config["base_graph_id"] = base_graph_id
+        resolved_config["runtime_graph_id"] = None
+        resolved_config["updated_at"] = datetime.now().isoformat()
+        with open(resolved_config_path, 'w', encoding='utf-8') as handle:
+            json.dump(resolved_config, handle, ensure_ascii=False, indent=2)
+
+    _clear_runner_runtime_state_if_present(
+        simulation_id,
+        ensemble_id,
+        run_id,
+    )
+
+    return {
+        "success": len(errors) == 0,
+        "cleaned_files": cleaned_files,
+        "errors": errors if errors else None,
+    }
+
+
+def _clear_runner_runtime_state_if_present(
+    simulation_id: Optional[str],
+    ensemble_id: Optional[str],
+    run_id: Optional[str],
+) -> None:
+    """Best-effort cleanup for stale in-memory runner state after storage cleanup."""
+    if not simulation_id:
+        return
+
+    run_key = (
+        f"{simulation_id}::{ensemble_id}::{run_id}"
+        if ensemble_id and run_id
+        else simulation_id
+    )
+
+    for attr_name in (
+        "_run_states",
+        "_action_queues",
+        "_monitor_threads",
+        "_graph_memory_enabled",
+    ):
+        mapping = getattr(SimulationRunner, attr_name, None)
+        if isinstance(mapping, dict):
+            mapping.pop(run_key, None)
+
+    process_mapping = getattr(SimulationRunner, "_processes", None)
+    if isinstance(process_mapping, dict):
+        process = process_mapping.get(run_key)
+        if process is not None:
+            poll = getattr(process, "poll", None)
+            if not callable(poll) or poll() is not None:
+                process_mapping.pop(run_key, None)
+
+    for attr_name in ("_stdout_files", "_stderr_files"):
+        mapping = getattr(SimulationRunner, attr_name, None)
+        if not isinstance(mapping, dict):
+            continue
+        handle = mapping.pop(run_key, None)
+        if handle is None:
+            continue
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
+def _effective_ensemble_run_status(payload: dict) -> str:
+    """Prefer persisted terminal storage truth when runtime state is unavailable."""
+    runner_status = str(payload.get("runner_status", "idle"))
+    if runner_status != "idle":
+        return runner_status
+
+    storage_status = str(payload.get("storage_status", "prepared"))
+    if storage_status in {"prepared", "completed", "failed", "stopped"}:
+        return storage_status
+    return runner_status
+
+
+def _derive_ensemble_runtime_status(
+    run_status_payloads: list[dict],
+) -> tuple[str, dict[str, int], dict[str, int]]:
+    """Collapse one run list into a poll-safe ensemble lifecycle summary."""
+    runner_status_counts: dict[str, int] = {}
+    storage_status_counts: dict[str, int] = {}
+    for payload in run_status_payloads:
+        runner_status = str(payload.get("runner_status", "idle"))
+        storage_status = str(payload.get("storage_status", "unknown"))
+        runner_status_counts[runner_status] = runner_status_counts.get(runner_status, 0) + 1
+        storage_status_counts[storage_status] = storage_status_counts.get(storage_status, 0) + 1
+
+    total_runs = len(run_status_payloads)
+    if total_runs == 0:
+        return "empty", runner_status_counts, storage_status_counts
+
+    effective_status_counts: dict[str, int] = {}
+    for payload in run_status_payloads:
+        effective_status = _effective_ensemble_run_status(payload)
+        effective_status_counts[effective_status] = effective_status_counts.get(effective_status, 0) + 1
+
+    active_statuses = {"starting", "running", "stopping", "paused"}
+    if any(effective_status_counts.get(status, 0) for status in active_statuses):
+        return "running", runner_status_counts, storage_status_counts
+    if effective_status_counts.get("failed", 0):
+        if effective_status_counts.get("failed", 0) == total_runs:
+            return "failed", runner_status_counts, storage_status_counts
+        return "mixed", runner_status_counts, storage_status_counts
+    if effective_status_counts.get("completed", 0) == total_runs:
+        return "completed", runner_status_counts, storage_status_counts
+    if effective_status_counts.get("stopped", 0) == total_runs:
+        return "stopped", runner_status_counts, storage_status_counts
+    if effective_status_counts.get("prepared", 0) == total_runs:
+        return "prepared", runner_status_counts, storage_status_counts
+    return "mixed", runner_status_counts, storage_status_counts
+
+
+def _build_ensemble_runtime_status_payload(
+    simulation_id: str,
+    ensemble_payload: dict,
+    run_payloads: list[dict],
+    limit: int,
+) -> dict:
+    """Build one ensemble-level runtime summary on top of run-scoped state."""
+    ensemble_id = ensemble_payload.get("ensemble_id")
+    run_status_payloads = [
+        _build_ensemble_run_runtime_payload(
+            simulation_id,
+            ensemble_id,
+            run_payload,
+        )
+        for run_payload in run_payloads
+    ]
+    ensemble_status, runner_status_counts, storage_status_counts = (
+        _derive_ensemble_runtime_status(run_status_payloads)
+    )
+    status_counts: dict[str, int] = {}
+    for payload in run_status_payloads:
+        user_visible_status = _effective_ensemble_run_status(payload)
+        status_counts[user_visible_status] = status_counts.get(user_visible_status, 0) + 1
+    total_runs = len(run_status_payloads)
+    aggregate_progress = round(
+        sum(float(payload.get("progress_percent", 0) or 0) for payload in run_status_payloads)
+        / total_runs,
+        2,
+    ) if total_runs else 0.0
+    total_actions_count = sum(
+        int(payload.get("total_actions_count", 0) or 0)
+        for payload in run_status_payloads
+    )
+
+    return {
+        "simulation_id": simulation_id,
+        "ensemble_id": ensemble_id,
+        "ensemble_status": ensemble_status,
+        "status": ensemble_status,
+        "spec": ensemble_payload.get("spec", {}),
+        "state": ensemble_payload.get("state", {}),
+        "total_runs": total_runs,
+        "limit": limit,
+        "truncated": total_runs > limit,
+        "progress_percent": aggregate_progress,
+        "total_actions_count": total_actions_count,
+        "status_counts": status_counts,
+        "runner_status_counts": runner_status_counts,
+        "storage_status_counts": storage_status_counts,
+        "active_run_ids": [
+            payload["run_id"]
+            for payload in run_status_payloads
+            if payload.get("runner_status") in {"starting", "running", "stopping", "paused"}
+        ],
+        "completed_run_ids": [
+            payload["run_id"]
+            for payload in run_status_payloads
+            if _effective_ensemble_run_status(payload) == "completed"
+        ],
+        "failed_run_ids": [
+            payload["run_id"]
+            for payload in run_status_payloads
+            if _effective_ensemble_run_status(payload) == "failed"
+        ],
+        "runs": run_status_payloads[:limit],
+    }
+
+
+def _start_ensemble_run_runtime(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+    platform: str,
+    max_rounds: Optional[int],
+    enable_graph_memory_update: bool,
+    force: bool,
+    close_environment_on_complete: bool,
+    state,
+) -> dict:
+    """Reuse the run-scoped launch path for both member-run and ensemble-run starts."""
+    existing_state = _get_runner_run_state(
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+    )
+    force_restarted = False
+    if existing_state and _runner_status_name(existing_state) in ("running", "starting"):
+        if not force:
+            raise ValueError(
+                "The ensemble run is currently running. Call the run-scoped stop "
+                "endpoint first, or use force=true to restart it."
+            )
+
+        SimulationRunner.stop_simulation(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+
+    if force:
+        SimulationRunner.cleanup_simulation_logs(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        force_restarted = True
+
+    base_graph_id = _resolve_base_graph_id_for_simulation(state)
+    runtime_graph_id = None
+    if enable_graph_memory_update:
+        graph_context = RuntimeGraphManager().provision_runtime_graph(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            state=state,
+            force_reset=force,
+        )
+        base_graph_id = graph_context.get("base_graph_id") or base_graph_id
+        runtime_graph_id = graph_context.get("runtime_graph_id")
+
+    run_state = SimulationRunner.start_simulation(
+        simulation_id=simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+        platform=platform,
+        max_rounds=max_rounds,
+        enable_graph_memory_update=enable_graph_memory_update,
+        close_environment_on_complete=close_environment_on_complete,
+        graph_id=runtime_graph_id if enable_graph_memory_update else base_graph_id,
+        base_graph_id=base_graph_id,
+        runtime_graph_id=runtime_graph_id,
+    )
+
+    response_data = run_state.to_dict()
+    response_data["graph_id"] = base_graph_id
+    response_data["base_graph_id"] = base_graph_id
+    response_data["runtime_graph_id"] = runtime_graph_id
+    response_data["graph_memory_update_enabled"] = enable_graph_memory_update
+    response_data["force_restarted"] = force_restarted
+    response_data["close_environment_on_complete"] = close_environment_on_complete
+    if max_rounds:
+        response_data["max_rounds_applied"] = max_rounds
+    return response_data
+
+
+def _ensemble_value_error_status_code(message: str) -> int:
+    """Keep ensemble API error semantics explicit and consistent."""
+    lowered = message.lower()
+    if "disabled" in lowered:
+        return 403
+    if "does not exist" in lowered:
+        return 404
+    return 400
+
+
 # ============== Entity Retrieval Endpoints ==============
+
+
+@simulation_bp.route('/prepare/capabilities', methods=['GET'])
+def get_prepare_capabilities():
+    """Expose the live probabilistic prepare capability surface to the frontend."""
+    storage_enabled = _ensemble_storage_enabled()
+    return jsonify({
+        "success": True,
+        "data": {
+            "probabilistic_prepare_enabled": Config.PROBABILISTIC_PREPARE_ENABLED,
+            "probabilistic_ensemble_storage_enabled": storage_enabled,
+            "ensemble_runtime_enabled": storage_enabled,
+            "probabilistic_report_enabled": Config.PROBABILISTIC_REPORT_ENABLED,
+            "probabilistic_interaction_enabled": Config.PROBABILISTIC_INTERACTION_ENABLED,
+            "calibrated_probability_enabled": Config.CALIBRATED_PROBABILITY_ENABLED,
+            **get_prepare_capabilities_domain(),
+        },
+    })
+
 
 @simulation_bp.route('/entities/<graph_id>', methods=['GET'])
 def get_graph_entities(graph_id: str):
@@ -245,7 +1200,10 @@ def create_simulation():
         }), 500
 
 
-def _check_simulation_prepared(simulation_id: str) -> tuple:
+def _check_simulation_prepared(
+    simulation_id: str,
+    require_probabilistic_artifacts: bool = False,
+) -> tuple:
     """
     Check whether a simulation has already been fully prepared.
 
@@ -323,6 +1281,30 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
         # - failed: the run failed, but preparation itself completed
         prepared_statuses = ["ready", "preparing", "running", "completed", "stopped", "failed"]
         if status in prepared_statuses and config_generated:
+            artifact_summary = SimulationManager().get_prepare_artifact_summary(simulation_id)
+            if require_probabilistic_artifacts and not artifact_summary.get("probabilistic_mode"):
+                missing_probabilistic_artifacts = (
+                    artifact_summary.get("missing_probabilistic_artifacts")
+                    or artifact_summary.get("feature_metadata", {}).get(
+                        "missing_probabilistic_artifacts", []
+                    )
+                )
+                missing_artifact_message = ""
+                if missing_probabilistic_artifacts:
+                    missing_artifact_message = (
+                        "Missing probabilistic prepare artifacts: "
+                        + ", ".join(missing_probabilistic_artifacts)
+                    )
+
+                return False, {
+                    "reason": (
+                        missing_artifact_message
+                        or "Legacy prepare artifacts exist but probabilistic sidecars are missing"
+                    ),
+                    "status": status,
+                    "config_generated": config_generated,
+                    "prepared_artifact_summary": artifact_summary,
+                }
             # Gather file statistics.
             profiles_file = os.path.join(simulation_dir, "reddit_profiles.json")
             config_file = os.path.join(simulation_dir, "simulation_config.json")
@@ -358,7 +1340,8 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
                 "config_generated": config_generated,
                 "created_at": state_data.get("created_at"),
                 "updated_at": state_data.get("updated_at"),
-                "existing_files": existing_files
+                "existing_files": existing_files,
+                "prepared_artifact_summary": artifact_summary,
             }
         else:
             logger.warning(
@@ -385,7 +1368,7 @@ def prepare_simulation():
 
     This is a long-running operation. The endpoint returns a `task_id`
     immediately, and progress can then be queried through
-    `GET /api/simulation/prepare/status`.
+    `POST /api/simulation/prepare/status`.
 
     Features:
     - Automatically detects completed preparation work to avoid duplicate generation
@@ -397,7 +1380,7 @@ def prepare_simulation():
     2. Read and filter entities from the Zep graph
     3. Generate an OASIS agent profile for each entity, with retries
     4. Use the LLM to generate simulation configuration, with retries
-    5. Save configuration files and preset scripts
+    5. Save configuration files and preparation artifacts
 
     Request body (JSON):
         {
@@ -420,10 +1403,7 @@ def prepare_simulation():
             }
         }
     """
-    import threading
-    import os
     from ..models.task import TaskManager, TaskStatus
-    from ..config import Config
 
     try:
         data = request.get_json() or {}
@@ -444,6 +1424,13 @@ def prepare_simulation():
                 "error": f"Simulation does not exist: {simulation_id}"
             }), 404
 
+        probabilistic_mode = bool(data.get('probabilistic_mode', False))
+        uncertainty_profile, outcome_metric_ids = _validate_probabilistic_prepare_request(
+            probabilistic_mode=probabilistic_mode,
+            uncertainty_profile=data.get('uncertainty_profile'),
+            outcome_metrics=data.get('outcome_metrics'),
+        )
+
         # Check whether regeneration is being forced.
         force_regenerate = data.get('force_regenerate', False)
         logger.info(
@@ -453,7 +1440,10 @@ def prepare_simulation():
         # Check whether preparation is already complete to avoid duplicate generation.
         if not force_regenerate:
             logger.debug(f"Checking whether simulation {simulation_id} is already prepared...")
-            is_prepared, prepare_info = _check_simulation_prepared(simulation_id)
+            is_prepared, prepare_info = _check_simulation_prepared(
+                simulation_id,
+                require_probabilistic_artifacts=probabilistic_mode,
+            )
             logger.debug(f"Preparation check result: is_prepared={is_prepared}, prepare_info={prepare_info}")
             if is_prepared:
                 logger.info(f"Simulation {simulation_id} is already prepared, skipping duplicate generation")
@@ -611,13 +1601,32 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    probabilistic_mode=probabilistic_mode,
+                    uncertainty_profile=uncertainty_profile,
+                    outcome_metrics=data.get('outcome_metrics'),
+                )
+
+                result_payload = result_state.to_simple_dict()
+                result_payload["probabilistic_mode"] = probabilistic_mode
+                result_payload["uncertainty_profile"] = (
+                    uncertainty_profile if probabilistic_mode else None
+                )
+                result_payload["outcome_metrics"] = (
+                    outcome_metric_ids if probabilistic_mode else []
+                )
+                result_payload["prepared_artifact_summary"] = _build_requested_prepare_artifact_summary(
+                    simulation_id=simulation_id,
+                    probabilistic_mode=probabilistic_mode,
+                    uncertainty_profile=uncertainty_profile,
+                    outcome_metric_ids=outcome_metric_ids,
+                    existing_summary=manager.get_prepare_artifact_summary(simulation_id),
                 )
 
                 # Mark the task as complete.
                 task_manager.complete_task(
                     task_id,
-                    result=result_state.to_simple_dict()
+                    result=result_payload
                 )
 
             except Exception as e:
@@ -635,6 +1644,14 @@ def prepare_simulation():
         thread = threading.Thread(target=run_prepare, daemon=True)
         thread.start()
 
+        prepared_artifact_summary = _build_requested_prepare_artifact_summary(
+            simulation_id=simulation_id,
+            probabilistic_mode=probabilistic_mode,
+            uncertainty_profile=uncertainty_profile,
+            outcome_metric_ids=outcome_metric_ids,
+            existing_summary=manager.get_prepare_artifact_summary(simulation_id),
+        )
+
         return jsonify({
             "success": True,
             "data": {
@@ -644,7 +1661,11 @@ def prepare_simulation():
                 "message": "Preparation task started. Query progress through /api/simulation/prepare/status.",
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # Expected total agent count.
-                "entity_types": state.entity_types  # Entity type list.
+                "entity_types": state.entity_types,  # Entity type list.
+                "probabilistic_mode": probabilistic_mode,
+                "uncertainty_profile": uncertainty_profile if probabilistic_mode else None,
+                "outcome_metrics": outcome_metric_ids if probabilistic_mode else [],
+                "prepared_artifact_summary": prepared_artifact_summary,
             }
         })
 
@@ -652,7 +1673,7 @@ def prepare_simulation():
         return jsonify({
             "success": False,
             "error": str(e)
-        }), 404
+        }), 400
 
     except Exception as e:
         logger.error(f"Failed to start preparation task: {str(e)}")
@@ -698,10 +1719,14 @@ def get_prepare_status():
 
         task_id = data.get('task_id')
         simulation_id = data.get('simulation_id')
+        probabilistic_mode = bool(data.get('probabilistic_mode', False))
 
         # If simulation_id is provided, check completed preparation first.
         if simulation_id:
-            is_prepared, prepare_info = _check_simulation_prepared(simulation_id)
+            is_prepared, prepare_info = _check_simulation_prepared(
+                simulation_id,
+                require_probabilistic_artifacts=probabilistic_mode,
+            )
             if is_prepared:
                 return jsonify({
                     "success": True,
@@ -740,7 +1765,10 @@ def get_prepare_status():
         if not task:
             # The task does not exist. If simulation_id is provided, check completed preparation again.
             if simulation_id:
-                is_prepared, prepare_info = _check_simulation_prepared(simulation_id)
+                is_prepared, prepare_info = _check_simulation_prepared(
+                    simulation_id,
+                    require_probabilistic_artifacts=probabilistic_mode,
+                )
                 if is_prepared:
                     return jsonify({
                         "success": True,
@@ -809,6 +1837,930 @@ def get_simulation(simulation_id: str):
         }), 500
 
 
+@simulation_bp.route('/<simulation_id>/ensembles', methods=['POST'])
+def create_simulation_ensemble(simulation_id: str):
+    """Create one storage-only ensemble under a prepared probabilistic simulation."""
+    try:
+        state, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+
+        is_prepared, prepare_info = _check_simulation_prepared(
+            simulation_id,
+            require_probabilistic_artifacts=True,
+        )
+        if not is_prepared:
+            reason = prepare_info.get("reason", "Probabilistic preparation is incomplete")
+            if "probabilistic sidecars are missing" in reason.lower():
+                reason = (
+                    "Missing probabilistic prepare artifacts: "
+                    "legacy prepare artifacts exist but probabilistic sidecars are missing"
+                )
+            return jsonify({
+                "success": False,
+                "error": reason,
+                "prepare_info": prepare_info,
+            }), 400
+
+        ensemble_spec = _build_ensemble_spec_from_request(request.get_json() or {})
+        created = EnsembleManager().create_ensemble(
+            simulation_id=state.simulation_id,
+            ensemble_spec=ensemble_spec,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": _build_ensemble_response_payload(created),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to create simulation ensemble: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles', methods=['GET'])
+def list_simulation_ensembles(simulation_id: str):
+    """List stored ensembles for one simulation with state-level summaries."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        states = EnsembleManager().list_ensembles(simulation_id)
+
+        return jsonify({
+            "success": True,
+            "data": states,
+            "count": len(states),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to list simulation ensembles: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>', methods=['GET'])
+def get_simulation_ensemble(simulation_id: str, ensemble_id: str):
+    """Load one ensemble plus lightweight run summaries."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        ensemble_payload = EnsembleManager().load_ensemble(simulation_id, ensemble_id)
+
+        return jsonify({
+            "success": True,
+            "data": _build_ensemble_response_payload(ensemble_payload),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to load simulation ensemble: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/runs', methods=['GET'])
+def list_simulation_ensemble_runs(simulation_id: str, ensemble_id: str):
+    """List one ensemble's runs without embedding full resolved configs."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        limit = request.args.get('limit', default=100, type=int) or 100
+        limit = max(1, min(limit, 200))
+        runs = EnsembleManager().list_runs(simulation_id, ensemble_id)
+        run_summaries = [_build_run_summary(run_payload) for run_payload in runs]
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "limit": limit,
+                "total_runs": len(run_summaries),
+                "truncated": len(run_summaries) > limit,
+                "runs": run_summaries[:limit],
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to list simulation ensemble runs: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>', methods=['GET'])
+def get_simulation_ensemble_run(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Load one run's manifest and resolved config from storage."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        run_payload = EnsembleManager().load_run(simulation_id, ensemble_id, run_id)
+        result = dict(run_payload)
+        result["runtime_status"] = _build_ensemble_run_runtime_payload(
+            simulation_id,
+            ensemble_id,
+            run_payload,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": result,
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to load simulation ensemble run: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/rerun',
+    methods=['POST'],
+)
+def rerun_simulation_ensemble_run(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Create one fresh prepared child run from a stored ensemble member."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, run_error = _get_ensemble_run_or_error(simulation_id, ensemble_id, run_id)
+        if run_error:
+            return run_error
+
+        created_run = EnsembleManager().clone_run_for_rerun(
+            simulation_id,
+            ensemble_id,
+            run_id,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "source_run_id": run_id,
+                "run": _build_run_summary(created_run),
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to rerun ensemble member: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/cleanup', methods=['POST'])
+def cleanup_simulation_ensemble_runs(simulation_id: str, ensemble_id: str):
+    """Reset one explicit subset of stored runs back to the prepared state."""
+    try:
+        data = request.get_json(silent=True) or {}
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        ensemble_payload, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        requested_run_ids = _normalize_requested_run_ids(data)
+        requested_runs = _resolve_requested_ensemble_runs(
+            ensemble_payload,
+            requested_run_ids,
+        )
+        active_run_ids = _collect_active_requested_ensemble_run_ids(
+            simulation_id,
+            ensemble_id,
+            requested_runs,
+        )
+        if active_run_ids:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "One or more requested runs are still active. "
+                    "Stop them before cleanup."
+                ),
+                "active_run_ids": active_run_ids,
+            }), 409
+
+        cleanup_results = []
+        cleaned_run_ids = []
+        for run_payload in requested_runs:
+            runtime_graph_result = RuntimeGraphManager().cleanup_runtime_graph(
+                simulation_id=simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_payload["run_id"],
+            )
+            run_result = _cleanup_ensemble_run_storage_fallback(run_payload)
+            cleanup_results.append({
+                "run_id": run_payload["run_id"],
+                **runtime_graph_result,
+                **run_result,
+            })
+            cleaned_run_ids.append(run_payload["run_id"])
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "cleaned_run_ids": cleaned_run_ids,
+                "cleaned_run_count": len(cleaned_run_ids),
+                "results": cleanup_results,
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to cleanup ensemble runs: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/actions',
+    methods=['GET'],
+)
+def get_simulation_ensemble_run_actions(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Return run-scoped action history for one stored ensemble member."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, run_error = _get_ensemble_run_or_error(simulation_id, ensemble_id, run_id)
+        if run_error:
+            return run_error
+
+        limit = request.args.get('limit', 100, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        platform = request.args.get('platform')
+        agent_id = request.args.get('agent_id', type=int)
+        round_num = request.args.get('round_num', type=int)
+
+        actions = SimulationRunner.get_actions(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            limit=limit,
+            offset=offset,
+            platform=platform,
+            agent_id=agent_id,
+            round_num=round_num,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "count": len(actions),
+                "actions": [action.to_dict() for action in actions],
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get ensemble run actions: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/timeline',
+    methods=['GET'],
+)
+def get_simulation_ensemble_run_timeline(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Return one run-scoped round timeline for the ensemble namespace."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, run_error = _get_ensemble_run_or_error(simulation_id, ensemble_id, run_id)
+        if run_error:
+            return run_error
+
+        start_round = request.args.get('start_round', 0, type=int)
+        end_round = request.args.get('end_round', type=int)
+
+        timeline = SimulationRunner.get_timeline(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            start_round=start_round,
+            end_round=end_round,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "count": len(timeline),
+                "timeline": timeline,
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get ensemble run timeline: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/start',
+    methods=['POST'],
+)
+def start_simulation_ensemble_run(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Launch one stored ensemble member run without mutating the parent simulation state."""
+    try:
+        data = request.get_json() or {}
+        state, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        ensemble_payload, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+        _, run_error = _get_ensemble_run_or_error(simulation_id, ensemble_id, run_id)
+        if run_error:
+            return run_error
+
+        (
+            platform,
+            max_rounds,
+            enable_graph_memory_update,
+            force,
+            close_environment_on_complete,
+        ) = (
+            _normalize_runtime_start_request(data)
+        )
+        capacity_error = _build_ensemble_run_capacity_error(
+            simulation_id,
+            ensemble_payload,
+            run_id,
+            force=force,
+        )
+        if capacity_error:
+            return jsonify({
+                "success": False,
+                **capacity_error,
+            }), 400
+
+        response_data = _start_ensemble_run_runtime(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            platform=platform,
+            max_rounds=max_rounds,
+            enable_graph_memory_update=enable_graph_memory_update,
+            force=force,
+            close_environment_on_complete=close_environment_on_complete,
+            state=state,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": response_data,
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to start ensemble run: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/start', methods=['POST'])
+def start_simulation_ensemble(simulation_id: str, ensemble_id: str):
+    """Launch one explicit batch of stored runs for one ensemble."""
+    try:
+        data = request.get_json() or {}
+        state, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        ensemble_payload, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        (
+            platform,
+            max_rounds,
+            enable_graph_memory_update,
+            force,
+            close_environment_on_complete,
+        ) = (
+            _normalize_runtime_start_request(data)
+        )
+        requested_run_ids = _normalize_requested_run_ids(data)
+        requested_runs = _resolve_requested_ensemble_runs(
+            ensemble_payload,
+            requested_run_ids,
+        )
+        max_concurrency = int(
+            ensemble_payload.get("spec", {}).get("max_concurrency", 1) or 1
+        )
+        batch_start_plan = _plan_ensemble_batch_start(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            ensemble_payload=ensemble_payload,
+            requested_runs=requested_runs,
+            max_concurrency=max_concurrency,
+            force=force,
+        )
+
+        started_runs = []
+        for run_payload in (
+            batch_start_plan["restart_runs"] + batch_start_plan["start_runs"]
+        ):
+            started_runs.append(
+                _start_ensemble_run_runtime(
+                    simulation_id=simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_payload["run_id"],
+                    platform=platform,
+                    max_rounds=max_rounds,
+                    enable_graph_memory_update=enable_graph_memory_update,
+                    force=force,
+                    close_environment_on_complete=close_environment_on_complete,
+                    state=state,
+                )
+            )
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "platform": platform,
+                "requested_run_ids": [
+                    run_payload["run_id"]
+                    for run_payload in batch_start_plan["requested_runs"]
+                ],
+                "requested_run_count": len(batch_start_plan["requested_runs"]),
+                "started_run_count": len(started_runs),
+                "started_run_ids": [
+                    run_payload["run_id"]
+                    for run_payload in (
+                        batch_start_plan["restart_runs"]
+                        + batch_start_plan["start_runs"]
+                    )
+                ],
+                "deferred_run_count": len(batch_start_plan["deferred_runs"]),
+                "deferred_run_ids": [
+                    run_payload["run_id"]
+                    for run_payload in batch_start_plan["deferred_runs"]
+                ],
+                "active_run_count": len(batch_start_plan["active_run_ids"]),
+                "active_run_ids": batch_start_plan["active_run_ids"],
+                "active_requested_run_ids": batch_start_plan["active_requested_run_ids"],
+                "active_other_run_ids": batch_start_plan["active_other_run_ids"],
+                "available_start_slots": batch_start_plan["available_start_slots"],
+                "max_concurrency": max_concurrency,
+                "graph_memory_update_enabled": enable_graph_memory_update,
+                "runs": started_runs,
+            },
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to start simulation ensemble: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/stop',
+    methods=['POST'],
+)
+def stop_simulation_ensemble_run(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Stop one ensemble member run via run-scoped runner identity."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, run_error = _get_ensemble_run_or_error(simulation_id, ensemble_id, run_id)
+        if run_error:
+            return run_error
+
+        run_state = SimulationRunner.stop_simulation(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": run_state.to_dict(),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to stop ensemble run: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route(
+    '/<simulation_id>/ensembles/<ensemble_id>/runs/<run_id>/run-status',
+    methods=['GET'],
+)
+def get_simulation_ensemble_run_status(
+    simulation_id: str,
+    ensemble_id: str,
+    run_id: str,
+):
+    """Return run-scoped runtime status for one stored ensemble member."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        run_payload, run_error = _get_ensemble_run_or_error(
+            simulation_id,
+            ensemble_id,
+            run_id,
+        )
+        if run_error:
+            return run_error
+
+        run_state = _get_runner_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        if not run_state:
+            base_graph_id, runtime_graph_id = _resolve_run_graph_ids(run_payload)
+            return jsonify({
+                "success": True,
+                "data": _build_idle_ensemble_run_status_payload(
+                    simulation_id,
+                    ensemble_id,
+                    run_id,
+                    storage_status=run_payload["run_manifest"].get("status", "prepared"),
+                    base_graph_id=base_graph_id,
+                    runtime_graph_id=runtime_graph_id,
+                ),
+            })
+
+        response_payload = run_state.to_dict()
+        base_graph_id, runtime_graph_id = _resolve_run_graph_ids(run_payload)
+        response_payload["graph_id"] = base_graph_id
+        response_payload["base_graph_id"] = base_graph_id
+        response_payload["runtime_graph_id"] = runtime_graph_id
+
+        return jsonify({
+            "success": True,
+            "data": response_payload,
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get ensemble run status: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/status', methods=['GET'])
+def get_simulation_ensemble_status(
+    simulation_id: str,
+    ensemble_id: str,
+):
+    """Return one runtime-backed ensemble summary that is safe to poll."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        ensemble_payload, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        limit = request.args.get('limit', default=100, type=int) or 100
+        limit = max(1, min(limit, 200))
+        requested_run_ids = _normalize_requested_run_ids(
+            {"run_ids": request.args.getlist("run_id") or None}
+        )
+        requested_runs = _resolve_requested_ensemble_runs(
+            ensemble_payload,
+            requested_run_ids,
+        )
+
+        return jsonify({
+            "success": True,
+            "data": _build_ensemble_runtime_status_payload(
+                simulation_id,
+                ensemble_payload,
+                requested_runs,
+                limit=limit,
+            ),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get simulation ensemble status: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/summary', methods=['GET'])
+def get_simulation_ensemble_summary(
+    simulation_id: str,
+    ensemble_id: str,
+):
+    """Return one persisted-on-demand aggregate summary for the ensemble."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        return jsonify({
+            "success": True,
+            "data": EnsembleManager().get_aggregate_summary(simulation_id, ensemble_id),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get simulation ensemble summary: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/clusters', methods=['GET'])
+def get_simulation_ensemble_clusters(
+    simulation_id: str,
+    ensemble_id: str,
+):
+    """Return one persisted-on-demand scenario clustering artifact for the ensemble."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        return jsonify({
+            "success": True,
+            "data": ScenarioClusterer().get_scenario_clusters(simulation_id, ensemble_id),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get simulation ensemble clusters: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/ensembles/<ensemble_id>/sensitivity', methods=['GET'])
+def get_simulation_ensemble_sensitivity(
+    simulation_id: str,
+    ensemble_id: str,
+):
+    """Return one persisted-on-demand sensitivity artifact for the ensemble."""
+    try:
+        _, error_response = _get_simulation_or_404(simulation_id)
+        if error_response:
+            return error_response
+
+        _require_probabilistic_ensemble_storage_enabled()
+        _, ensemble_error = _get_ensemble_or_error(simulation_id, ensemble_id)
+        if ensemble_error:
+            return ensemble_error
+
+        return jsonify({
+            "success": True,
+            "data": SensitivityAnalyzer().get_sensitivity_analysis(
+                simulation_id,
+                ensemble_id,
+            ),
+        })
+
+    except ValueError as e:
+        status_code = _ensemble_value_error_status_code(str(e))
+        return jsonify({
+            "success": False,
+            "error": str(e),
+        }), status_code
+
+    except Exception as e:
+        logger.error(f"Failed to get simulation ensemble sensitivity: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
 @simulation_bp.route('/list', methods=['GET'])
 def list_simulations():
     """
@@ -838,64 +2790,177 @@ def list_simulations():
         }), 500
 
 
-def _get_report_id_for_simulation(simulation_id: str) -> str:
-    """
-    Get the latest report_id associated with a simulation.
-
-    Iterates through the `reports` directory, finds reports whose
-    `simulation_id` matches, and returns the newest one by `created_at`
-    if multiple exist.
-
-    Args:
-        simulation_id: Simulation ID.
-
-    Returns:
-        `report_id` or `None`.
-    """
-    import json
-    from datetime import datetime
-
-    # Reports directory: backend/uploads/reports
-    # __file__ is app/api/simulation.py, so we move up two levels to backend/
-    reports_dir = os.path.join(os.path.dirname(__file__), '../../uploads/reports')
-    if not os.path.exists(reports_dir):
-        return None
-
-    matching_reports = []
-
+def _get_latest_report_summary_for_simulation(simulation_id: str) -> Optional[dict]:
+    """Return the latest saved report metadata used for Step 4/Step 5 replay."""
     try:
-        for report_folder in os.listdir(reports_dir):
-            report_path = os.path.join(reports_dir, report_folder)
-            if not os.path.isdir(report_path):
-                continue
-
-            meta_file = os.path.join(report_path, "meta.json")
-            if not os.path.exists(meta_file):
-                continue
-
-            try:
-                with open(meta_file, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-
-                if meta.get("simulation_id") == simulation_id:
-                    matching_reports.append({
-                        "report_id": meta.get("report_id"),
-                        "created_at": meta.get("created_at", ""),
-                        "status": meta.get("status", "")
-                    })
-            except Exception:
-                continue
-
-        if not matching_reports:
-            return None
-
-        # Sort by creation time descending and return the latest report.
-        matching_reports.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return matching_reports[0].get("report_id")
-
+        reports = ReportManager.list_reports(simulation_id=simulation_id, limit=1)
     except Exception as e:
         logger.warning(f"Failed to locate report for simulation {simulation_id}: {e}")
         return None
+
+    if not reports:
+        return None
+
+    latest_report = reports[0]
+    return {
+        "report_id": latest_report.report_id,
+        "created_at": latest_report.created_at,
+        "ensemble_id": latest_report.ensemble_id,
+        "run_id": latest_report.run_id,
+        "has_probabilistic_context": bool(latest_report.probabilistic_context),
+    }
+
+
+def _build_probabilistic_runtime_history_summary(
+    simulation_id: str,
+    *,
+    ensemble_id: Optional[str],
+    run_id: Optional[str],
+    source: str,
+    report_id: Optional[str] = None,
+    has_probabilistic_context: bool = False,
+) -> Optional[dict]:
+    """Build one bounded Step 3 replay pointer for history consumers."""
+    if not ensemble_id or not run_id:
+        return None
+
+    summary = {
+        "source": source,
+        "report_id": report_id,
+        "ensemble_id": ensemble_id,
+        "run_id": run_id,
+        "has_probabilistic_context": has_probabilistic_context,
+        "run_status": None,
+        "run_updated_at": None,
+    }
+
+    try:
+        run_payload = EnsembleManager().load_run(simulation_id, ensemble_id, run_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to load probabilistic history replay target for %s/%s/%s: %s",
+            simulation_id,
+            ensemble_id,
+            run_id,
+            e,
+        )
+        return summary
+
+    run_manifest = run_payload.get("run_manifest") or {}
+    summary["run_status"] = run_manifest.get("status")
+    summary["run_updated_at"] = run_manifest.get("updated_at")
+    return summary
+
+
+def _get_latest_probabilistic_report_runtime_summary_for_simulation(
+    simulation_id: str,
+) -> Optional[dict]:
+    """Return the newest saved report that still carries probabilistic Step 3 scope."""
+    try:
+        reports = ReportManager.list_reports(simulation_id=simulation_id, limit=200)
+    except Exception as e:
+        logger.warning(
+            "Failed to inspect probabilistic report history for simulation %s: %s",
+            simulation_id,
+            e,
+        )
+        return None
+
+    for report in reports:
+        if report.ensemble_id and report.run_id:
+            return _build_probabilistic_runtime_history_summary(
+                simulation_id,
+                ensemble_id=report.ensemble_id,
+                run_id=report.run_id,
+                source="report",
+                report_id=report.report_id,
+                has_probabilistic_context=bool(report.probabilistic_context),
+            )
+
+    return None
+
+
+def _get_latest_probabilistic_storage_runtime_summary_for_simulation(
+    simulation_id: str,
+) -> Optional[dict]:
+    """Return the newest stored probabilistic run when no saved report points to one."""
+    try:
+        ensembles = EnsembleManager().list_ensembles(simulation_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to inspect probabilistic storage history for simulation %s: %s",
+            simulation_id,
+            e,
+        )
+        return None
+
+    if not ensembles:
+        return None
+
+    def _ensemble_sort_key(state: dict) -> tuple[str, str]:
+        ensemble_id = str(state.get("ensemble_id") or "")
+        created_at = str(state.get("created_at") or "")
+        return created_at, ensemble_id
+
+    def _run_sort_key(run_payload: dict) -> tuple[str, str]:
+        manifest = run_payload.get("run_manifest") or {}
+        updated_at = str(manifest.get("updated_at") or manifest.get("generated_at") or "")
+        run_id = str(run_payload.get("run_id") or "")
+        return updated_at, run_id
+
+    sorted_ensembles = sorted(ensembles, key=_ensemble_sort_key, reverse=True)
+    for ensemble_state in sorted_ensembles:
+        ensemble_id = ensemble_state.get("ensemble_id")
+        if not ensemble_id:
+            continue
+
+        try:
+            runs = EnsembleManager().list_runs(simulation_id, ensemble_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to inspect runs for probabilistic history replay %s/%s: %s",
+                simulation_id,
+                ensemble_id,
+                e,
+            )
+            continue
+
+        if not runs:
+            continue
+
+        latest_run = max(runs, key=_run_sort_key)
+        run_id = latest_run.get("run_id")
+        if not run_id:
+            continue
+
+        return _build_probabilistic_runtime_history_summary(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            source="storage",
+            report_id=None,
+            has_probabilistic_context=False,
+        )
+
+    return None
+
+
+def _get_latest_probabilistic_runtime_summary_for_simulation(
+    simulation_id: str,
+) -> Optional[dict]:
+    """Resolve one deterministic Step 3 history replay target for one simulation."""
+    return (
+        _get_latest_probabilistic_report_runtime_summary_for_simulation(simulation_id)
+        or _get_latest_probabilistic_storage_runtime_summary_for_simulation(simulation_id)
+    )
+
+
+def _get_report_id_for_simulation(simulation_id: str) -> Optional[str]:
+    """Return the latest saved report id associated with one simulation."""
+    latest_report = _get_latest_report_summary_for_simulation(simulation_id)
+    if not latest_report:
+        return None
+    return latest_report.get("report_id")
 
 
 @simulation_bp.route('/history', methods=['GET'])
@@ -938,7 +3003,11 @@ def get_simulation_history():
         limit = request.args.get('limit', 20, type=int)
 
         manager = SimulationManager()
-        simulations = manager.list_simulations()[:limit]
+        simulations = sorted(
+            manager.list_simulations(),
+            key=lambda simulation: simulation.created_at or "",
+            reverse=True,
+        )[:limit]
 
         # Enrich the simulation data using only Simulation files.
         enriched_simulations = []
@@ -983,8 +3052,13 @@ def get_simulation_history():
             else:
                 sim_dict["files"] = []
 
-            # Load the associated report_id by finding the latest report for this simulation.
-            sim_dict["report_id"] = _get_report_id_for_simulation(sim.simulation_id)
+            # Load the associated report replay metadata using the latest saved report.
+            latest_report = _get_latest_report_summary_for_simulation(sim.simulation_id)
+            sim_dict["report_id"] = latest_report.get("report_id") if latest_report else None
+            sim_dict["latest_report"] = latest_report
+            sim_dict["latest_probabilistic_runtime"] = (
+                _get_latest_probabilistic_runtime_summary_for_simulation(sim.simulation_id)
+            )
 
             # Add the version number.
             sim_dict["version"] = "v1.0.2"
@@ -1485,7 +3559,8 @@ def start_simulation():
             "platform": "parallel",              // optional: twitter / reddit / parallel (default)
             "max_rounds": 100,                   // optional: maximum simulation rounds for truncating long runs
             "enable_graph_memory_update": false, // optional: whether to write agent activity back into Zep graph memory
-            "force": false                       // optional: force a restart by stopping a running simulation and cleaning logs
+            "force": false,                      // optional: force a restart by stopping a running simulation and cleaning logs
+            "close_environment_on_complete": false // optional: exit after completion instead of entering command-wait mode
         }
 
     About `force`:
@@ -1531,6 +3606,7 @@ def start_simulation():
         max_rounds = data.get('max_rounds')  # Optional maximum number of simulation rounds.
         enable_graph_memory_update = data.get('enable_graph_memory_update', False)  # Optional graph memory updates.
         force = data.get('force', False)  # Optional forced restart.
+        close_environment_on_complete = data.get('close_environment_on_complete', False)
 
         # Validate the max_rounds parameter.
         if max_rounds is not None:
@@ -1619,23 +3695,22 @@ def start_simulation():
                 }), 400
 
         # Load the graph ID for graph-memory updates.
-        graph_id = None
+        base_graph_id = _resolve_base_graph_id_for_simulation(state)
+        runtime_graph_id = None
         if enable_graph_memory_update:
-            # Pull graph_id from the simulation state or the project.
-            graph_id = state.graph_id
-            if not graph_id:
-                # Fall back to the associated project.
-                project = ProjectManager.get_project(state.project_id)
-                if project:
-                    graph_id = project.graph_id
-
-            if not graph_id:
+            if not base_graph_id:
                 return jsonify({
                     "success": False,
                     "error": "A valid graph_id is required to enable graph memory updates. Please make sure the project graph has been built."
                 }), 400
 
-            logger.info(f"Enabling graph memory updates: simulation_id={simulation_id}, graph_id={graph_id}")
+            runtime_graph_id = base_graph_id
+            logger.info(
+                "Enabling graph memory updates: simulation_id=%s base_graph_id=%s runtime_graph_id=%s",
+                simulation_id,
+                base_graph_id,
+                runtime_graph_id,
+            )
 
         # Start the simulation.
         run_state = SimulationRunner.start_simulation(
@@ -1643,7 +3718,10 @@ def start_simulation():
             platform=platform,
             max_rounds=max_rounds,
             enable_graph_memory_update=enable_graph_memory_update,
-            graph_id=graph_id
+            close_environment_on_complete=close_environment_on_complete,
+            graph_id=runtime_graph_id or base_graph_id,
+            base_graph_id=base_graph_id,
+            runtime_graph_id=runtime_graph_id,
         )
 
         # Update the simulation state.
@@ -1651,12 +3729,14 @@ def start_simulation():
         manager._save_simulation_state(state)
 
         response_data = run_state.to_dict()
+        response_data['graph_id'] = base_graph_id
+        response_data['base_graph_id'] = base_graph_id
+        response_data['runtime_graph_id'] = runtime_graph_id
         if max_rounds:
             response_data['max_rounds_applied'] = max_rounds
         response_data['graph_memory_update_enabled'] = enable_graph_memory_update
         response_data['force_restarted'] = force_restarted
-        if enable_graph_memory_update:
-            response_data['graph_id'] = graph_id
+        response_data['close_environment_on_complete'] = close_environment_on_complete
 
         return jsonify({
             "success": True,

@@ -14,6 +14,7 @@ import threading
 import subprocess
 import signal
 import atexit
+import shutil
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,7 +22,12 @@ from enum import Enum
 from queue import Queue
 
 from ..config import Config
+from ..models.probabilistic import (
+    build_default_run_lifecycle,
+    build_default_run_lineage,
+)
 from ..utils.logger import get_logger
+from .outcome_extractor import OutcomeExtractor
 from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
@@ -103,6 +109,15 @@ class RoundSummary:
 class SimulationRunState:
     """Real-time simulation run state."""
     simulation_id: str
+    ensemble_id: Optional[str] = None
+    run_id: Optional[str] = None
+    run_key: Optional[str] = None
+    run_dir: Optional[str] = None
+    config_path: Optional[str] = None
+    graph_id: Optional[str] = None
+    base_graph_id: Optional[str] = None
+    runtime_graph_id: Optional[str] = None
+    platform_mode: str = "parallel"
     runner_status: RunnerStatus = RunnerStatus.IDLE
     
     # Progress information.
@@ -114,8 +129,12 @@ class SimulationRunState:
     # Per-platform round and simulated time values for dual-platform display.
     twitter_current_round: int = 0
     reddit_current_round: int = 0
+    twitter_inflight_round: Optional[int] = None
+    reddit_inflight_round: Optional[int] = None
     twitter_simulated_hours: int = 0
     reddit_simulated_hours: int = 0
+    twitter_last_progress_at: Optional[str] = None
+    reddit_last_progress_at: Optional[str] = None
     
     # Platform status.
     twitter_running: bool = False
@@ -144,6 +163,23 @@ class SimulationRunState:
     
     # Process ID used for stop operations.
     process_pid: Optional[int] = None
+
+    @property
+    def runtime_scope(self) -> str:
+        """Expose whether this state represents the legacy root or one ensemble run."""
+        if self.ensemble_id and self.run_id:
+            return "ensemble_run"
+        return "legacy"
+
+    @property
+    def runtime_key(self) -> Optional[str]:
+        """Alias the persisted run key with a clearer public name."""
+        return self.run_key
+
+    @property
+    def runtime_dir(self) -> Optional[str]:
+        """Alias the persisted working directory with a clearer public name."""
+        return self.run_dir
     
     def add_action(self, action: AgentAction):
         """Add an action to the recent-action list."""
@@ -161,6 +197,18 @@ class SimulationRunState:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "simulation_id": self.simulation_id,
+            "ensemble_id": self.ensemble_id,
+            "run_id": self.run_id,
+            "runtime_scope": self.runtime_scope,
+            "runtime_key": self.runtime_key,
+            "runtime_dir": self.runtime_dir,
+            "run_key": self.run_key,
+            "run_dir": self.run_dir,
+            "config_path": self.config_path,
+            "graph_id": self.base_graph_id or self.graph_id,
+            "base_graph_id": self.base_graph_id or self.graph_id,
+            "runtime_graph_id": self.runtime_graph_id,
+            "platform_mode": self.platform_mode,
             "runner_status": self.runner_status.value,
             "current_round": self.current_round,
             "total_rounds": self.total_rounds,
@@ -170,8 +218,12 @@ class SimulationRunState:
             # Per-platform round and time values.
             "twitter_current_round": self.twitter_current_round,
             "reddit_current_round": self.reddit_current_round,
+            "twitter_inflight_round": self.twitter_inflight_round,
+            "reddit_inflight_round": self.reddit_inflight_round,
             "twitter_simulated_hours": self.twitter_simulated_hours,
             "reddit_simulated_hours": self.reddit_simulated_hours,
+            "twitter_last_progress_at": self.twitter_last_progress_at,
+            "reddit_last_progress_at": self.reddit_last_progress_at,
             "twitter_running": self.twitter_running,
             "reddit_running": self.reddit_running,
             "twitter_completed": self.twitter_completed,
@@ -226,24 +278,511 @@ class SimulationRunner:
     _stderr_files: Dict[str, Any] = {}  # Stores stderr file handles.
     
     # Graph-memory update configuration.
-    _graph_memory_enabled: Dict[str, bool] = {}  # simulation_id -> enabled
-    
+    _graph_memory_enabled: Dict[str, bool] = {}  # run_key -> enabled
+    _RUNTIME_INPUTS_BY_PLATFORM = {
+        "twitter": ("twitter_profiles.csv",),
+        "reddit": ("reddit_profiles.json",),
+        "parallel": ("twitter_profiles.csv", "reddit_profiles.json"),
+    }
+
     @classmethod
-    def get_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
+    def _build_run_key(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> str:
+        """Build a stable in-memory key for legacy and probabilistic runs."""
+        if bool(ensemble_id) != bool(run_id):
+            raise ValueError("ensemble_id and run_id must be provided together")
+        if not ensemble_id:
+            return simulation_id
+        return f"{simulation_id}::{ensemble_id}::{run_id}"
+
+    @classmethod
+    def _get_simulation_dir(cls, simulation_id: str) -> str:
+        """Return the legacy simulation directory root."""
+        return os.path.join(cls.RUN_STATE_DIR, simulation_id)
+
+    @classmethod
+    def _get_run_dir(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> str:
+        """Return the concrete working directory for one run context."""
+        if run_dir:
+            return run_dir
+
+        sim_dir = cls._get_simulation_dir(simulation_id)
+        if not ensemble_id and not run_id:
+            return sim_dir
+
+        if bool(ensemble_id) != bool(run_id):
+            raise ValueError("ensemble_id and run_id must be provided together")
+
+        return os.path.join(
+            sim_dir,
+            "ensemble",
+            f"ensemble_{ensemble_id}",
+            "runs",
+            f"run_{run_id}",
+        )
+
+    @classmethod
+    def _get_config_path(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        config_path: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> str:
+        """Return the config artifact path for one run context."""
+        if config_path:
+            return config_path
+
+        resolved_run_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        if ensemble_id and run_id:
+            return os.path.join(resolved_run_dir, "resolved_config.json")
+        return os.path.join(resolved_run_dir, "simulation_config.json")
+
+    @classmethod
+    def _get_run_state_path(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> str:
+        """Return the persisted state path for one run context."""
+        return os.path.join(
+            cls._get_run_dir(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=run_dir,
+            ),
+            "run_state.json",
+        )
+
+    @classmethod
+    def _get_run_manifest_path(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> Optional[str]:
+        """Return the run manifest path when the scope targets one ensemble member."""
+        if not ensemble_id or not run_id:
+            return None
+        return os.path.join(
+            cls._get_run_dir(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=run_dir,
+            ),
+            "run_manifest.json",
+        )
+
+    @classmethod
+    def _resolve_run_context(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        config_path: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
+        """Normalize run identity and filesystem paths for one execution scope."""
+        resolved_run_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        resolved_config_path = cls._get_config_path(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            config_path=config_path,
+            run_dir=resolved_run_dir,
+        )
+        return {
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "run_id": run_id,
+            "run_key": cls._build_run_key(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+            ),
+            "run_dir": resolved_run_dir,
+            "config_path": resolved_config_path,
+            "run_state_path": cls._get_run_state_path(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=resolved_run_dir,
+            ),
+        }
+
+    @classmethod
+    def _materialize_run_runtime_inputs(
+        cls,
+        simulation_id: str,
+        platform: str,
+        run_dir: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> None:
+        """
+        Copy legacy prepare-time profile inputs into one run directory before launch.
+
+        The runtime scripts still discover their profile inputs relative to the
+        config path's directory. Until B2.4 teaches the scripts explicit run-dir
+        arguments for every input, the runner stages the required profile files
+        into the run root so each member run remains isolated on disk.
+        """
+        if not ensemble_id and not run_id:
+            return
+
+        required_inputs = cls._RUNTIME_INPUTS_BY_PLATFORM.get(platform)
+        if not required_inputs:
+            raise ValueError(f"Invalid platform type: {platform}")
+
+        simulation_dir = cls._get_simulation_dir(simulation_id)
+        missing_inputs = []
+        os.makedirs(run_dir, exist_ok=True)
+
+        for filename in required_inputs:
+            source_path = os.path.join(simulation_dir, filename)
+            target_path = os.path.join(run_dir, filename)
+            if not os.path.exists(source_path):
+                missing_inputs.append(filename)
+                continue
+            if not os.path.exists(target_path):
+                shutil.copy2(source_path, target_path)
+
+        if missing_inputs:
+            raise ValueError(
+                "Missing runtime input artifacts for "
+                f"{cls._build_run_key(simulation_id, ensemble_id, run_id)}: "
+                + ", ".join(missing_inputs)
+            )
+
+    @classmethod
+    def _load_runtime_seed(
+        cls,
+        simulation_id: str,
+        run_dir: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        Read the best-available runtime seed from one stored run manifest.
+
+        Runtime determinism is not complete until B2.4 removes module-global RNG
+        usage inside the scripts. This helper still makes the seed explicit at
+        the process boundary so the remaining gaps are narrow and documented.
+        """
+        if not ensemble_id and not run_id:
+            return None
+
+        manifest_path = os.path.join(run_dir, "run_manifest.json")
+        if not os.path.exists(manifest_path):
+            logger.warning(
+                "Run manifest missing for runtime seed lookup: %s",
+                cls._build_run_key(simulation_id, ensemble_id, run_id),
+            )
+            return None
+
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as handle:
+                manifest = json.load(handle)
+        except Exception as exc:
+            logger.warning(
+                "Failed to read run manifest for runtime seed lookup: %s, error=%s",
+                cls._build_run_key(simulation_id, ensemble_id, run_id),
+                exc,
+            )
+            return None
+
+        seed_metadata = manifest.get("seed_metadata", {})
+        if seed_metadata.get("resolution_seed") is not None:
+            return int(seed_metadata["resolution_seed"])
+        if manifest.get("root_seed") is not None:
+            return int(manifest["root_seed"])
+        return None
+
+    @classmethod
+    def _read_run_manifest(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Load one persisted run manifest when the storage path exists."""
+        manifest_path = cls._get_run_manifest_path(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        if not manifest_path or not os.path.exists(manifest_path):
+            return None
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+        except Exception as e:
+            logger.warning(
+                "Failed to read run manifest: %s, error=%s",
+                manifest_path,
+                e,
+            )
+            return None
+
+        manifest["lifecycle"] = build_default_run_lifecycle(manifest.get("lifecycle"))
+        manifest["lineage"] = build_default_run_lineage(
+            manifest.get("ensemble_id"),
+            manifest.get("lineage"),
+        )
+        return manifest
+
+    @classmethod
+    def _update_run_manifest_status(
+        cls,
+        simulation_id: str,
+        status: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+        launch_reason: Optional[str] = None,
+        increment_cleanup: bool = False,
+    ) -> None:
+        """Keep persisted run manifests aligned with runtime state transitions."""
+        manifest_path = cls._get_run_manifest_path(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        if not manifest_path or not os.path.exists(manifest_path):
+            return
+
+        try:
+            manifest = cls._read_run_manifest(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=run_dir,
+            )
+            if manifest is None:
+                return
+
+            manifest["status"] = status
+            manifest["updated_at"] = datetime.now().isoformat()
+            lifecycle = manifest.setdefault(
+                "lifecycle",
+                build_default_run_lifecycle(),
+            )
+            if launch_reason:
+                lifecycle["start_count"] = lifecycle.get("start_count", 0) + 1
+                if launch_reason == "retry":
+                    lifecycle["retry_count"] = lifecycle.get("retry_count", 0) + 1
+                lifecycle["last_launch_reason"] = launch_reason
+            if increment_cleanup:
+                lifecycle["cleanup_count"] = lifecycle.get("cleanup_count", 0) + 1
+
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to update run manifest status: {manifest_path}, error={e}")
+
+    @classmethod
+    def _update_run_manifest_artifact_path(
+        cls,
+        simulation_id: str,
+        artifact_name: str,
+        artifact_path: Optional[str],
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> None:
+        """Append or remove run-manifest artifact references without replacing the file."""
+        manifest_path = cls._get_run_manifest_path(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        if not manifest_path or not os.path.exists(manifest_path):
+            return
+
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            artifact_paths = manifest.setdefault("artifact_paths", {})
+            if artifact_path is None:
+                artifact_paths.pop(artifact_name, None)
+            else:
+                artifact_paths[artifact_name] = artifact_path
+            manifest["updated_at"] = datetime.now().isoformat()
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(
+                "Failed to update run manifest artifact path: %s, error=%s",
+                manifest_path,
+                e,
+            )
+
+    @classmethod
+    def _read_json_if_exists(cls, path: str) -> Optional[Dict[str, Any]]:
+        """Return one JSON object when present, otherwise None."""
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read JSON artifact: {path}, error={e}")
+            return None
+
+    @classmethod
+    def _persist_run_metrics_artifact(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+        config_path: Optional[str] = None,
+        run_status: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Persist one run-scoped metrics artifact for probabilistic runtime storage.
+
+        Legacy single-run simulations intentionally skip this path so the new
+        analytics artifact layer does not mutate the historical runtime layout.
+        """
+        if not ensemble_id or not run_id:
+            return None
+
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+            config_path=config_path,
+        )
+        extractor = OutcomeExtractor(simulation_data_dir=cls.RUN_STATE_DIR)
+        state = cls.get_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        try:
+            metrics_artifact = extractor.persist_run_metrics(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
+                config_path=context["config_path"],
+                run_status=run_status,
+                platform_mode=state.platform_mode if state else None,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist run metrics artifact for %s: %s",
+                context["run_key"],
+                e,
+            )
+            return None
+
+        cls._update_run_manifest_artifact_path(
+            simulation_id,
+            "metrics",
+            OutcomeExtractor.METRICS_FILENAME,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=context["run_dir"],
+        )
+        return metrics_artifact
+
+    @classmethod
+    def persist_run_metrics(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+        config_path: Optional[str] = None,
+        run_status: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Public helper for targeted metrics extraction and test coverage."""
+        return cls._persist_run_metrics_artifact(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+            config_path=config_path,
+            run_status=run_status,
+        )
+
+    @classmethod
+    def get_run_state(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Optional[SimulationRunState]:
         """Get the current run state."""
-        if simulation_id in cls._run_states:
-            return cls._run_states[simulation_id]
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        run_key = context["run_key"]
+        if run_key in cls._run_states:
+            return cls._run_states[run_key]
         
         # Try loading from disk.
-        state = cls._load_run_state(simulation_id)
+        state = cls._load_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=context["run_dir"],
+        )
         if state:
-            cls._run_states[simulation_id] = state
+            cls._run_states[run_key] = state
         return state
     
     @classmethod
-    def _load_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
+    def _load_run_state(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> Optional[SimulationRunState]:
         """Load run state from disk."""
-        state_file = os.path.join(cls.RUN_STATE_DIR, simulation_id, "run_state.json")
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        state_file = context["run_state_path"]
         if not os.path.exists(state_file):
             return None
         
@@ -253,6 +792,15 @@ class SimulationRunner:
             
             state = SimulationRunState(
                 simulation_id=simulation_id,
+                ensemble_id=data.get("ensemble_id", ensemble_id),
+                run_id=data.get("run_id", run_id),
+                run_key=data.get("run_key", context["run_key"]),
+                run_dir=data.get("run_dir", context["run_dir"]),
+                config_path=data.get("config_path", context["config_path"]),
+                graph_id=data.get("graph_id"),
+                base_graph_id=data.get("base_graph_id", data.get("graph_id")),
+                runtime_graph_id=data.get("runtime_graph_id"),
+                platform_mode=data.get("platform_mode", "parallel"),
                 runner_status=RunnerStatus(data.get("runner_status", "idle")),
                 current_round=data.get("current_round", 0),
                 total_rounds=data.get("total_rounds", 0),
@@ -261,8 +809,12 @@ class SimulationRunner:
                 # Per-platform round and time values.
                 twitter_current_round=data.get("twitter_current_round", 0),
                 reddit_current_round=data.get("reddit_current_round", 0),
+                twitter_inflight_round=data.get("twitter_inflight_round"),
+                reddit_inflight_round=data.get("reddit_inflight_round"),
                 twitter_simulated_hours=data.get("twitter_simulated_hours", 0),
                 reddit_simulated_hours=data.get("reddit_simulated_hours", 0),
+                twitter_last_progress_at=data.get("twitter_last_progress_at"),
+                reddit_last_progress_at=data.get("reddit_last_progress_at"),
                 twitter_running=data.get("twitter_running", False),
                 reddit_running=data.get("reddit_running", False),
                 twitter_completed=data.get("twitter_completed", False),
@@ -299,25 +851,41 @@ class SimulationRunner:
     @classmethod
     def _save_run_state(cls, state: SimulationRunState):
         """Persist run state to disk."""
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, state.simulation_id)
-        os.makedirs(sim_dir, exist_ok=True)
-        state_file = os.path.join(sim_dir, "run_state.json")
+        context = cls._resolve_run_context(
+            state.simulation_id,
+            ensemble_id=state.ensemble_id,
+            run_id=state.run_id,
+            config_path=state.config_path,
+            run_dir=state.run_dir,
+        )
+        state.run_key = state.run_key or context["run_key"]
+        state.run_dir = state.run_dir or context["run_dir"]
+        state.config_path = state.config_path or context["config_path"]
+        os.makedirs(state.run_dir, exist_ok=True)
+        state_file = context["run_state_path"]
         
         data = state.to_detail_dict()
         
         with open(state_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        cls._run_states[state.simulation_id] = state
+        cls._run_states[state.run_key] = state
     
     @classmethod
     def start_simulation(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        config_path: Optional[str] = None,
+        run_dir: Optional[str] = None,
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # Optional maximum round limit used to truncate long simulations.
         enable_graph_memory_update: bool = False,  # Whether to push activity updates into the Zep graph.
-        graph_id: str = None  # Zep graph ID, required when graph-memory updates are enabled.
+        close_environment_on_complete: bool = False,  # Whether to exit after completion instead of entering command-wait mode.
+        graph_id: str = None,  # Compatibility alias for the runtime write graph.
+        base_graph_id: Optional[str] = None,
+        runtime_graph_id: Optional[str] = None,
     ) -> SimulationRunState:
         """
         Start a simulation.
@@ -327,25 +895,73 @@ class SimulationRunner:
             platform: Target platform (`twitter`, `reddit`, or `parallel`).
             max_rounds: Optional maximum number of rounds.
             enable_graph_memory_update: Whether to dynamically update agent activity into the Zep graph.
-            graph_id: Zep graph ID, required when graph-memory updates are enabled.
+            close_environment_on_complete: Whether the launched runtime should
+                exit on completion instead of staying alive for follow-up
+                interview commands.
+            graph_id: Compatibility alias for the runtime write graph.
+            base_graph_id: Immutable project graph ID used for retrieval/reporting.
+            runtime_graph_id: Optional runtime-only graph ID used for write-backs.
             
         Returns:
             SimulationRunState
         """
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            config_path=config_path,
+            run_dir=run_dir,
+        )
+        run_key = context["run_key"]
+
         # Check whether the simulation is already running.
-        existing = cls.get_run_state(simulation_id)
+        existing = cls.get_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if existing and existing.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
-            raise ValueError(f"Simulation is already running: {simulation_id}")
+            raise ValueError(f"Simulation is already running: {run_key}")
         
         # Load the simulation configuration.
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
-        config_path = os.path.join(sim_dir, "simulation_config.json")
+        sim_dir = context["run_dir"]
+        config_path = context["config_path"]
         
         if not os.path.exists(config_path):
             raise ValueError("Simulation configuration does not exist. Call /prepare first.")
+
+        launch_reason = None
+        manifest = cls._read_run_manifest(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+        )
+        if manifest is not None:
+            lifecycle = manifest.get("lifecycle", {})
+            launch_reason = (
+                "retry"
+                if lifecycle.get("start_count", 0) > 0
+                else "initial_start"
+            )
+
+        cls._materialize_run_runtime_inputs(
+            simulation_id,
+            platform=platform,
+            run_dir=sim_dir,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
+
+        effective_base_graph_id = base_graph_id or config.get("base_graph_id") or graph_id
+        effective_runtime_graph_id = (
+            runtime_graph_id
+            or config.get("runtime_graph_id")
+            or graph_id
+        )
         
         # Initialize the runtime state.
         time_config = config.get("time_config", {})
@@ -362,6 +978,15 @@ class SimulationRunner:
         
         state = SimulationRunState(
             simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_key=run_key,
+            run_dir=sim_dir,
+            config_path=config_path,
+            graph_id=effective_base_graph_id,
+            base_graph_id=effective_base_graph_id,
+            runtime_graph_id=effective_runtime_graph_id,
+            platform_mode=platform,
             runner_status=RunnerStatus.STARTING,
             total_rounds=total_rounds,
             total_simulation_hours=total_hours,
@@ -372,18 +997,23 @@ class SimulationRunner:
         
         # Create the graph-memory updater if enabled.
         if enable_graph_memory_update:
-            if not graph_id:
+            if not effective_runtime_graph_id:
                 raise ValueError("graph_id is required when graph-memory updates are enabled")
             
             try:
-                ZepGraphMemoryManager.create_updater(simulation_id, graph_id)
-                cls._graph_memory_enabled[simulation_id] = True
-                logger.info(f"Enabled graph-memory updates: simulation_id={simulation_id}, graph_id={graph_id}")
+                ZepGraphMemoryManager.create_updater(run_key, effective_runtime_graph_id)
+                cls._graph_memory_enabled[run_key] = True
+                logger.info(
+                    "Enabled graph-memory updates: run_key=%s base_graph_id=%s runtime_graph_id=%s",
+                    run_key,
+                    effective_base_graph_id,
+                    effective_runtime_graph_id,
+                )
             except Exception as e:
                 logger.error(f"Failed to create graph-memory updater: {e}")
-                cls._graph_memory_enabled[simulation_id] = False
+                cls._graph_memory_enabled[run_key] = False
         else:
-            cls._graph_memory_enabled[simulation_id] = False
+            cls._graph_memory_enabled[run_key] = False
         
         # Select the runner script under backend/scripts/.
         if platform == "twitter":
@@ -404,7 +1034,7 @@ class SimulationRunner:
         
         # Create the action queue.
         action_queue = Queue()
-        cls._action_queues[simulation_id] = action_queue
+        cls._action_queues[run_key] = action_queue
         
         # Start the simulation subprocess.
         try:
@@ -419,10 +1049,28 @@ class SimulationRunner:
                 script_path,
                 "--config", config_path,  # Use the absolute config path.
             ]
+
+            runtime_seed = cls._load_runtime_seed(
+                simulation_id,
+                run_dir=sim_dir,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+            )
+            if ensemble_id and run_id:
+                cmd.extend([
+                    "--run-dir",
+                    sim_dir,
+                    "--run-id",
+                    run_id,
+                ])
+                if runtime_seed is not None:
+                    cmd.extend(["--seed", str(runtime_seed)])
             
             # Add the round-limit argument when requested.
             if max_rounds is not None and max_rounds > 0:
                 cmd.extend(["--max-rounds", str(max_rounds)])
+            if close_environment_on_complete:
+                cmd.append("--no-wait")
             
             # Use a shared main log file to avoid blocking on full stdout/stderr pipes.
             main_log_path = os.path.join(sim_dir, "simulation.log")
@@ -448,44 +1096,74 @@ class SimulationRunner:
             )
             
             # Keep file handles so they can be closed during cleanup.
-            cls._stdout_files[simulation_id] = main_log_file
-            cls._stderr_files[simulation_id] = None  # No separate stderr handle is needed.
+            cls._stdout_files[run_key] = main_log_file
+            cls._stderr_files[run_key] = None  # No separate stderr handle is needed.
             
             state.process_pid = process.pid
             state.runner_status = RunnerStatus.RUNNING
-            cls._processes[simulation_id] = process
+            cls._processes[run_key] = process
             cls._save_run_state(state)
+            cls._update_run_manifest_status(
+                simulation_id,
+                "running",
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=sim_dir,
+                launch_reason=launch_reason,
+            )
             
             # Start the monitor thread.
             monitor_thread = threading.Thread(
                 target=cls._monitor_simulation,
-                args=(simulation_id,),
+                args=(simulation_id, ensemble_id, run_id),
                 daemon=True
             )
             monitor_thread.start()
-            cls._monitor_threads[simulation_id] = monitor_thread
+            cls._monitor_threads[run_key] = monitor_thread
             
-            logger.info(f"Simulation started successfully: {simulation_id}, pid={process.pid}, platform={platform}")
+            logger.info(f"Simulation started successfully: {run_key}, pid={process.pid}, platform={platform}")
             
         except Exception as e:
             state.runner_status = RunnerStatus.FAILED
             state.error = str(e)
             cls._save_run_state(state)
+            cls._update_run_manifest_status(
+                simulation_id,
+                "failed",
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=sim_dir,
+            )
             raise
         
         return state
     
     @classmethod
-    def _monitor_simulation(cls, simulation_id: str):
+    def _monitor_simulation(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ):
         """Monitor the simulation process and parse action logs."""
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        run_key = context["run_key"]
+        sim_dir = context["run_dir"]
         
         # Per-platform action logs in the new log layout.
         twitter_actions_log = os.path.join(sim_dir, "twitter", "actions.jsonl")
         reddit_actions_log = os.path.join(sim_dir, "reddit", "actions.jsonl")
         
-        process = cls._processes.get(simulation_id)
-        state = cls.get_run_state(simulation_id)
+        process = cls._processes.get(run_key)
+        state = cls.get_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         
         if not process or not state:
             return
@@ -523,7 +1201,14 @@ class SimulationRunner:
             if exit_code == 0:
                 state.runner_status = RunnerStatus.COMPLETED
                 state.completed_at = datetime.now().isoformat()
-                logger.info(f"Simulation completed: {simulation_id}")
+                cls._update_run_manifest_status(
+                    simulation_id,
+                    "completed",
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                )
+                logger.info(f"Simulation completed: {run_key}")
             else:
                 state.runner_status = RunnerStatus.FAILED
                 # Pull the tail of the main log into the error message.
@@ -536,45 +1221,75 @@ class SimulationRunner:
                 except Exception:
                     pass
                 state.error = f"Process exited with code {exit_code}, error: {error_info}"
-                logger.error(f"Simulation failed: {simulation_id}, error={state.error}")
-            
+                cls._update_run_manifest_status(
+                    simulation_id,
+                    "failed",
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                )
+                logger.error(f"Simulation failed: {run_key}, error={state.error}")
+
             state.twitter_running = False
             state.reddit_running = False
+            if state.ensemble_id and state.run_id:
+                cls._persist_run_metrics_artifact(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                    run_status=state.runner_status.value,
+                )
             cls._save_run_state(state)
             
         except Exception as e:
-            logger.error(f"Monitor thread failed: {simulation_id}, error={str(e)}")
+            logger.error(f"Monitor thread failed: {run_key}, error={str(e)}")
             state.runner_status = RunnerStatus.FAILED
             state.error = str(e)
+            cls._update_run_manifest_status(
+                simulation_id,
+                "failed",
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=sim_dir,
+            )
+            if state.ensemble_id and state.run_id:
+                cls._persist_run_metrics_artifact(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                    run_status=state.runner_status.value,
+                )
             cls._save_run_state(state)
         
         finally:
             # Stop the graph-memory updater.
-            if cls._graph_memory_enabled.get(simulation_id, False):
+            if cls._graph_memory_enabled.get(run_key, False):
                 try:
-                    ZepGraphMemoryManager.stop_updater(simulation_id)
-                    logger.info(f"Stopped graph-memory updates: simulation_id={simulation_id}")
+                    ZepGraphMemoryManager.stop_updater(run_key)
+                    logger.info(f"Stopped graph-memory updates: run_key={run_key}")
                 except Exception as e:
                     logger.error(f"Failed to stop graph-memory updater: {e}")
-                cls._graph_memory_enabled.pop(simulation_id, None)
+                cls._graph_memory_enabled.pop(run_key, None)
             
             # Release process resources.
-            cls._processes.pop(simulation_id, None)
-            cls._action_queues.pop(simulation_id, None)
+            cls._processes.pop(run_key, None)
+            cls._action_queues.pop(run_key, None)
             
             # Close log file handles.
-            if simulation_id in cls._stdout_files:
+            if run_key in cls._stdout_files:
                 try:
-                    cls._stdout_files[simulation_id].close()
+                    cls._stdout_files[run_key].close()
                 except Exception:
                     pass
-                cls._stdout_files.pop(simulation_id, None)
-            if simulation_id in cls._stderr_files and cls._stderr_files[simulation_id]:
+                cls._stdout_files.pop(run_key, None)
+            if run_key in cls._stderr_files and cls._stderr_files[run_key]:
                 try:
-                    cls._stderr_files[simulation_id].close()
+                    cls._stderr_files[run_key].close()
                 except Exception:
                     pass
-                cls._stderr_files.pop(simulation_id, None)
+                cls._stderr_files.pop(run_key, None)
     
     @classmethod
     def _read_action_log(
@@ -597,10 +1312,15 @@ class SimulationRunner:
             Updated read offset.
         """
         # Check whether graph-memory updates are enabled.
-        graph_memory_enabled = cls._graph_memory_enabled.get(state.simulation_id, False)
+        run_key = state.run_key or cls._build_run_key(
+            state.simulation_id,
+            ensemble_id=state.ensemble_id,
+            run_id=state.run_id,
+        )
+        graph_memory_enabled = cls._graph_memory_enabled.get(run_key, False)
         graph_updater = None
         if graph_memory_enabled:
-            graph_updater = ZepGraphMemoryManager.get_updater(state.simulation_id)
+            graph_updater = ZepGraphMemoryManager.get_updater(run_key)
         
         try:
             with open(log_path, 'r', encoding='utf-8') as f:
@@ -614,16 +1334,24 @@ class SimulationRunner:
                             # Handle event-type entries.
                             if "event_type" in action_data:
                                 event_type = action_data.get("event_type")
+                                event_timestamp = action_data.get(
+                                    "timestamp",
+                                    datetime.now().isoformat(),
+                                )
                                 
                                 # Detect simulation_end events and mark the platform as complete.
                                 if event_type == "simulation_end":
                                     if platform == "twitter":
                                         state.twitter_completed = True
                                         state.twitter_running = False
+                                        state.twitter_inflight_round = None
+                                        state.twitter_last_progress_at = event_timestamp
                                         logger.info(f"Twitter simulation completed: {state.simulation_id}, total_rounds={action_data.get('total_rounds')}, total_actions={action_data.get('total_actions')}")
                                     elif platform == "reddit":
                                         state.reddit_completed = True
                                         state.reddit_running = False
+                                        state.reddit_inflight_round = None
+                                        state.reddit_last_progress_at = event_timestamp
                                         logger.info(f"Reddit simulation completed: {state.simulation_id}, total_rounds={action_data.get('total_rounds')}, total_actions={action_data.get('total_actions')}")
                                     
                                     # Check whether every enabled platform has completed.
@@ -635,6 +1363,15 @@ class SimulationRunner:
                                         state.completed_at = datetime.now().isoformat()
                                         logger.info(f"All enabled platform simulations completed: {state.simulation_id}")
                                 
+                                elif event_type == "round_start":
+                                    round_num = action_data.get("round", 0)
+                                    if platform == "twitter":
+                                        state.twitter_inflight_round = round_num or None
+                                        state.twitter_last_progress_at = event_timestamp
+                                    elif platform == "reddit":
+                                        state.reddit_inflight_round = round_num or None
+                                        state.reddit_last_progress_at = event_timestamp
+                                
                                 # Update round information from round_end events.
                                 elif event_type == "round_end":
                                     round_num = action_data.get("round", 0)
@@ -644,17 +1381,31 @@ class SimulationRunner:
                                     if platform == "twitter":
                                         if round_num > state.twitter_current_round:
                                             state.twitter_current_round = round_num
+                                        if (
+                                            state.twitter_inflight_round is not None
+                                            and round_num >= state.twitter_inflight_round
+                                        ):
+                                            state.twitter_inflight_round = None
                                         state.twitter_simulated_hours = simulated_hours
+                                        state.twitter_last_progress_at = event_timestamp
                                     elif platform == "reddit":
                                         if round_num > state.reddit_current_round:
                                             state.reddit_current_round = round_num
+                                        if (
+                                            state.reddit_inflight_round is not None
+                                            and round_num >= state.reddit_inflight_round
+                                        ):
+                                            state.reddit_inflight_round = None
                                         state.reddit_simulated_hours = simulated_hours
+                                        state.reddit_last_progress_at = event_timestamp
                                     
                                     # Use the largest round number as the overall round.
                                     if round_num > state.current_round:
                                         state.current_round = round_num
                                     # Use the largest simulated time as the overall simulated time.
                                     state.simulated_hours = max(state.twitter_simulated_hours, state.reddit_simulated_hours)
+                                
+                                state.updated_at = datetime.now().isoformat()
                                 
                                 continue
                             
@@ -674,6 +1425,14 @@ class SimulationRunner:
                             # Update the current round.
                             if action.round_num and action.round_num > state.current_round:
                                 state.current_round = action.round_num
+                            if platform == "twitter":
+                                if action.round_num > state.twitter_current_round:
+                                    state.twitter_inflight_round = action.round_num
+                                state.twitter_last_progress_at = action.timestamp
+                            elif platform == "reddit":
+                                if action.round_num > state.reddit_current_round:
+                                    state.reddit_inflight_round = action.round_num
+                                state.reddit_last_progress_at = action.timestamp
                             
                             # Forward activity to Zep when graph-memory updates are enabled.
                             if graph_updater:
@@ -697,7 +1456,11 @@ class SimulationRunner:
         Returns:
             True if every enabled platform has completed.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, state.simulation_id)
+        sim_dir = state.run_dir or cls._get_run_dir(
+            state.simulation_id,
+            ensemble_id=state.ensemble_id,
+            run_id=state.run_id,
+        )
         twitter_log = os.path.join(sim_dir, "twitter", "actions.jsonl")
         reddit_log = os.path.join(sim_dir, "reddit", "actions.jsonl")
         
@@ -771,28 +1534,43 @@ class SimulationRunner:
                 process.wait(timeout=5)
     
     @classmethod
-    def stop_simulation(cls, simulation_id: str) -> SimulationRunState:
+    def stop_simulation(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> SimulationRunState:
         """Stop a simulation."""
-        state = cls.get_run_state(simulation_id)
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        run_key = context["run_key"]
+        state = cls.get_run_state(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if not state:
-            raise ValueError(f"Simulation does not exist: {simulation_id}")
+            raise ValueError(f"Simulation does not exist: {run_key}")
         
         if state.runner_status not in [RunnerStatus.RUNNING, RunnerStatus.PAUSED]:
-            raise ValueError(f"Simulation is not running: {simulation_id}, status={state.runner_status}")
+            raise ValueError(f"Simulation is not running: {run_key}, status={state.runner_status}")
         
         state.runner_status = RunnerStatus.STOPPING
         cls._save_run_state(state)
         
         # Terminate the subprocess.
-        process = cls._processes.get(simulation_id)
+        process = cls._processes.get(run_key)
         if process and process.poll() is None:
             try:
-                cls._terminate_process(process, simulation_id)
+                cls._terminate_process(process, run_key)
             except ProcessLookupError:
                 # The process is already gone.
                 pass
             except Exception as e:
-                logger.error(f"Failed to terminate process group: {simulation_id}, error={e}")
+                logger.error(f"Failed to terminate process group: {run_key}, error={e}")
                 # Fall back to terminating the process directly.
                 try:
                     process.terminate()
@@ -805,17 +1583,32 @@ class SimulationRunner:
         state.reddit_running = False
         state.completed_at = datetime.now().isoformat()
         cls._save_run_state(state)
+        cls._update_run_manifest_status(
+            simulation_id,
+            "stopped",
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=context["run_dir"],
+        )
+        if state.ensemble_id and state.run_id:
+            cls._persist_run_metrics_artifact(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
+                run_status=state.runner_status.value,
+            )
         
         # Stop the graph-memory updater.
-        if cls._graph_memory_enabled.get(simulation_id, False):
+        if cls._graph_memory_enabled.get(run_key, False):
             try:
-                ZepGraphMemoryManager.stop_updater(simulation_id)
-                logger.info(f"Stopped graph-memory updates: simulation_id={simulation_id}")
+                ZepGraphMemoryManager.stop_updater(run_key)
+                logger.info(f"Stopped graph-memory updates: run_key={run_key}")
             except Exception as e:
                 logger.error(f"Failed to stop graph-memory updater: {e}")
-            cls._graph_memory_enabled.pop(simulation_id, None)
+            cls._graph_memory_enabled.pop(run_key, None)
         
-        logger.info(f"Simulation stopped: {simulation_id}")
+        logger.info(f"Simulation stopped: {run_key}")
         return state
     
     @classmethod
@@ -891,6 +1684,8 @@ class SimulationRunner:
     def get_all_actions(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         platform: Optional[str] = None,
         agent_id: Optional[int] = None,
         round_num: Optional[int] = None
@@ -907,7 +1702,11 @@ class SimulationRunner:
         Returns:
             The complete action list, sorted newest-first by timestamp.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         actions = []
         
         # Read Twitter actions and infer the platform from the file path.
@@ -952,6 +1751,8 @@ class SimulationRunner:
     def get_actions(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
         platform: Optional[str] = None,
@@ -974,6 +1775,8 @@ class SimulationRunner:
         """
         actions = cls.get_all_actions(
             simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
             platform=platform,
             agent_id=agent_id,
             round_num=round_num
@@ -986,6 +1789,8 @@ class SimulationRunner:
     def get_timeline(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         start_round: int = 0,
         end_round: Optional[int] = None
     ) -> List[Dict[str, Any]]:
@@ -1000,7 +1805,12 @@ class SimulationRunner:
         Returns:
             Per-round summary information.
         """
-        actions = cls.get_actions(simulation_id, limit=10000)
+        actions = cls.get_actions(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            limit=10000,
+        )
         
         # Group actions by round.
         rounds: Dict[int, Dict[str, Any]] = {}
@@ -1054,14 +1864,24 @@ class SimulationRunner:
         return result
     
     @classmethod
-    def get_agent_stats(cls, simulation_id: str) -> List[Dict[str, Any]]:
+    def get_agent_stats(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Get per-agent statistics.
         
         Returns:
             A list of agent statistics.
         """
-        actions = cls.get_actions(simulation_id, limit=10000)
+        actions = cls.get_actions(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            limit=10000,
+        )
         
         agent_stats: Dict[int, Dict[str, Any]] = {}
         
@@ -1097,12 +1917,18 @@ class SimulationRunner:
         return result
     
     @classmethod
-    def cleanup_simulation_logs(cls, simulation_id: str) -> Dict[str, Any]:
+    def cleanup_simulation_logs(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Clean simulation runtime logs so the simulation can be restarted from scratch.
         
         This removes:
         - run_state.json
+        - metrics.json
         - twitter/actions.jsonl
         - reddit/actions.jsonl
         - simulation.log
@@ -1120,9 +1946,13 @@ class SimulationRunner:
         Returns:
             Cleanup result information.
         """
-        import shutil
-        
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        run_key = context["run_key"]
+        sim_dir = context["run_dir"]
         
         if not os.path.exists(sim_dir):
             return {"success": True, "message": "Simulation directory does not exist; nothing to clean."}
@@ -1133,6 +1963,7 @@ class SimulationRunner:
         # Files to delete, including database files.
         files_to_delete = [
             "run_state.json",
+            "metrics.json",
             "simulation.log",
             "stdout.log",
             "stderr.log",
@@ -1167,10 +1998,48 @@ class SimulationRunner:
                         errors.append(f"Failed to delete {dir_name}/actions.jsonl: {str(e)}")
         
         # Remove any in-memory run state.
-        if simulation_id in cls._run_states:
-            del cls._run_states[simulation_id]
+        if run_key in cls._run_states:
+            del cls._run_states[run_key]
+        if run_key in cls._processes:
+            cls._processes.pop(run_key, None)
+        if run_key in cls._action_queues:
+            cls._action_queues.pop(run_key, None)
+        if run_key in cls._monitor_threads:
+            cls._monitor_threads.pop(run_key, None)
+        if run_key in cls._graph_memory_enabled:
+            cls._graph_memory_enabled.pop(run_key, None)
+        if run_key in cls._stdout_files:
+            try:
+                cls._stdout_files[run_key].close()
+            except Exception:
+                pass
+            cls._stdout_files.pop(run_key, None)
+        if run_key in cls._stderr_files:
+            try:
+                if cls._stderr_files[run_key]:
+                    cls._stderr_files[run_key].close()
+            except Exception:
+                pass
+            cls._stderr_files.pop(run_key, None)
+
+        cls._update_run_manifest_status(
+            simulation_id,
+            "prepared",
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+            increment_cleanup=True,
+        )
+        cls._update_run_manifest_artifact_path(
+            simulation_id,
+            "metrics",
+            None,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+        )
         
-        logger.info(f"Finished cleaning simulation logs: {simulation_id}, deleted files: {cleaned_files}")
+        logger.info(f"Finished cleaning simulation logs: {run_key}, deleted files: {cleaned_files}")
         
         return {
             "success": len(errors) == 0,
@@ -1212,14 +2081,14 @@ class SimulationRunner:
         # Copy the mapping to avoid mutating during iteration.
         processes = list(cls._processes.items())
         
-        for simulation_id, process in processes:
+        for run_key, process in processes:
             try:
                 if process.poll() is None:  # The process is still running.
-                    logger.info(f"Terminating simulation process: {simulation_id}, pid={process.pid}")
+                    logger.info(f"Terminating simulation process: {run_key}, pid={process.pid}")
                     
                     try:
                         # Use the cross-platform termination helper.
-                        cls._terminate_process(process, simulation_id, timeout=5)
+                        cls._terminate_process(process, run_key, timeout=5)
                     except (ProcessLookupError, OSError):
                         # The process may already be gone, so try direct termination.
                         try:
@@ -1229,7 +2098,7 @@ class SimulationRunner:
                             process.kill()
                     
                     # Update run_state.json.
-                    state = cls.get_run_state(simulation_id)
+                    state = cls._run_states.get(run_key)
                     if state:
                         state.runner_status = RunnerStatus.STOPPED
                         state.twitter_running = False
@@ -1237,27 +2106,43 @@ class SimulationRunner:
                         state.completed_at = datetime.now().isoformat()
                         state.error = "Server shutdown interrupted the simulation."
                         cls._save_run_state(state)
+                        cls._update_run_manifest_status(
+                            state.simulation_id,
+                            "stopped",
+                            ensemble_id=state.ensemble_id,
+                            run_id=state.run_id,
+                            run_dir=state.run_dir,
+                        )
+                        if state.ensemble_id and state.run_id:
+                            cls._persist_run_metrics_artifact(
+                                state.simulation_id,
+                                ensemble_id=state.ensemble_id,
+                                run_id=state.run_id,
+                                run_dir=state.run_dir,
+                                run_status=state.runner_status.value,
+                            )
                     
                     # Update state.json as well, marking the state as stopped.
                     try:
-                        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
-                        state_file = os.path.join(sim_dir, "state.json")
-                        logger.info(f"Attempting to update state.json: {state_file}")
-                        if os.path.exists(state_file):
-                            with open(state_file, 'r', encoding='utf-8') as f:
-                                state_data = json.load(f)
-                            state_data['status'] = 'stopped'
-                            state_data['updated_at'] = datetime.now().isoformat()
-                            with open(state_file, 'w', encoding='utf-8') as f:
-                                json.dump(state_data, f, indent=2, ensure_ascii=False)
-                            logger.info(f"Updated state.json to stopped: {simulation_id}")
-                        else:
-                            logger.warning(f"state.json does not exist: {state_file}")
+                        if not state.ensemble_id and not state.run_id:
+                            sim_dir = cls._get_simulation_dir(state.simulation_id)
+                            state_file = os.path.join(sim_dir, "state.json")
+                            logger.info(f"Attempting to update state.json: {state_file}")
+                            if os.path.exists(state_file):
+                                with open(state_file, 'r', encoding='utf-8') as f:
+                                    state_data = json.load(f)
+                                state_data['status'] = 'stopped'
+                                state_data['updated_at'] = datetime.now().isoformat()
+                                with open(state_file, 'w', encoding='utf-8') as f:
+                                    json.dump(state_data, f, indent=2, ensure_ascii=False)
+                                logger.info(f"Updated state.json to stopped: {state.simulation_id}")
+                            else:
+                                logger.warning(f"state.json does not exist: {state_file}")
                     except Exception as state_err:
-                        logger.warning(f"Failed to update state.json: {simulation_id}, error={state_err}")
+                        logger.warning(f"Failed to update state.json: {run_key}, error={state_err}")
                         
             except Exception as e:
-                logger.error(f"Failed to clean process: {simulation_id}, error={e}")
+                logger.error(f"Failed to clean process: {run_key}, error={e}")
         
         # Clean up file handles.
         for simulation_id, file_handle in list(cls._stdout_files.items()):
@@ -1361,15 +2246,20 @@ class SimulationRunner:
         Get the list of all currently running simulation IDs.
         """
         running = []
-        for sim_id, process in cls._processes.items():
+        for run_key, process in cls._processes.items():
             if process.poll() is None:
-                running.append(sim_id)
+                running.append(run_key)
         return running
     
     # ============== Interview helpers ==============
     
     @classmethod
-    def check_env_alive(cls, simulation_id: str) -> bool:
+    def check_env_alive(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> bool:
         """
         Check whether the simulation environment is alive and can receive Interview commands.
 
@@ -1379,7 +2269,11 @@ class SimulationRunner:
         Returns:
             True if the environment is alive, otherwise False.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if not os.path.exists(sim_dir):
             return False
 
@@ -1387,7 +2281,12 @@ class SimulationRunner:
         return ipc_client.check_env_alive()
 
     @classmethod
-    def get_env_status_detail(cls, simulation_id: str) -> Dict[str, Any]:
+    def get_env_status_detail(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Get detailed simulation-environment status information.
 
@@ -1398,7 +2297,11 @@ class SimulationRunner:
             A status dictionary containing `status`, `twitter_available`,
             `reddit_available`, and `timestamp`.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         status_file = os.path.join(sim_dir, "env_status.json")
         
         default_status = {
@@ -1429,6 +2332,9 @@ class SimulationRunner:
         simulation_id: str,
         agent_id: int,
         prompt: str,
+        *,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         platform: str = None,
         timeout: float = 60.0
     ) -> Dict[str, Any]:
@@ -1452,7 +2358,11 @@ class SimulationRunner:
             ValueError: Simulation does not exist or the environment is not running.
             TimeoutError: Timed out waiting for a response.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if not os.path.exists(sim_dir):
             raise ValueError(f"Simulation does not exist: {simulation_id}")
 
@@ -1492,6 +2402,9 @@ class SimulationRunner:
         cls,
         simulation_id: str,
         interviews: List[Dict[str, Any]],
+        *,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         platform: str = None,
         timeout: float = 120.0
     ) -> Dict[str, Any]:
@@ -1515,7 +2428,11 @@ class SimulationRunner:
             ValueError: Simulation does not exist or the environment is not running.
             TimeoutError: Timed out waiting for a response.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if not os.path.exists(sim_dir):
             raise ValueError(f"Simulation does not exist: {simulation_id}")
 
@@ -1552,6 +2469,9 @@ class SimulationRunner:
         cls,
         simulation_id: str,
         prompt: str,
+        *,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         platform: str = None,
         timeout: float = 180.0
     ) -> Dict[str, Any]:
@@ -1572,12 +2492,17 @@ class SimulationRunner:
         Returns:
             Global interview result dictionary.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        sim_dir = context["run_dir"]
         if not os.path.exists(sim_dir):
             raise ValueError(f"Simulation does not exist: {simulation_id}")
 
         # Load all agent information from the simulation configuration.
-        config_path = os.path.join(sim_dir, "simulation_config.json")
+        config_path = context["config_path"]
         if not os.path.exists(config_path):
             raise ValueError(f"Simulation configuration does not exist: {simulation_id}")
 
@@ -1602,6 +2527,8 @@ class SimulationRunner:
 
         return cls.interview_agents_batch(
             simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
             interviews=interviews,
             platform=platform,
             timeout=timeout
@@ -1611,6 +2538,8 @@ class SimulationRunner:
     def close_simulation_env(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         timeout: float = 30.0
     ) -> Dict[str, Any]:
         """
@@ -1625,7 +2554,11 @@ class SimulationRunner:
         Returns:
             Operation result dictionary.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         if not os.path.exists(sim_dir):
             raise ValueError(f"Simulation does not exist: {simulation_id}")
         
@@ -1717,6 +2650,8 @@ class SimulationRunner:
     def get_interview_history(
         cls,
         simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         platform: str = None,
         agent_id: Optional[int] = None,
         limit: int = 100
@@ -1736,7 +2671,11 @@ class SimulationRunner:
         Returns:
             Interview history records.
         """
-        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        sim_dir = cls._get_run_dir(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
         
         results = []
         

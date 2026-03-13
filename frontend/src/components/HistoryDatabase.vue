@@ -13,16 +13,45 @@
       <span class="section-title">Simulation Records</span>
       <div class="section-line"></div>
     </div>
+<div v-if="showHistoryExpansionToggle" class="history-stack-controls">
+      <button
+        type="button"
+        class="history-toggle-btn"
+        data-testid="history-expand-toggle"
+        :aria-expanded="String(isExpanded)"
+        :aria-label="historyToggleLabel"
+        @click="toggleExpandedHistory"
+      >
+        <span class="history-toggle-label">{{ historyToggleLabel }}</span>
+        <span class="history-toggle-count">{{ projects.length }}</span>
+      </button>
+      <span class="history-stack-caption">
+        {{ isExpanded
+          ? 'Expanded view shows every saved report card.'
+          : 'Collapsed view keeps only the newest saved record clickable. Expand to browse older reports.' }}
+      </span>
+    </div>
 <div v-if="projects.length > 0" class="cards-container" :class="{ expanded: isExpanded }" :style="containerStyle">
       <div
         v-for="(project, index) in projects"
-        :key="project.simulation_id"
+        :key="buildHistoryCardTestId(project)"
         class="project-card"
-        :class="{ expanded: isExpanded, hovering: hoveringCard === index }"
+        :class="{
+          expanded: isExpanded,
+          hovering: hoveringCard === index && isProjectCardInteractive(index),
+          'card-interactive': isProjectCardInteractive(index),
+          'card-overview-only': !isProjectCardInteractive(index)
+        }"
         :style="getCardStyle(index)"
-        @mouseenter="hoveringCard = index"
-        @mouseleave="hoveringCard = null"
-        @click="navigateToProject(project)"
+        :data-testid="buildHistoryCardTestId(project)"
+        role="button"
+        :aria-disabled="String(!isProjectCardInteractive(index))"
+        :tabindex="isProjectCardInteractive(index) ? 0 : -1"
+        @mouseenter="handleCardMouseEnter(index)"
+        @mouseleave="handleCardMouseLeave(index)"
+        @click="openProjectCard(project, index)"
+        @keydown.enter.prevent="openProjectCard(project, index)"
+        @keydown.space.prevent="openProjectCard(project, index)"
       >
 <div class="card-header">
           <span class="card-id">{{ formatSimulationId(project.simulation_id) }}</span>
@@ -135,17 +164,39 @@
                 <span class="btn-text">Environment Setup</span>
               </button>
               <button
+                class="modal-btn btn-simulation"
+                @click="goToSimulationRun"
+                :disabled="!selectedProjectStep3ReplayState.enabled"
+                :title="selectedProjectStep3ReplayState.helperText"
+                :data-testid="buildHistoryActionTestId(selectedProject, 'step3')"
+              >
+                <span class="btn-step">Step3</span>
+                <span class="btn-icon">*</span>
+                <span class="btn-text">Run Simulation</span>
+              </button>
+              <button
                 class="modal-btn btn-report"
                 @click="goToReport"
                 :disabled="!selectedProject.report_id"
+                :data-testid="buildHistoryActionTestId(selectedProject, 'step4')"
               >
                 <span class="btn-step">Step4</span>
                 <span class="btn-icon">*</span>
                 <span class="btn-text">Analysis Report</span>
               </button>
+              <button
+                class="modal-btn btn-report"
+                @click="goToInteraction"
+                :disabled="!selectedProject.report_id"
+                :data-testid="buildHistoryActionTestId(selectedProject, 'step5')"
+              >
+                <span class="btn-step">Step5</span>
+                <span class="btn-icon">*</span>
+                <span class="btn-text">Deep Interaction</span>
+              </button>
             </div>
 <div class="modal-playback-hint">
-              <span class="hint-text">Step 3 "Start Simulation" and Step 5 "Deep Interaction" must be launched live and cannot be replayed from history.</span>
+              <span class="hint-text">{{ selectedProjectReplayHint }}</span>
             </div>
           </div>
         </div>
@@ -158,6 +209,15 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getSimulationHistory } from '../api/simulation'
+import {
+  sortSimulationHistory,
+  getHistoryCardZIndex,
+  isHistoryCardInteractive,
+  getHistoryExpansionToggleLabel,
+  buildHistoryCardTestId,
+  buildHistoryActionTestId,
+  deriveHistoryStep3ReplayState
+} from '../utils/probabilisticRuntime'
 
 const router = useRouter()
 const route = useRoute()
@@ -168,6 +228,7 @@ const isExpanded = ref(false)
 const hoveringCard = ref(null)
 const historyContainer = ref(null)
 const selectedProject = ref(null)
+const hasManualExpansionOverride = ref(false)
 let observer = null
 let isAnimating = false
 let expandDebounceTimer = null
@@ -194,6 +255,27 @@ const containerStyle = computed(() => {
   return { minHeight: `${expandedHeight}px` }
 })
 
+const showHistoryExpansionToggle = computed(() => projects.value.length > 1)
+
+const historyToggleLabel = computed(() => {
+  return getHistoryExpansionToggleLabel({ isExpanded: isExpanded.value })
+})
+
+const selectedProjectStep3ReplayState = computed(() => (
+  deriveHistoryStep3ReplayState(selectedProject.value || {})
+))
+
+const selectedProjectReplayHint = computed(() => {
+  const step3Hint = selectedProjectStep3ReplayState.value.enabled
+    ? selectedProjectStep3ReplayState.value.helperText
+    : 'Step 3 is still live-only for this record.'
+  const downstreamHint = selectedProject.value?.report_id
+    ? ' Step 4 and Step 5 can reopen from the latest saved report.'
+    : ' Step 4 and Step 5 remain unavailable until a report is generated.'
+
+  return `${step3Hint}${downstreamHint}`
+})
+
 const getCardStyle = (index) => {
   const total = projects.value.length
 
@@ -216,7 +298,7 @@ const getCardStyle = (index) => {
 
     return {
       transform: `translate(${x}px, ${y}px) rotate(0deg) scale(1)`,
-      zIndex: 100 + index,
+      zIndex: getHistoryCardZIndex({ index, total, isExpanded: true }),
       opacity: 1,
       transition: transition
     }
@@ -233,11 +315,42 @@ const getCardStyle = (index) => {
 
     return {
       transform: `translate(${x}px, ${y}px) rotate(${r}deg) scale(${s})`,
-      zIndex: 10 + index,
+      zIndex: getHistoryCardZIndex({ index, total, isExpanded: false }),
       opacity: 1,
       transition: transition
     }
   }
+}
+
+const isProjectCardInteractive = (index) => {
+  return isHistoryCardInteractive({
+    index,
+    isExpanded: isExpanded.value
+  })
+}
+
+const handleCardMouseEnter = (index) => {
+  hoveringCard.value = isProjectCardInteractive(index) ? index : null
+}
+
+const handleCardMouseLeave = (index) => {
+  if (hoveringCard.value === index) {
+    hoveringCard.value = null
+  }
+}
+
+const toggleExpandedHistory = () => {
+  hasManualExpansionOverride.value = true
+  hoveringCard.value = null
+  pendingState = null
+  isAnimating = false
+
+  if (expandDebounceTimer) {
+    clearTimeout(expandDebounceTimer)
+    expandDebounceTimer = null
+  }
+
+  isExpanded.value = !isExpanded.value
 }
 
 const getProgressClass = (simulation) => {
@@ -334,6 +447,14 @@ const navigateToProject = (simulation) => {
   selectedProject.value = simulation
 }
 
+const openProjectCard = (simulation, index) => {
+  if (!isProjectCardInteractive(index)) {
+    return
+  }
+
+  navigateToProject(simulation)
+}
+
 const closeModal = () => {
   selectedProject.value = null
 }
@@ -358,10 +479,29 @@ const goToSimulation = () => {
   }
 }
 
+const goToSimulationRun = () => {
+  if (!selectedProjectStep3ReplayState.value.enabled) {
+    return
+  }
+
+  router.push(selectedProjectStep3ReplayState.value.routeTarget)
+  closeModal()
+}
+
 const goToReport = () => {
   if (selectedProject.value?.report_id) {
     router.push({
       name: 'Report',
+      params: { reportId: selectedProject.value.report_id }
+    })
+    closeModal()
+  }
+}
+
+const goToInteraction = () => {
+  if (selectedProject.value?.report_id) {
+    router.push({
+      name: 'Interaction',
       params: { reportId: selectedProject.value.report_id }
     })
     closeModal()
@@ -373,7 +513,7 @@ const loadHistory = async () => {
     loading.value = true
     const response = await getSimulationHistory(20)
     if (response.success) {
-      projects.value = response.data || []
+      projects.value = sortSimulationHistory(response.data || [])
     }
   } catch (error) {
     console.error('Failed to load historical projects:', error)
@@ -390,6 +530,10 @@ const initObserver = () => {
 
   observer = new IntersectionObserver(
     (entries) => {
+      if (hasManualExpansionOverride.value) {
+        return
+      }
+
       entries.forEach((entry) => {
         const shouldExpand = entry.isIntersecting
 
@@ -416,6 +560,9 @@ const initObserver = () => {
 
           isAnimating = true
           isExpanded.value = pendingState
+          if (!pendingState) {
+            hoveringCard.value = null
+          }
           pendingState = null
 
           setTimeout(() => {
@@ -426,6 +573,9 @@ const initObserver = () => {
                 if (pendingState !== null && pendingState !== isExpanded.value) {
                   isAnimating = true
                   isExpanded.value = pendingState
+                  if (!pendingState) {
+                    hoveringCard.value = null
+                  }
                   pendingState = null
                   setTimeout(() => {
                     isAnimating = false
@@ -551,6 +701,58 @@ background-position: top left;
   letter-spacing: 3px;
   text-transform: uppercase;
 }
+.history-stack-controls {
+  position: relative;
+  z-index: 100;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 0 40px;
+}
+
+.history-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid #D1D5DB;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.history-toggle-btn:hover {
+  border-color: #111827;
+  box-shadow: 0 8px 18px rgba(17, 24, 39, 0.08);
+  transform: translateY(-1px);
+}
+
+.history-toggle-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #111827;
+  color: #FFFFFF;
+  font-size: 0.68rem;
+}
+
+.history-stack-caption {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.78rem;
+  color: #6B7280;
+}
 .cards-container {
   position: relative;
   display: flex;
@@ -566,15 +768,23 @@ background-position: top left;
   border: 1px solid #E5E7EB;
   border-radius: 0;
   padding: 14px;
-  cursor: pointer;
+  cursor: default;
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 700ms cubic-bezier(0.23, 1, 0.32, 1), opacity 700ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.project-card:hover {
+.project-card.card-interactive {
+  cursor: pointer;
+}
+
+.project-card.card-interactive:hover {
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.4);
   z-index: 1000 !important;
+}
+
+.project-card.card-overview-only {
+  pointer-events: none;
 }
 
 .project-card.hovering {

@@ -14,8 +14,66 @@
     </div>
 
     <div class="graph-container" ref="graphContainer">
-<div v-if="graphData" class="graph-view">
-        <svg ref="graphSvg" class="graph-svg"></svg>
+<div v-if="graphData" class="graph-view" :class="{ 'graph-view--summary': !graphPanelState.isInteractive }">
+        <template v-if="graphPanelState.isInteractive">
+          <svg ref="graphSvg" class="graph-svg"></svg>
+        </template>
+        <template v-else>
+          <div class="graph-summary-shell" data-testid="graph-summary-shell">
+            <div class="graph-summary-badge">
+              {{ graphPanelState.isPreview ? 'Live preview' : 'Render guard' }}
+            </div>
+            <div class="graph-summary-title">{{ graphPanelState.summaryTitle }}</div>
+            <p class="graph-summary-copy">{{ graphPanelState.summaryBody }}</p>
+            <div class="graph-summary-metrics">
+              <div class="graph-summary-metric">
+                <span class="graph-summary-label">Mode</span>
+                <span class="graph-summary-value">{{ graphPanelState.mode }}</span>
+              </div>
+              <div class="graph-summary-metric">
+                <span class="graph-summary-label">Sampled Nodes</span>
+                <span class="graph-summary-value">{{ graphPanelState.returnedNodes }}</span>
+              </div>
+              <div class="graph-summary-metric">
+                <span class="graph-summary-label">Sampled Edges</span>
+                <span class="graph-summary-value">{{ graphPanelState.returnedEdges }}</span>
+              </div>
+              <div class="graph-summary-metric">
+                <span class="graph-summary-label">Total Nodes</span>
+                <span class="graph-summary-value">{{ graphPanelState.totalNodes }}</span>
+              </div>
+              <div class="graph-summary-metric">
+                <span class="graph-summary-label">Total Edges</span>
+                <span class="graph-summary-value">{{ graphPanelState.totalEdges }}</span>
+              </div>
+            </div>
+            <p v-if="graphPanelState.summaryDetail" class="graph-summary-detail">
+              {{ graphPanelState.summaryDetail }}
+            </p>
+            <div v-if="sampledEntityTypes.length" class="graph-summary-types">
+              <span
+                v-for="type in sampledEntityTypes"
+                :key="type.name"
+                class="graph-summary-type"
+              >
+                <span class="graph-summary-type-dot" :style="{ background: type.color }"></span>
+                {{ type.name }} {{ type.count }}
+              </span>
+            </div>
+            <div v-if="sampleNodeNames.length" class="graph-summary-sample">
+              <span class="graph-summary-label">Sampled entities</span>
+              <div class="graph-summary-node-list">
+                <span
+                  v-for="name in sampleNodeNames"
+                  :key="name"
+                  class="graph-summary-node"
+                >
+                  {{ name }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </template>
 <div v-if="currentPhase === 1 || isSimulating" class="graph-building-hint">
           <div class="memory-icon-wrapper">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="memory-icon">
@@ -41,7 +99,7 @@
             </svg>
           </button>
         </div>
-<div v-if="selectedItem" class="detail-panel">
+<div v-if="graphPanelState.isInteractive && selectedItem" class="detail-panel">
           <div class="detail-panel-header">
             <span class="detail-title">{{ selectedItem.type === 'node' ? 'Node Details' : 'Relationship' }}</span>
             <span v-if="selectedItem.type === 'node'" class="detail-type-badge" :style="{ background: selectedItem.color, color: '#fff' }">
@@ -193,7 +251,7 @@
         <p class="empty-text">Waiting for ontology generation...</p>
       </div>
     </div>
-<div v-if="graphData && entityTypes.length" class="graph-legend">
+<div v-if="graphData && graphPanelState.isInteractive && entityTypes.length" class="graph-legend">
       <span class="legend-title">Entity Types</span>
       <div class="legend-items">
         <div class="legend-item" v-for="type in entityTypes" :key="type.name">
@@ -202,7 +260,7 @@
         </div>
       </div>
     </div>
-<div v-if="graphData" class="edge-labels-toggle">
+<div v-if="graphData && graphPanelState.isInteractive" class="edge-labels-toggle">
       <label class="toggle-switch">
         <input type="checkbox" v-model="showEdgeLabels" />
         <span class="slider"></span>
@@ -215,6 +273,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { deriveGraphPanelState } from '../utils/probabilisticRuntime'
 
 const props = defineProps({
   graphData: Object,
@@ -269,6 +328,23 @@ const entityTypes = computed(() => {
   return Object.values(typeMap)
 })
 
+const graphPanelState = computed(() => deriveGraphPanelState({
+  graphData: props.graphData
+}))
+
+const sampledEntityTypes = computed(() => entityTypes.value.slice(0, 6))
+
+const sampleNodeNames = computed(() => {
+  if (!Array.isArray(props.graphData?.nodes)) {
+    return []
+  }
+
+  return props.graphData.nodes
+    .map((node) => node?.name || 'Unnamed')
+    .filter((name, index, names) => Boolean(name) && names.indexOf(name) === index)
+    .slice(0, 8)
+})
+
 const formatDateTime = (dateStr) => {
   if (!dateStr) return ''
   try {
@@ -295,12 +371,27 @@ let currentSimulation = null
 let linkLabelsRef = null
 let linkLabelBgRef = null
 
-const renderGraph = () => {
-  if (!graphSvg.value || !props.graphData) return
-
+const teardownGraph = () => {
   if (currentSimulation) {
     currentSimulation.stop()
+    currentSimulation = null
   }
+
+  linkLabelsRef = null
+  linkLabelBgRef = null
+
+  if (graphSvg.value) {
+    d3.select(graphSvg.value).selectAll('*').remove()
+  }
+}
+
+const renderGraph = () => {
+  if (!graphPanelState.value.isInteractive || !graphSvg.value || !props.graphData) {
+    teardownGraph()
+    return
+  }
+
+  teardownGraph()
 
   const container = graphContainer.value
   const width = container.clientWidth
@@ -706,10 +797,20 @@ const renderGraph = () => {
 }
 
 watch(() => props.graphData, () => {
-  nextTick(renderGraph)
+  if (graphPanelState.value.isInteractive) {
+    nextTick(renderGraph)
+    return
+  }
+
+  closeDetailPanel()
+  teardownGraph()
 }, { deep: true })
 
 watch(showEdgeLabels, (newVal) => {
+  if (!graphPanelState.value.isInteractive) {
+    return
+  }
+
   if (linkLabelsRef) {
     linkLabelsRef.style('display', newVal ? 'block' : 'none')
   }
@@ -719,7 +820,9 @@ watch(showEdgeLabels, (newVal) => {
 })
 
 const handleResize = () => {
-  nextTick(renderGraph)
+  if (graphPanelState.value.isInteractive) {
+    nextTick(renderGraph)
+  }
 }
 
 onMounted(() => {
@@ -728,9 +831,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize)
-  if (currentSimulation) {
-    currentSimulation.stop()
-  }
+  teardownGraph()
 })
 </script>
 
@@ -815,6 +916,121 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.graph-view--summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 96px 24px 40px;
+}
+
+.graph-summary-shell {
+  width: min(720px, 100%);
+  padding: 28px;
+  border-radius: 24px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,255,255,0.88));
+  border: 1px solid rgba(12, 36, 61, 0.08);
+  box-shadow: 0 20px 48px rgba(12, 36, 61, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+.graph-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(0, 78, 137, 0.1);
+  color: #004E89;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-summary-title {
+  margin-top: 16px;
+  font-size: 24px;
+  font-weight: 700;
+  color: #10233A;
+}
+
+.graph-summary-copy,
+.graph-summary-detail {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #4B5B6B;
+}
+
+.graph-summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.graph-summary-metric {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(12, 36, 61, 0.08);
+}
+
+.graph-summary-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6B7A8C;
+}
+
+.graph-summary-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #10233A;
+}
+
+.graph-summary-types,
+.graph-summary-node-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.graph-summary-types {
+  margin-top: 18px;
+}
+
+.graph-summary-type,
+.graph-summary-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.95);
+  border: 1px solid rgba(12, 36, 61, 0.08);
+  color: #304154;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.graph-summary-type-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.graph-summary-sample {
+  margin-top: 18px;
+}
+
+.graph-summary-sample .graph-summary-label {
+  margin-bottom: 10px;
 }
 
 .graph-state {

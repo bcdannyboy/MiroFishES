@@ -40,6 +40,11 @@ yarn-error.log*
 .pytest_cache/
 .coverage
 htmlcov/
+test-results/
+
+# Playwright local scratch output
+.playwright-cli/
+output/playwright/report/
 
 # Cursor
 .cursor/

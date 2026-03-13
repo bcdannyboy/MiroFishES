@@ -1,0 +1,303 @@
+import importlib
+import json
+from pathlib import Path
+
+
+def _load_sensitivity_module():
+    return importlib.import_module("app.services.sensitivity_analyzer")
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _metric_entry(metric_id: str, value: int) -> dict:
+    return {
+        "metric_id": metric_id,
+        "label": metric_id,
+        "aggregation": "count",
+        "unit": "count",
+        "probability_mode": "empirical",
+        "value": value,
+    }
+
+
+def _write_ensemble_root(
+    simulation_data_dir: Path,
+    simulation_id: str,
+    *,
+    ensemble_id: str = "0001",
+    run_payloads: list[dict],
+) -> Path:
+    ensemble_dir = (
+        simulation_data_dir
+        / simulation_id
+        / "ensemble"
+        / f"ensemble_{ensemble_id}"
+    )
+    runs_dir = ensemble_dir / "runs"
+    _write_json(
+        ensemble_dir / "ensemble_spec.json",
+        {
+            "artifact_type": "ensemble_spec",
+            "simulation_id": simulation_id,
+            "run_count": len(run_payloads),
+            "max_concurrency": 1,
+            "root_seed": 11,
+            "sampling_mode": "seeded",
+        },
+    )
+    _write_json(
+        ensemble_dir / "ensemble_state.json",
+        {
+            "artifact_type": "ensemble_state",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "status": "prepared",
+            "run_count": len(run_payloads),
+            "prepared_run_count": len(run_payloads),
+            "run_ids": [payload["run_id"] for payload in run_payloads],
+            "outcome_metric_ids": [
+                "platform.twitter.total_actions",
+                "simulation.total_actions",
+            ],
+        },
+    )
+
+    for payload in run_payloads:
+        run_id = payload["run_id"]
+        run_dir = runs_dir / f"run_{run_id}"
+        _write_json(
+            run_dir / "run_manifest.json",
+            {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "root_seed": payload.get("root_seed", 0),
+                "seed_metadata": {"resolution_seed": payload.get("root_seed", 0)},
+                "resolved_values": payload.get("resolved_values", {}),
+                "config_artifact": "resolved_config.json",
+                "artifact_paths": {"resolved_config": "resolved_config.json"},
+                "generated_at": payload.get("generated_at", f"2026-03-09T00:00:0{run_id[-1]}"),
+                "status": payload.get("run_status", "completed"),
+            },
+        )
+        _write_json(
+            run_dir / "resolved_config.json",
+            {
+                "artifact_type": "resolved_config",
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "sampled_values": payload.get("resolved_values", {}),
+            },
+        )
+        metrics_payload = payload.get("metrics_payload")
+        if metrics_payload is not None:
+            _write_json(run_dir / "metrics.json", metrics_payload)
+
+    return ensemble_dir
+
+
+def test_get_sensitivity_analysis_persists_ranked_driver_effects(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 11,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.2,
+                    "agent_configs[0].activity_level": 0.1,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T10:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 3
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 12,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.2,
+                    "agent_configs[0].activity_level": 0.9,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T10:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 9
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 4
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "root_seed": 13,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.8,
+                    "agent_configs[0].activity_level": 0.1,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T10:00:03",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 11
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 8
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "root_seed": 14,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.8,
+                    "agent_configs[0].activity_level": 0.9,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T10:00:04",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 19
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 16
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    first = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+    second = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    assert first == second
+    assert (ensemble_dir / "sensitivity.json").exists()
+    assert first["artifact_type"] == "sensitivity"
+    assert first["methodology"]["analysis_mode"] == "observational_resolved_values"
+    assert first["quality_summary"]["status"] == "complete"
+    assert "observational_only" in first["quality_summary"]["warnings"]
+    assert "thin_sample" in first["quality_summary"]["warnings"]
+    assert [driver["driver_id"] for driver in first["driver_rankings"]] == [
+        "twitter_config.echo_chamber_strength",
+        "agent_configs[0].activity_level",
+    ]
+    assert (
+        first["driver_rankings"][0]["overall_effect_score"]
+        > first["driver_rankings"][1]["overall_effect_score"]
+    )
+    top_driver = first["driver_rankings"][0]
+    assert top_driver["driver_kind"] == "numeric"
+    assert top_driver["sample_count"] == 4
+    assert top_driver["distinct_value_count"] == 2
+    impact = next(
+        item
+        for item in top_driver["metric_impacts"]
+        if item["metric_id"] == "simulation.total_actions"
+    )
+    assert impact["effect_size"] == 9.0
+    assert [group["value_label"] for group in impact["group_summaries"]] == ["0.2", "0.8"]
+    assert [group["mean"] for group in impact["group_summaries"]] == [6.0, 15.0]
+
+
+def test_get_sensitivity_analysis_surfaces_missing_metrics_and_non_varying_drivers(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-warnings"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 21,
+                "resolved_values": {"agent_configs[0].activity_level": 0.5},
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T11:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 5
+                        )
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 22,
+                "resolved_values": {"agent_configs[0].activity_level": 0.5},
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T11:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 5
+                        )
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "root_seed": 23,
+                "resolved_values": {"agent_configs[0].activity_level": 0.5},
+            },
+        ],
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    assert artifact["quality_summary"]["status"] == "partial"
+    assert artifact["quality_summary"]["missing_metrics_runs"] == ["0003"]
+    assert "missing_run_metrics" in artifact["quality_summary"]["warnings"]
+    assert "no_varying_drivers" in artifact["quality_summary"]["warnings"]
+    assert "thin_sample" in artifact["quality_summary"]["warnings"]
+    assert artifact["driver_rankings"] == []

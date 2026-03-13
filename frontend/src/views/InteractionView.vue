@@ -52,6 +52,10 @@
         <Step5Interaction
           :reportId="currentReportId"
           :simulationId="simulationId"
+          :runtimeMode="runtimeMode"
+          :ensembleId="ensembleId"
+          :runId="runId"
+          :probabilisticContext="currentReport?.probabilistic_context || null"
           :systemLogs="systemLogs"
           @add-log="addLog"
           @update-status="updateStatus"
@@ -69,6 +73,7 @@ import Step5Interaction from '../components/Step5Interaction.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
+import { deriveProbabilisticReportRouteState } from '../utils/probabilisticRuntime'
 
 const route = useRoute()
 const router = useRouter()
@@ -83,7 +88,14 @@ const viewMode = ref('workbench')
 
 // Data State
 const currentReportId = ref(route.params.reportId)
+const initialRouteQuery = deriveProbabilisticReportRouteState({
+  routeQuery: route.query
+})
 const simulationId = ref(null)
+const runtimeMode = ref(initialRouteQuery.runtimeMode)
+const ensembleId = ref(initialRouteQuery.ensembleId)
+const runId = ref(initialRouteQuery.runId)
+const currentReport = ref(null)
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
@@ -128,6 +140,16 @@ const updateStatus = (status) => {
   currentStatus.value = status
 }
 
+const applyProbabilisticInteractionState = (reportRecord = currentReport.value) => {
+  const derivedState = deriveProbabilisticReportRouteState({
+    routeQuery: route.query,
+    reportRecord
+  })
+  runtimeMode.value = derivedState.runtimeMode
+  ensembleId.value = derivedState.ensembleId
+  runId.value = derivedState.runId
+}
+
 // --- Layout Methods ---
 const toggleMaximize = (target) => {
   if (viewMode.value === target) {
@@ -146,7 +168,9 @@ const loadReportData = async () => {
     const reportRes = await getReport(currentReportId.value)
     if (reportRes.success && reportRes.data) {
       const reportData = reportRes.data
+      currentReport.value = reportData
       simulationId.value = reportData.simulation_id
+      applyProbabilisticInteractionState(reportData)
       
       if (simulationId.value) {
         // Fetch simulation data
@@ -206,6 +230,13 @@ watch(() => route.params.reportId, (newId) => {
     loadReportData()
   }
 }, { immediate: true })
+
+watch(
+  () => route.query,
+  () => {
+    applyProbabilisticInteractionState()
+  }
+)
 
 onMounted(() => {
   addLog('InteractionView initialized')

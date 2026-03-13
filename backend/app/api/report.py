@@ -11,12 +11,138 @@ from flask import request, jsonify, send_file
 from . import report_bp
 from ..config import Config
 from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
+from ..services.ensemble_manager import EnsembleManager
+from ..services.probabilistic_report_context import ProbabilisticReportContextBuilder
 from ..services.simulation_manager import SimulationManager
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
 
 logger = get_logger('mirofish.api.report')
+
+
+def _is_probabilistic_report_scope(ensemble_id, run_id) -> bool:
+    """Treat ensemble-scoped report operations as the probabilistic surface."""
+    return bool(ensemble_id or run_id)
+
+
+def _probabilistic_report_disabled_response():
+    return jsonify({
+        "success": False,
+        "error": (
+            "Probabilistic report generation is disabled. "
+            "Set PROBABILISTIC_REPORT_ENABLED=true to enable it."
+        ),
+    }), 409
+
+
+def _probabilistic_interaction_disabled_response():
+    return jsonify({
+        "success": False,
+        "error": (
+            "Probabilistic report interaction is disabled. "
+            "Set PROBABILISTIC_INTERACTION_ENABLED=true to enable it."
+        ),
+    }), 409
+
+
+def _get_existing_report_for_request(simulation_id, ensemble_id=None, run_id=None):
+    """Preserve legacy latest-report lookup unless the request is explicitly scoped."""
+    if _is_probabilistic_report_scope(ensemble_id, run_id):
+        return ReportManager.get_report_for_scope(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+    return ReportManager.get_report_by_simulation(simulation_id)
+
+
+def _dedupe_graph_ids(*groups):
+    """Keep graph scope stable while removing blanks and duplicates."""
+    graph_ids = []
+    seen = set()
+    for group in groups:
+        if group is None:
+            continue
+        candidates = group if isinstance(group, (list, tuple, set)) else [group]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            normalized = str(candidate).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            graph_ids.append(normalized)
+    return graph_ids
+
+
+def _resolve_report_graph_scope(
+    state,
+    project,
+    *,
+    ensemble_id=None,
+    run_id=None,
+    report_record=None,
+):
+    """Resolve immutable base graph scope plus any run-local runtime graph."""
+    base_graph_id = None
+    runtime_graph_id = None
+    graph_ids = []
+
+    if report_record is not None:
+        base_graph_id = (
+            getattr(report_record, "base_graph_id", None)
+            or getattr(report_record, "graph_id", None)
+        )
+        runtime_graph_id = getattr(report_record, "runtime_graph_id", None)
+        graph_ids = _dedupe_graph_ids(getattr(report_record, "graph_ids", None))
+        ensemble_id = ensemble_id or getattr(report_record, "ensemble_id", None)
+        run_id = run_id or getattr(report_record, "run_id", None)
+
+    if ensemble_id and run_id and (not base_graph_id or not runtime_graph_id):
+        try:
+            run_payload = EnsembleManager().load_run(
+                state.simulation_id,
+                ensemble_id,
+                run_id,
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"Stored run not found for report scope: ensemble_id={ensemble_id}, run_id={run_id}"
+            ) from exc
+
+        run_manifest = run_payload.get("run_manifest", {})
+        resolved_config = run_payload.get("resolved_config", {})
+        base_graph_id = (
+            base_graph_id
+            or run_manifest.get("base_graph_id")
+            or run_manifest.get("graph_id")
+            or resolved_config.get("base_graph_id")
+            or resolved_config.get("graph_id")
+        )
+        runtime_graph_id = (
+            runtime_graph_id
+            or run_manifest.get("runtime_graph_id")
+            or resolved_config.get("runtime_graph_id")
+        )
+
+    if not base_graph_id:
+        base_graph_id = (
+            getattr(state, "base_graph_id", None)
+            or getattr(state, "graph_id", None)
+            or (project.graph_id if project else None)
+        )
+
+    if not base_graph_id:
+        raise ValueError("Missing graph ID. Please ensure the graph has been built.")
+
+    graph_ids = _dedupe_graph_ids(graph_ids, base_graph_id, runtime_graph_id)
+    return {
+        "graph_id": base_graph_id,
+        "base_graph_id": base_graph_id,
+        "runtime_graph_id": runtime_graph_id,
+        "graph_ids": graph_ids,
+    }
 
 
 # ============== Report Generation Endpoints ==============
@@ -27,7 +153,7 @@ def generate_report():
     Generate a simulation analysis report asynchronously.
 
     This is a long-running operation. The endpoint returns a `task_id`
-    immediately. Use `GET /api/report/generate/status` to check progress.
+    immediately. Use `POST /api/report/generate/status` to check progress.
 
     Request (JSON):
         {
@@ -57,6 +183,17 @@ def generate_report():
             }), 400
         
         force_regenerate = data.get('force_regenerate', False)
+        ensemble_id = data.get('ensemble_id')
+        run_id = data.get('run_id')
+        if run_id and not ensemble_id:
+            return jsonify({
+                "success": False,
+                "error": "run_id requires ensemble_id"
+            }), 400
+
+        if _is_probabilistic_report_scope(ensemble_id, run_id):
+            if not Config.PROBABILISTIC_REPORT_ENABLED:
+                return _probabilistic_report_disabled_response()
         
         # Get simulation information.
         manager = SimulationManager()
@@ -70,8 +207,15 @@ def generate_report():
         
         # Check whether a report already exists.
         if not force_regenerate:
-            existing_report = ReportManager.get_report_by_simulation(simulation_id)
-            if existing_report and existing_report.status == ReportStatus.COMPLETED:
+            existing_report = _get_existing_report_for_request(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+            )
+            if (
+                existing_report
+                and existing_report.status == ReportStatus.COMPLETED
+            ):
                 return jsonify({
                     "success": True,
                     "data": {
@@ -90,13 +234,19 @@ def generate_report():
                 "success": False,
                 "error": f"Project not found: {state.project_id}"
             }), 404
-        
-        graph_id = state.graph_id or project.graph_id
-        if not graph_id:
+
+        try:
+            graph_scope = _resolve_report_graph_scope(
+                state,
+                project,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+            )
+        except ValueError as exc:
             return jsonify({
                 "success": False,
-                "error": "Missing graph ID. Please ensure the graph has been built."
-            }), 400
+                "error": str(exc),
+            }), (404 if run_id else 400)
         
         simulation_requirement = project.simulation_requirement
         if not simulation_requirement:
@@ -115,8 +265,13 @@ def generate_report():
             task_type="report_generate",
             metadata={
                 "simulation_id": simulation_id,
-                "graph_id": graph_id,
-                "report_id": report_id
+                "graph_id": graph_scope["graph_id"],
+                "base_graph_id": graph_scope["base_graph_id"],
+                "runtime_graph_id": graph_scope["runtime_graph_id"],
+                "graph_ids": graph_scope["graph_ids"],
+                "report_id": report_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
             }
         )
         
@@ -132,7 +287,10 @@ def generate_report():
 
                 # Create the Report Agent.
                 agent = ReportAgent(
-                    graph_id=graph_id,
+                    graph_id=graph_scope["graph_id"],
+                    base_graph_id=graph_scope["base_graph_id"],
+                    runtime_graph_id=graph_scope["runtime_graph_id"],
+                    graph_ids=graph_scope["graph_ids"],
                     simulation_id=simulation_id,
                     simulation_requirement=simulation_requirement
                 )
@@ -150,6 +308,20 @@ def generate_report():
                     progress_callback=progress_callback,
                     report_id=report_id
                 )
+                report.graph_id = graph_scope["graph_id"]
+                report.base_graph_id = graph_scope["base_graph_id"]
+                report.runtime_graph_id = graph_scope["runtime_graph_id"]
+                report.graph_ids = graph_scope["graph_ids"]
+
+                if ensemble_id:
+                    probabilistic_context = ProbabilisticReportContextBuilder().build_context(
+                        simulation_id=simulation_id,
+                        ensemble_id=ensemble_id,
+                        run_id=run_id,
+                    )
+                    report.ensemble_id = ensemble_id
+                    report.run_id = run_id
+                    report.probabilistic_context = probabilistic_context
                 
                 # Save the report.
                 ReportManager.save_report(report)
@@ -222,10 +394,21 @@ def get_generate_status():
         
         task_id = data.get('task_id')
         simulation_id = data.get('simulation_id')
+        ensemble_id = data.get('ensemble_id')
+        run_id = data.get('run_id')
         
         # If simulation_id is provided, first check for an existing completed report.
         if simulation_id:
-            existing_report = ReportManager.get_report_by_simulation(simulation_id)
+            if _is_probabilistic_report_scope(ensemble_id, run_id):
+                existing_report = ReportManager.get_report_for_scope(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                )
+            else:
+                existing_report = ReportManager.get_report_by_simulation(
+                    simulation_id
+                )
             if existing_report and existing_report.status == ReportStatus.COMPLETED:
                 return jsonify({
                     "success": True,
@@ -495,6 +678,9 @@ def chat_with_report_agent():
         data = request.get_json() or {}
         
         simulation_id = data.get('simulation_id')
+        report_id = data.get('report_id')
+        ensemble_id = data.get('ensemble_id')
+        run_id = data.get('run_id')
         message = data.get('message')
         chat_history = data.get('chat_history', [])
         
@@ -509,6 +695,28 @@ def chat_with_report_agent():
                 "success": False,
                 "error": "Please provide message"
             }), 400
+
+        if run_id and not ensemble_id:
+            return jsonify({
+                "success": False,
+                "error": "run_id requires ensemble_id"
+            }), 400
+
+        report_record = None
+        if report_id:
+            report_record = ReportManager.get_report(report_id)
+            if not report_record:
+                return jsonify({
+                    "success": False,
+                    "error": f"Report not found: {report_id}"
+                }), 404
+            if report_record.simulation_id != simulation_id:
+                return jsonify({
+                    "success": False,
+                    "error": "report_id does not belong to simulation_id"
+                }), 400
+            if report_record.probabilistic_context and not Config.PROBABILISTIC_INTERACTION_ENABLED:
+                return _probabilistic_interaction_disabled_response()
 
         # Get simulation and project information.
         manager = SimulationManager()
@@ -526,21 +734,39 @@ def chat_with_report_agent():
                 "success": False,
                 "error": f"Project not found: {state.project_id}"
             }), 404
-        
-        graph_id = state.graph_id or project.graph_id
-        if not graph_id:
+
+        if report_record is not None:
+            ensemble_id = ensemble_id or report_record.ensemble_id
+            run_id = run_id or report_record.run_id
+
+        try:
+            graph_scope = _resolve_report_graph_scope(
+                state,
+                project,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                report_record=report_record,
+            )
+        except ValueError as exc:
             return jsonify({
                 "success": False,
-                "error": "Missing graph ID"
-            }), 400
+                "error": str(exc)
+            }), (404 if run_id else 400)
         
         simulation_requirement = project.simulation_requirement or ""
         
         # Create the agent and start the chat.
         agent = ReportAgent(
-            graph_id=graph_id,
+            graph_id=graph_scope["graph_id"],
+            base_graph_id=graph_scope["base_graph_id"],
+            runtime_graph_id=graph_scope["runtime_graph_id"],
+            graph_ids=graph_scope["graph_ids"],
             simulation_id=simulation_id,
-            simulation_requirement=simulation_requirement
+            simulation_requirement=simulation_requirement,
+            report_id=report_id,
+            probabilistic_context=(
+                report_record.probabilistic_context if report_record else None
+            ),
         )
         
         result = agent.chat(message=message, chat_history=chat_history)

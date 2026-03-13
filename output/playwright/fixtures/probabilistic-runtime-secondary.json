@@ -1,0 +1,132 @@
+{
+  "fixture_type": "probabilistic_step2_step3_smoke",
+  "project_id": "proj_614271f22a5e",
+  "simulation_id": "sim_378aca2941a1",
+  "graph_id": "",
+  "project_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/projects/proj_614271f22a5e",
+  "simulation_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1",
+  "simulation_route": "/simulation/sim_378aca2941a1",
+  "prepared_artifact_summary": {
+    "schema_version": "probabilistic.prepare.v1",
+    "generator_version": "probabilistic.prepare.generator.v1",
+    "simulation_id": "sim_378aca2941a1",
+    "mode": "probabilistic",
+    "probabilistic_mode": true,
+    "uncertainty_profile": "balanced",
+    "outcome_metrics": [
+      "simulation.total_actions",
+      "platform.twitter.total_actions"
+    ],
+    "lineage": {
+      "simulation_id": "sim_378aca2941a1",
+      "project_id": "proj_614271f22a5e",
+      "graph_id": "",
+      "base_graph_id": "",
+      "runtime_graph_id": null,
+      "config": {
+        "legacy_config": "simulation_config.json",
+        "base_config": "simulation_config.base.json",
+        "source_generated_at": "2026-03-09T12:00:00"
+      }
+    },
+    "feature_metadata": {
+      "probabilistic_mode": true,
+      "probabilistic_artifacts_complete": true,
+      "partial_probabilistic_artifacts": false,
+      "missing_probabilistic_artifacts": [],
+      "legacy_config_compatible": true,
+      "sampling_enabled": true,
+      "uncertainty_profile": "balanced",
+      "seed_policy": {
+        "schema_version": "probabilistic.prepare.v1",
+        "generator_version": "probabilistic.prepare.generator.v1",
+        "strategy": "deterministic-root",
+        "root_seed": 0,
+        "derive_run_seeds": true
+      },
+      "random_variable_count": 12,
+      "non_fixed_random_variable_count": 12,
+      "random_variable_preview": [
+        "agent_configs[0].activity_level",
+        "agent_configs[0].posts_per_hour",
+        "agent_configs[0].comments_per_hour",
+        "agent_configs[0].sentiment_bias",
+        "agent_configs[0].influence_weight"
+      ],
+      "outcome_metrics": [
+        "simulation.total_actions",
+        "platform.twitter.total_actions"
+      ]
+    },
+    "missing_probabilistic_artifacts": [],
+    "artifacts": {
+      "legacy_config": {
+        "artifact_type": "legacy_config",
+        "filename": "simulation_config.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1/simulation_config.json",
+        "relative_path": "simulation_config.json",
+        "exists": true,
+        "size_bytes": 2065,
+        "generated_at": "2026-03-09T12:00:00"
+      },
+      "base_config": {
+        "artifact_type": "base_config",
+        "filename": "simulation_config.base.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1/simulation_config.base.json",
+        "relative_path": "simulation_config.base.json",
+        "exists": true,
+        "size_bytes": 2557,
+        "schema_version": "probabilistic.prepare.v1",
+        "generator_version": "probabilistic.prepare.generator.v1",
+        "generated_at": "2026-03-09T12:00:00"
+      },
+      "uncertainty_spec": {
+        "artifact_type": "uncertainty_spec",
+        "filename": "uncertainty_spec.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1/uncertainty_spec.json",
+        "relative_path": "uncertainty_spec.json",
+        "exists": true,
+        "size_bytes": 3533,
+        "schema_version": "probabilistic.prepare.v1",
+        "generator_version": "probabilistic.prepare.generator.v1"
+      },
+      "outcome_spec": {
+        "artifact_type": "outcome_spec",
+        "filename": "outcome_spec.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1/outcome_spec.json",
+        "relative_path": "outcome_spec.json",
+        "exists": true,
+        "size_bytes": 1109,
+        "schema_version": "probabilistic.prepare.v1",
+        "generator_version": "probabilistic.prepare.generator.v1"
+      },
+      "prepared_snapshot": {
+        "artifact_type": "prepared_snapshot",
+        "filename": "prepared_snapshot.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_378aca2941a1/prepared_snapshot.json",
+        "relative_path": "prepared_snapshot.json",
+        "exists": true,
+        "size_bytes": 3414,
+        "schema_version": "probabilistic.prepare.v1",
+        "generator_version": "probabilistic.prepare.generator.v1",
+        "prepared_at": "2026-03-13T09:01:32.731222"
+      }
+    }
+  },
+  "ensemble": {
+    "ensemble_id": "0001",
+    "run_ids": [
+      "0001",
+      "0002"
+    ],
+    "ensemble_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/simulations/sim_378aca2941a1/ensemble/ensemble_0001"
+  },
+  "report": {
+    "report_id": "smoke-sim_378aca2941a1-0001-0001",
+    "report_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/reports/smoke-sim_378aca2941a1-0001-0001",
+    "report_route": "/report/smoke-sim_378aca2941a1-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
+    "interaction_route": "/interaction/smoke-sim_378aca2941a1-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
+    "ensemble_id": "0001",
+    "run_id": "0001"
+  }
+}

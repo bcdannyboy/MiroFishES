@@ -573,8 +573,17 @@ def get_graph_data(graph_id: str):
                 "error": "ZEP_API_KEY is not configured"
             }), 500
         
+        mode = request.args.get('mode', 'full')
+        max_nodes = request.args.get('max_nodes', type=int)
+        max_edges = request.args.get('max_edges', type=int)
+
         builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
-        graph_data = builder.get_graph_data(graph_id)
+        graph_data = builder.get_graph_data(
+            graph_id,
+            mode=mode,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
         
         return jsonify({
             "success": True,

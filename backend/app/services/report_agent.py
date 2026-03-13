@@ -451,19 +451,43 @@ class Report:
     created_at: str = ""
     completed_at: str = ""
     error: Optional[str] = None
+    ensemble_id: Optional[str] = None
+    run_id: Optional[str] = None
+    probabilistic_context: Optional[Dict[str, Any]] = None
+    base_graph_id: Optional[str] = None
+    runtime_graph_id: Optional[str] = None
+    graph_ids: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.base_graph_id and self.graph_id:
+            self.base_graph_id = self.graph_id
+        if not self.graph_id and self.base_graph_id:
+            self.graph_id = self.base_graph_id
+        if not self.graph_ids:
+            self.graph_ids = [
+                candidate
+                for candidate in [self.base_graph_id, self.runtime_graph_id]
+                if candidate
+            ]
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "report_id": self.report_id,
             "simulation_id": self.simulation_id,
             "graph_id": self.graph_id,
+            "base_graph_id": self.base_graph_id or self.graph_id,
+            "runtime_graph_id": self.runtime_graph_id,
+            "graph_ids": self.graph_ids,
             "simulation_requirement": self.simulation_requirement,
             "status": self.status.value,
             "outline": self.outline.to_dict() if self.outline else None,
             "markdown_content": self.markdown_content,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
-            "error": self.error
+            "error": self.error,
+            "ensemble_id": self.ensemble_id,
+            "run_id": self.run_id,
+            "probabilistic_context": self.probabilistic_context,
         }
 
 
@@ -835,6 +859,9 @@ Forecast condition: {simulation_requirement}
 Generated analysis report:
 {report_content}
 
+Saved probabilistic report context for this exact report:
+{probabilistic_context}
+
 Rules:
 1. Prioritize answering based on the report content above
 2. Answer directly and avoid long reasoning monologues
@@ -887,7 +914,12 @@ class ReportAgent:
         simulation_id: str,
         simulation_requirement: str,
         llm_client: Optional[LLMClient] = None,
-        zep_tools: Optional[ZepToolsService] = None
+        zep_tools: Optional[ZepToolsService] = None,
+        report_id: Optional[str] = None,
+        probabilistic_context: Optional[Dict[str, Any]] = None,
+        graph_ids: Optional[List[str]] = None,
+        base_graph_id: Optional[str] = None,
+        runtime_graph_id: Optional[str] = None,
     ):
         """
         Initialize the Report Agent.
@@ -899,9 +931,18 @@ class ReportAgent:
             llm_client: LLM client, optional
             zep_tools: Zep tools service, optional
         """
-        self.graph_id = graph_id
+        self.graph_id = base_graph_id or graph_id
+        self.base_graph_id = self.graph_id
+        self.runtime_graph_id = runtime_graph_id
+        combined_graph_ids = []
+        for candidate in [self.base_graph_id, *(graph_ids or []), self.runtime_graph_id]:
+            if candidate and candidate not in combined_graph_ids:
+                combined_graph_ids.append(candidate)
+        self.graph_ids = combined_graph_ids
         self.simulation_id = simulation_id
         self.simulation_requirement = simulation_requirement
+        self.report_id = report_id
+        self.probabilistic_context = probabilistic_context
         
         self.llm = llm_client or LLMClient()
         self.zep_tools = zep_tools or ZepToolsService()
@@ -913,7 +954,60 @@ class ReportAgent:
         self.report_logger: Optional[ReportLogger] = None
         self.console_logger: Optional[ReportConsoleLogger] = None
         
-        logger.info(f"ReportAgent initialized: graph_id={graph_id}, simulation_id={simulation_id}")
+        logger.info(
+            "ReportAgent initialized: graph_id=%s graph_ids=%s simulation_id=%s",
+            self.graph_id,
+            self.graph_ids,
+            simulation_id,
+        )
+
+    def _get_chat_report_context(self) -> tuple[str, Optional[Dict[str, Any]]]:
+        """Load the exact saved report content for chat when one report is in scope."""
+        report_content = ""
+        report_context = self.probabilistic_context
+
+        try:
+            report = None
+            if self.report_id:
+                report = ReportManager.get_report(self.report_id)
+            if report is None:
+                report = ReportManager.get_report_for_scope(
+                    self.simulation_id,
+                    legacy_only=True,
+                )
+
+            if report and report.markdown_content:
+                report_content = report.markdown_content[:15000]
+                if len(report.markdown_content) > 15000:
+                    report_content += "\n\n... [Report content truncated] ..."
+            if (
+                self.report_id
+                and report
+                and report.probabilistic_context
+                and report_context is None
+            ):
+                report_context = report.probabilistic_context
+        except Exception as e:
+            logger.warning(f"Failed to load report content: {e}")
+
+        return report_content, report_context
+
+    @staticmethod
+    def _format_chat_probabilistic_context(
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Keep probabilistic chat grounding explicit without overflowing the prompt."""
+        if not probabilistic_context:
+            return "(No saved probabilistic context for this report.)"
+
+        context_text = json.dumps(
+            probabilistic_context,
+            ensure_ascii=False,
+            indent=2,
+        )
+        if len(context_text) > 4000:
+            context_text = context_text[:4000] + "\n... [Probabilistic context truncated] ..."
+        return context_text
     
     def _define_tools(self) -> Dict[str, Dict[str, Any]]:
         """Define the available tools."""
@@ -972,6 +1066,7 @@ class ReportAgent:
                 ctx = parameters.get("report_context", "") or report_context
                 result = self.zep_tools.insight_forge(
                     graph_id=self.graph_id,
+                    graph_ids=self.graph_ids,
                     query=query,
                     simulation_requirement=self.simulation_requirement,
                     report_context=ctx
@@ -986,6 +1081,7 @@ class ReportAgent:
                     include_expired = include_expired.lower() in ['true', '1', 'yes']
                 result = self.zep_tools.panorama_search(
                     graph_id=self.graph_id,
+                    graph_ids=self.graph_ids,
                     query=query,
                     include_expired=include_expired
                 )
@@ -999,6 +1095,7 @@ class ReportAgent:
                     limit = int(limit)
                 result = self.zep_tools.quick_search(
                     graph_id=self.graph_id,
+                    graph_ids=self.graph_ids,
                     query=query,
                     limit=limit
                 )
@@ -1027,13 +1124,17 @@ class ReportAgent:
                 return self._execute_tool("quick_search", parameters, report_context)
             
             elif tool_name == "get_graph_statistics":
-                result = self.zep_tools.get_graph_statistics(self.graph_id)
+                result = self.zep_tools.get_graph_statistics(
+                    self.graph_id,
+                    graph_ids=self.graph_ids,
+                )
                 return json.dumps(result, ensure_ascii=False, indent=2)
             
             elif tool_name == "get_entity_summary":
                 entity_name = parameters.get("entity_name", "")
                 result = self.zep_tools.get_entity_summary(
                     graph_id=self.graph_id,
+                    graph_ids=self.graph_ids,
                     entity_name=entity_name
                 )
                 return json.dumps(result, ensure_ascii=False, indent=2)
@@ -1048,6 +1149,7 @@ class ReportAgent:
                 entity_type = parameters.get("entity_type", "")
                 nodes = self.zep_tools.get_entities_by_type(
                     graph_id=self.graph_id,
+                    graph_ids=self.graph_ids,
                     entity_type=entity_type
                 )
                 result = [n.to_dict() for n in nodes]
@@ -1575,6 +1677,9 @@ class ReportAgent:
             report_id=report_id,
             simulation_id=self.simulation_id,
             graph_id=self.graph_id,
+            base_graph_id=self.base_graph_id,
+            runtime_graph_id=self.runtime_graph_id,
+            graph_ids=self.graph_ids,
             simulation_requirement=self.simulation_requirement,
             status=ReportStatus.PENDING,
             created_at=datetime.now().isoformat()
@@ -1797,21 +1902,14 @@ class ReportAgent:
         
         chat_history = chat_history or []
         
-        # Get the generated report content.
-        report_content = ""
-        try:
-            report = ReportManager.get_report_by_simulation(self.simulation_id)
-            if report and report.markdown_content:
-                # Limit the report length to keep the context manageable.
-                report_content = report.markdown_content[:15000]
-                if len(report.markdown_content) > 15000:
-                    report_content += "\n\n... [Report content truncated] ..."
-        except Exception as e:
-            logger.warning(f"Failed to load report content: {e}")
+        report_content, probabilistic_context = self._get_chat_report_context()
         
         system_prompt = CHAT_SYSTEM_PROMPT_TEMPLATE.format(
             simulation_requirement=self.simulation_requirement,
             report_content=report_content if report_content else "(No report available yet)",
+            probabilistic_context=self._format_chat_probabilistic_context(
+                probabilistic_context
+            ),
             tools_description=self._get_tools_description(),
         )
 
@@ -2495,35 +2593,54 @@ class ReportManager:
             report_id=data['report_id'],
             simulation_id=data['simulation_id'],
             graph_id=data['graph_id'],
+            base_graph_id=data.get('base_graph_id'),
+            runtime_graph_id=data.get('runtime_graph_id'),
+            graph_ids=data.get('graph_ids') or [],
             simulation_requirement=data['simulation_requirement'],
             status=ReportStatus(data['status']),
             outline=outline,
             markdown_content=markdown_content,
             created_at=data.get('created_at', ''),
             completed_at=data.get('completed_at', ''),
-            error=data.get('error')
+            error=data.get('error'),
+            ensemble_id=data.get('ensemble_id'),
+            run_id=data.get('run_id'),
+            probabilistic_context=data.get('probabilistic_context'),
         )
     
     @classmethod
     def get_report_by_simulation(cls, simulation_id: str) -> Optional[Report]:
         """Get a report by simulation ID."""
-        cls._ensure_reports_dir()
-        
-        for item in os.listdir(cls.REPORTS_DIR):
-            item_path = os.path.join(cls.REPORTS_DIR, item)
-            # New format: folder.
-            if os.path.isdir(item_path):
-                report = cls.get_report(item)
-                if report and report.simulation_id == simulation_id:
-                    return report
-            # Backward-compatible legacy format: JSON file.
-            elif item.endswith('.json'):
-                report_id = item[:-5]
-                report = cls.get_report(report_id)
-                if report and report.simulation_id == simulation_id:
-                    return report
-        
-        return None
+        reports = cls.list_reports(simulation_id=simulation_id, limit=1)
+        return reports[0] if reports else None
+
+    @classmethod
+    def get_report_for_scope(
+        cls,
+        simulation_id: str,
+        *,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        legacy_only: bool = False,
+    ) -> Optional[Report]:
+        """Get the newest report that matches one exact probabilistic or legacy scope."""
+        reports = cls.list_reports(simulation_id=simulation_id, limit=200)
+
+        if legacy_only:
+            reports = [
+                report for report in reports
+                if not report.ensemble_id and not report.run_id
+            ]
+            return reports[0] if reports else None
+
+        if ensemble_id is not None:
+            reports = [
+                report for report in reports
+                if report.ensemble_id == ensemble_id and report.run_id == run_id
+            ]
+            return reports[0] if reports else None
+
+        return cls.get_report_by_simulation(simulation_id)
     
     @classmethod
     def list_reports(cls, simulation_id: Optional[str] = None, limit: int = 50) -> List[Report]:

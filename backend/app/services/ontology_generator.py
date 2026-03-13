@@ -5,6 +5,7 @@ definitions suitable for social simulation.
 """
 
 import json
+import re
 from typing import Dict, Any, List, Optional
 from ..utils.llm_client import LLMClient
 
@@ -208,6 +209,8 @@ class OntologyGenerator:
     
     # Maximum text length sent to the LLM (50,000 characters).
     MAX_TEXT_LENGTH_FOR_LLM = 50000
+    _PASCAL_CASE_PATTERN = re.compile(r'^[A-Z][A-Za-z0-9]*$')
+    _NON_ALNUM_PATTERN = re.compile(r'[^A-Za-z0-9]+')
     
     def _build_user_message(
         self,
@@ -257,6 +260,103 @@ Based on the information above, design entity types and relationship types suita
 """
         
         return message
+
+    @classmethod
+    def _normalize_lookup_key(cls, value: Any) -> str:
+        """Collapse an entity label into a lookup key for loose matching."""
+        return cls._NON_ALNUM_PATTERN.sub('', str(value or '')).lower()
+
+    @classmethod
+    def _normalize_entity_name(cls, value: Any, fallback: str) -> str:
+        """Convert an entity name to the PascalCase format required by Zep."""
+        text = str(value or '').strip()
+        if cls._PASCAL_CASE_PATTERN.fullmatch(text):
+            return text
+
+        parts = [part for part in cls._NON_ALNUM_PATTERN.split(text) if part]
+        if not parts:
+            compact = cls._NON_ALNUM_PATTERN.sub('', text)
+            parts = [compact] if compact else []
+
+        normalized_parts = []
+        for part in parts:
+            if part.isupper():
+                normalized_parts.append(part)
+            else:
+                normalized_parts.append(part[0].upper() + part[1:])
+
+        candidate = ''.join(normalized_parts) or fallback
+        if not candidate:
+            return fallback
+        if not candidate[0].isalpha():
+            candidate = f"Entity{candidate}"
+
+        if cls._PASCAL_CASE_PATTERN.fullmatch(candidate):
+            return candidate
+
+        compact = re.sub(r'[^A-Za-z0-9]', '', candidate)
+        if not compact:
+            return fallback
+        if not compact[0].isalpha():
+            compact = f"Entity{compact}"
+        return compact[0].upper() + compact[1:]
+
+    @classmethod
+    def _normalize_entity_types(
+        cls,
+        entity_types: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Normalize entity names and keep them unique."""
+        normalized_entities = []
+        used_names = set()
+
+        for index, entity in enumerate(entity_types, start=1):
+            normalized_entity = dict(entity)
+            base_name = cls._normalize_entity_name(
+                normalized_entity.get("name"),
+                fallback=f"EntityType{index}"
+            )
+
+            name = base_name
+            suffix = 2
+            while name in used_names:
+                name = f"{base_name}{suffix}"
+                suffix += 1
+
+            normalized_entity["name"] = name
+            normalized_entities.append(normalized_entity)
+            used_names.add(name)
+
+        return normalized_entities
+
+    @classmethod
+    def _build_entity_lookup(
+        cls,
+        entity_types: List[Dict[str, Any]]
+    ) -> Dict[str, str]:
+        """Build a tolerant lookup from any alias to the canonical entity name."""
+        lookup: Dict[str, str] = {}
+        for entity in entity_types:
+            name = entity.get("name", "")
+            key = cls._normalize_lookup_key(name)
+            if key:
+                lookup[key] = name
+        return lookup
+
+    @classmethod
+    def _resolve_entity_reference(
+        cls,
+        value: Any,
+        entity_lookup: Dict[str, str]
+    ) -> Optional[str]:
+        """Resolve an entity reference to a normalized defined entity type."""
+        raw_key = cls._normalize_lookup_key(value)
+        if raw_key in entity_lookup:
+            return entity_lookup[raw_key]
+
+        normalized = cls._normalize_entity_name(value, fallback="")
+        normalized_key = cls._normalize_lookup_key(normalized)
+        return entity_lookup.get(normalized_key)
     
     def _validate_and_process(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and post-process the result."""
@@ -268,6 +368,8 @@ Based on the information above, design entity types and relationship types suita
             result["edge_types"] = []
         if "analysis_summary" not in result:
             result["analysis_summary"] = ""
+
+        result["entity_types"] = self._normalize_entity_types(result["entity_types"])
         
         # Validate entity types.
         for entity in result["entity_types"]:
@@ -343,8 +445,31 @@ Based on the information above, design entity types and relationship types suita
         if len(result["entity_types"]) > MAX_ENTITY_TYPES:
             result["entity_types"] = result["entity_types"][:MAX_ENTITY_TYPES]
         
+        entity_lookup = self._build_entity_lookup(result["entity_types"])
+
         if len(result["edge_types"]) > MAX_EDGE_TYPES:
             result["edge_types"] = result["edge_types"][:MAX_EDGE_TYPES]
+
+        valid_entity_names = {entity["name"] for entity in result["entity_types"]}
+        for edge in result["edge_types"]:
+            normalized_source_targets = []
+            for source_target in edge["source_targets"]:
+                source = self._resolve_entity_reference(
+                    source_target.get("source"),
+                    entity_lookup
+                )
+                target = self._resolve_entity_reference(
+                    source_target.get("target"),
+                    entity_lookup
+                )
+
+                if source in valid_entity_names and target in valid_entity_names:
+                    normalized_source_targets.append({
+                        "source": source,
+                        "target": target
+                    })
+
+            edge["source_targets"] = normalized_source_targets
         
         return result
     

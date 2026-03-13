@@ -17,8 +17,15 @@ export const prepareSimulation = (data) => {
 }
 
 /**
+ * Fetch the current prepare capability surface for Step 2.
+ */
+export const getPrepareCapabilities = () => {
+  return service.get('/api/simulation/prepare/capabilities')
+}
+
+/**
  * Query preparation task progress.
- * @param {Object} data - { task_id?, simulation_id? }
+ * @param {Object} data - { task_id?, simulation_id?, probabilistic_mode? }
  */
 export const getPrepareStatus = (data) => {
   return service.post('/api/simulation/prepare/status', data)
@@ -30,6 +37,193 @@ export const getPrepareStatus = (data) => {
  */
 export const getSimulation = (simulationId) => {
   return service.get(`/api/simulation/${simulationId}`)
+}
+
+/**
+ * Create a probabilistic ensemble under one prepared simulation.
+ * @param {string} simulationId
+ * @param {Object} data - { run_count, max_concurrency?, root_seed?, sampling_mode? }
+ */
+export const createSimulationEnsemble = (simulationId, data) => {
+  return service.post(`/api/simulation/${simulationId}/ensembles`, data)
+}
+
+/**
+ * List stored ensembles for one simulation.
+ * @param {string} simulationId
+ */
+export const listSimulationEnsembles = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles`)
+}
+
+/**
+ * Load one stored ensemble with lightweight run summaries.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ */
+export const getSimulationEnsemble = (simulationId, ensembleId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}`)
+}
+
+/**
+ * Fetch the persisted-on-demand aggregate summary for one ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ */
+export const getSimulationEnsembleSummary = (simulationId, ensembleId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/summary`)
+}
+
+/**
+ * Fetch the persisted-on-demand scenario clusters for one ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ */
+export const getSimulationEnsembleClusters = (simulationId, ensembleId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/clusters`)
+}
+
+/**
+ * Fetch the persisted-on-demand observational sensitivity artifact for one ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ */
+export const getSimulationEnsembleSensitivity = (simulationId, ensembleId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/sensitivity`)
+}
+
+/**
+ * Launch an explicit batch of stored runs for one ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {Object} data - { run_ids?, platform?, max_rounds?, enable_graph_memory_update?, force?, close_environment_on_complete? }
+ */
+export const startSimulationEnsemble = (simulationId, ensembleId, data = {}) => {
+  return service.post(`/api/simulation/${simulationId}/ensembles/${ensembleId}/start`, data)
+}
+
+/**
+ * Fetch poll-safe ensemble runtime status.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {Object} params - { limit?, run_id? }
+ */
+export const getSimulationEnsembleStatus = (simulationId, ensembleId, params = {}) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/status`, { params })
+}
+
+/**
+ * List stored runs for one ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {Object} params - { limit? }
+ */
+export const listSimulationEnsembleRuns = (simulationId, ensembleId, params = {}) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/runs`, { params })
+}
+
+/**
+ * Load one stored run, including its runtime status summary.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ */
+export const getSimulationEnsembleRun = (simulationId, ensembleId, runId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}`)
+}
+
+/**
+ * Create one fresh child run from an existing stored run.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ */
+export const rerunSimulationEnsembleRun = (simulationId, ensembleId, runId) => {
+  return service.post(
+    `/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/rerun`
+  )
+}
+
+/**
+ * Reset one explicit subset of stored runs back to the prepared state.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {Object} data - { run_ids? }
+ */
+export const cleanupSimulationEnsembleRuns = (simulationId, ensembleId, data = {}) => {
+  return service.post(`/api/simulation/${simulationId}/ensembles/${ensembleId}/cleanup`, data)
+}
+
+/**
+ * Start one stored run under an ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ * @param {Object} data - { platform?, max_rounds?, enable_graph_memory_update?, force?, close_environment_on_complete? }
+ */
+export const startSimulationEnsembleRun = (simulationId, ensembleId, runId, data = {}) => {
+  return service.post(
+    `/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/start`,
+    data
+  )
+}
+
+/**
+ * Stop one stored run under an ensemble.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ */
+export const stopSimulationEnsembleRun = (simulationId, ensembleId, runId) => {
+  return service.post(`/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/stop`)
+}
+
+/**
+ * Fetch run-scoped runtime status for one stored ensemble member.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ */
+export const getSimulationEnsembleRunStatus = (simulationId, ensembleId, runId) => {
+  return service.get(`/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/run-status`)
+}
+
+/**
+ * Fetch run-scoped action history under the ensemble namespace.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ * @param {Object} params - { limit, offset, platform, agent_id, round_num }
+ */
+export const getSimulationEnsembleRunActions = (
+  simulationId,
+  ensembleId,
+  runId,
+  params = {}
+) => {
+  return service.get(
+    `/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/actions`,
+    { params }
+  )
+}
+
+/**
+ * Fetch the run-scoped round timeline under the ensemble namespace.
+ * @param {string} simulationId
+ * @param {string} ensembleId
+ * @param {string} runId
+ * @param {Object} params - { start_round?, end_round? }
+ */
+export const getSimulationEnsembleRunTimeline = (
+  simulationId,
+  ensembleId,
+  runId,
+  params = {}
+) => {
+  return service.get(
+    `/api/simulation/${simulationId}/ensembles/${ensembleId}/runs/${runId}/timeline`,
+    { params }
+  )
 }
 
 /**

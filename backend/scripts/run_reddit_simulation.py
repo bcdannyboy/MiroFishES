@@ -11,6 +11,7 @@ Features:
 Usage:
     python run_reddit_simulation.py --config /path/to/simulation_config.json
     python run_reddit_simulation.py --config /path/to/simulation_config.json --no-wait  # Exit immediately after completion
+    python run_reddit_simulation.py --config /path/to/simulation_config.json --run-dir /path/to/run_root --run-id run_001 --seed 17
 """
 
 import argparse
@@ -135,6 +136,26 @@ except ImportError as e:
 IPC_COMMANDS_DIR = "ipc_commands"
 IPC_RESPONSES_DIR = "ipc_responses"
 ENV_STATUS_FILE = "env_status.json"
+
+
+def resolve_runtime_dir(config_path: str, run_dir: Optional[str] = None) -> str:
+    """Resolve the runtime directory, defaulting to the legacy config-root layout."""
+    return os.path.abspath(run_dir or os.path.dirname(config_path) or ".")
+
+
+def apply_runtime_seed(seed: Optional[int]) -> None:
+    """
+    Seed Python's RNG for local scheduling helpers only.
+
+    This remains best-effort because OASIS/LLM behavior may still vary across runs.
+    """
+    if seed is not None:
+        random.seed(seed)
+
+
+def build_runtime_rng(seed: Optional[int]) -> random.Random:
+    """Create one explicit RNG stream for this script's local scheduling logic."""
+    return random.Random(seed) if seed is not None else random.Random()
 
 class CommandType:
     """Command type constants."""
@@ -402,18 +423,31 @@ class RedditSimulationRunner:
         ActionType.MUTE,
     ]
     
-    def __init__(self, config_path: str, wait_for_commands: bool = True):
+    def __init__(
+        self,
+        config_path: str,
+        run_dir: Optional[str] = None,
+        wait_for_commands: bool = True,
+        run_id: Optional[str] = None,
+        runtime_seed: Optional[int] = None,
+    ):
         """
         Initialize the simulation runner.
         
         Args:
             config_path: Path to the config file (simulation_config.json)
+            run_dir: Optional runtime directory; defaults to the config directory
             wait_for_commands: Whether to wait for commands after the simulation completes (default: True)
+            run_id: Optional run identifier for provenance/logging
+            runtime_seed: Optional Python RNG seed used for scheduling helpers
         """
         self.config_path = config_path
         self.config = self._load_config()
-        self.simulation_dir = os.path.dirname(config_path)
+        self.simulation_dir = resolve_runtime_dir(config_path, run_dir)
         self.wait_for_commands = wait_for_commands
+        self.run_id = run_id
+        self.runtime_seed = runtime_seed
+        self.rng = build_runtime_rng(runtime_seed)
         self.env = None
         self.agent_graph = None
         self.ipc_handler = None
@@ -491,7 +525,7 @@ class RedditSimulationRunner:
         else:
             multiplier = 1.0
         
-        target_count = int(random.uniform(base_min, base_max) * multiplier)
+        target_count = int(self.rng.uniform(base_min, base_max) * multiplier)
         
         candidates = []
         for cfg in agent_configs:
@@ -502,10 +536,10 @@ class RedditSimulationRunner:
             if current_hour not in active_hours:
                 continue
             
-            if random.random() < activity_level:
+            if self.rng.random() < activity_level:
                 candidates.append(agent_id)
         
-        selected_ids = random.sample(
+        selected_ids = self.rng.sample(
             candidates, 
             min(target_count, len(candidates))
         ) if candidates else []
@@ -531,6 +565,14 @@ class RedditSimulationRunner:
         print(f"Config file: {self.config_path}")
         print(f"Simulation ID: {self.config.get('simulation_id', 'unknown')}")
         print(f"Command wait mode: {'enabled' if self.wait_for_commands else 'disabled'}")
+        print(f"Runtime directory: {self.simulation_dir}")
+        if self.run_id:
+            print(f"Runtime run ID: {self.run_id}")
+        if self.runtime_seed is not None:
+            print(
+                f"Runtime random seed: {self.runtime_seed} "
+                "(Python scheduling helpers only; model/platform nondeterminism may remain)"
+            )
         print("=" * 60)
         
         time_config = self.config.get("time_config", {})
@@ -712,6 +754,24 @@ async def main():
         default=False,
         help='Shut down the environment immediately after the simulation instead of entering command-wait mode'
     )
+    parser.add_argument(
+        '--run-dir',
+        type=str,
+        default=None,
+        help='Optional runtime directory for run-scoped artifacts; defaults to the config directory'
+    )
+    parser.add_argument(
+        '--run-id',
+        type=str,
+        default=None,
+        help='Optional runtime run identifier for provenance/logging'
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Optional Python random seed for local scheduling helpers'
+    )
     
     args = parser.parse_args()
     
@@ -724,12 +784,16 @@ async def main():
         sys.exit(1)
     
     # Initialize logging with fixed file names and a clean log directory
-    simulation_dir = os.path.dirname(args.config) or "."
+    simulation_dir = resolve_runtime_dir(args.config, args.run_dir)
+    apply_runtime_seed(args.seed)
     setup_oasis_logging(os.path.join(simulation_dir, "log"))
     
     runner = RedditSimulationRunner(
         config_path=args.config,
-        wait_for_commands=not args.no_wait
+        run_dir=simulation_dir,
+        wait_for_commands=not args.no_wait,
+        run_id=args.run_id,
+        runtime_seed=args.seed,
     )
     await runner.run(max_rounds=args.max_rounds)
 

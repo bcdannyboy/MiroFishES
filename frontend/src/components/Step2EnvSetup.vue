@@ -58,6 +58,195 @@
             Using the available context, automatically call tools to organize entities and relationships from the knowledge graph, initialize simulated individuals, and give them distinct behavior and memory shaped by the real-world seed.
           </p>
 
+          <div class="prepare-mode-panel">
+            <div class="prepare-mode-header">
+              <div>
+                <span class="prepare-mode-title">Prepare Mode</span>
+                <p class="prepare-mode-copy">
+                  Legacy prepare keeps the current single-run setup path. Probabilistic prepare now captures an explicit catalog of run-varying config fields plus provenance for later seeded resolution and runtime work.
+                </p>
+              </div>
+              <span v-if="capabilitiesLoading" class="badge pending">Checking</span>
+              <span v-else-if="probabilisticPrepareEnabled" class="badge accent">Probabilistic Ready</span>
+              <span v-else class="badge pending">Legacy Only</span>
+            </div>
+
+            <div v-if="capabilitiesLoading" class="prepare-mode-note">
+              Checking the backend prepare capability surface before Step 2 begins.
+            </div>
+
+            <template v-else>
+              <div v-if="probabilisticPrepareEnabled" class="mode-toggle" role="tablist" aria-label="Prepare mode">
+                <button
+                  class="mode-toggle-btn"
+                  :class="{ active: selectedPrepareMode === 'legacy' }"
+                  @click="selectPrepareMode('legacy')"
+                >
+                  Legacy
+                </button>
+                <button
+                  class="mode-toggle-btn"
+                  :class="{ active: selectedPrepareMode === 'probabilistic' }"
+                  @click="selectPrepareMode('probabilistic')"
+                >
+                  Probabilistic
+                </button>
+              </div>
+
+              <div
+                v-if="probabilisticPrepareEnabled && selectedPrepareMode === 'probabilistic'"
+                class="probabilistic-config"
+              >
+                <div class="probabilistic-grid">
+                  <div class="control-group">
+                    <label class="control-label" for="probabilistic-run-count">Prepared Runs</label>
+                    <input
+                      id="probabilistic-run-count"
+                      v-model.number="selectedProbabilisticRunCount"
+                      class="control-input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      :disabled="prepareInFlight"
+                    >
+                    <p class="control-help">
+                      Step 2 will create this many stored run shells for Step 3. This is an ensemble-size default, not a probability-quality threshold.
+                    </p>
+                  </div>
+
+                  <div class="control-group">
+                    <label class="control-label" for="uncertainty-profile">Uncertainty Profile</label>
+                    <select
+                      id="uncertainty-profile"
+                      v-model="selectedUncertaintyProfile"
+                      class="control-select"
+                      :disabled="prepareInFlight"
+                    >
+                      <option
+                        v-for="profile in supportedUncertaintyProfiles"
+                        :key="profile"
+                        :value="profile"
+                      >
+                        {{ formatProfileLabel(profile) }}
+                      </option>
+                    </select>
+                    <p class="control-help">
+                      Profiles stay descriptive only at this stage. No sampling or calibrated probabilities are produced yet.
+                    </p>
+                  </div>
+
+                  <div class="control-group">
+                    <span class="control-label">Empirical Outcome Metrics</span>
+                    <div class="metrics-grid">
+                      <label
+                        v-for="metric in outcomeMetricOptions"
+                        :key="metric.metricId"
+                        class="metric-option"
+                        :class="{ selected: selectedOutcomeMetrics.includes(metric.metricId) }"
+                      >
+                        <input
+                          type="checkbox"
+                          :value="metric.metricId"
+                          :checked="selectedOutcomeMetrics.includes(metric.metricId)"
+                          :disabled="prepareInFlight"
+                          @change="toggleOutcomeMetric(metric.metricId)"
+                        >
+                        <span class="metric-content">
+                          <span class="metric-title">{{ metric.label }}</span>
+                          <span class="metric-description">{{ metric.description }}</span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <p class="prepare-disclaimer">
+                  This step prepares artifact contracts first. Runtime shells are {{ probabilisticCapabilityState.runtimeEnabled ? 'available' : 'disabled' }}, Step 4 is {{ probabilisticCapabilityState.reportModeLabel }}, Step 5 is {{ probabilisticCapabilityState.interactionModeLabel }}, and probability language remains {{ probabilisticCapabilityState.calibrationModeLabel }} until stronger artifacts exist.
+                </p>
+              </div>
+
+              <div
+                v-else-if="!probabilisticPrepareEnabled"
+                class="prepare-mode-note muted"
+              >
+                {{ capabilitiesError
+                  ? 'Prepare capability discovery failed, so Step 2 is staying on the legacy single-run path.'
+                  : 'Probabilistic prepare is disabled by the backend flag. Step 2 stays on the legacy single-run path.' }}
+              </div>
+              <div v-else class="prepare-mode-note muted">
+                Legacy mode preserves the current auto-generated prepare flow and does not emit probabilistic sidecar artifacts.
+              </div>
+
+              <div v-if="prepareError" class="prepare-error">
+                {{ prepareError }}
+              </div>
+
+              <div v-if="showPrepareActionPanel" class="action-group">
+                <button
+                  class="action-btn primary"
+                  :disabled="prepareActionDisabled"
+                  @click="handlePrepareAction"
+                >
+                  {{ prepareActionLabel }}
+                </button>
+              </div>
+            </template>
+          </div>
+
+          <div v-if="showPreparedArtifactSummary" class="prepare-summary-panel" data-testid="probabilistic-prepared-summary">
+            <div class="config-block-header">
+              <span class="config-block-title">Prepared Artifact Summary</span>
+              <span class="config-block-badge">{{ preparedArtifactRows.length }} </span>
+            </div>
+            <div class="summary-grid">
+              <div class="summary-card">
+                <span class="summary-label">Mode</span>
+                <span class="summary-value">{{ preparedArtifactSummary.mode || 'probabilistic' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Uncertainty Profile</span>
+                <span class="summary-value">{{ formatProfileLabel(preparedArtifactSummary.uncertainty_profile || selectedUncertaintyProfile) }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Schema Version</span>
+                <span class="summary-value mono">{{ preparedArtifactSummary.schema_version || '-' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Metrics</span>
+                <span class="summary-value">{{ preparedMetricCount }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Tracked Fields</span>
+                <span class="summary-value">{{ preparedRandomVariableCount }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Run-varying</span>
+                <span class="summary-value">{{ preparedNonFixedRandomVariableCount }}</span>
+              </div>
+            </div>
+            <p v-if="preparedVariablePreview" class="summary-note">
+              First tracked fields: <span class="mono">{{ preparedVariablePreview }}</span>
+            </p>
+            <div class="artifact-list">
+              <div
+                v-for="artifact in preparedArtifactRows"
+                :key="artifact.name"
+                class="artifact-row"
+              >
+                <div>
+                  <span class="artifact-name">{{ formatArtifactLabel(artifact.name) }}</span>
+                  <span class="artifact-file mono">{{ artifact.filename || '-' }}</span>
+                </div>
+                <span class="artifact-meta">
+                  {{ artifact.exists === false ? 'planned' : 'ready' }}
+                </span>
+              </div>
+            </div>
+            <p class="prepare-disclaimer">
+              Artifact metadata describes provenance only. It is not a probability claim, calibration artifact, or runtime guarantee.
+            </p>
+          </div>
+
           <!-- Profiles Stats -->
           <div v-if="profiles.length > 0" class="stats-grid">
             <div class="stat-card">
@@ -490,11 +679,14 @@
             </button>
             <button
               class="action-btn primary"
-              :disabled="phase < 4"
+              :disabled="!step2StartState.enabled"
               @click="handleStartSimulation"
             >
-              Start Dual-World Parallel Simulation ->
+              {{ step3HandoffInFlight ? 'Preparing Step 3 runtime...' : 'Start Dual-World Parallel Simulation ->' }}
             </button>
+            <p v-if="step2StartState.helperText" class="prepare-mode-note muted action-note">
+              {{ step2StartState.helperText }}
+            </p>
           </div>
         </div>
       </div>
@@ -597,12 +789,22 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import {
+  getPrepareCapabilities,
   prepareSimulation,
   getPrepareStatus,
+  createSimulationEnsemble,
   getSimulationProfilesRealtime,
-  getSimulationConfig,
   getSimulationConfigRealtime
 } from '../api/simulation'
+import {
+  buildProbabilisticEnsembleRequest,
+  getProbabilisticRuntimeShellErrorMessage,
+  isStep2PrepareInFlight,
+  shouldPromoteStep2ReadyState,
+  shouldLaunchProbabilisticRuntime,
+  deriveProbabilisticCapabilityState,
+  getStep2StartSimulationState
+} from '../utils/probabilisticRuntime'
 
 const props = defineProps({
   simulationId: String,
@@ -625,6 +827,19 @@ const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
 const showProfilesDetail = ref(true)
+const capabilitiesLoading = ref(true)
+const prepareCapabilities = ref(null)
+const selectedPrepareMode = ref('legacy')
+const selectedUncertaintyProfile = ref('')
+const selectedOutcomeMetrics = ref([])
+const selectedProbabilisticRunCount = ref(
+  buildProbabilisticEnsembleRequest().run_count
+)
+const preparedArtifactSummary = ref(null)
+const prepareError = ref('')
+const hasStartedPrepare = ref(false)
+const capabilitiesError = ref('')
+const step3HandoffInFlight = ref(false)
 
 let lastLoggedMessage = ''
 let lastLoggedProfileCount = 0
@@ -661,6 +876,116 @@ const autoGeneratedRounds = computed(() => {
   return Math.max(calculatedRounds, 40)
 })
 
+const probabilisticPrepareEnabled = computed(() => (
+  Boolean(prepareCapabilities.value?.probabilistic_prepare_enabled)
+))
+
+const probabilisticCapabilityState = computed(() => (
+  deriveProbabilisticCapabilityState(prepareCapabilities.value || {})
+))
+
+const supportedUncertaintyProfiles = computed(() => (
+  prepareCapabilities.value?.supported_uncertainty_profiles || []
+))
+
+const outcomeMetricOptions = computed(() => {
+  const metrics = prepareCapabilities.value?.supported_outcome_metrics || {}
+  return Object.entries(metrics).map(([metricId, metadata]) => ({
+    metricId,
+    label: metadata?.label || metricId,
+    description: metadata?.description || 'Empirical metric prepared for later aggregation.'
+  }))
+})
+
+const prepareInFlight = computed(() => (
+  isStep2PrepareInFlight({
+    hasStartedPrepare: hasStartedPrepare.value,
+    phase: phase.value,
+    activePrepareTaskId: taskId.value
+  })
+))
+
+const step2StartState = computed(() => getStep2StartSimulationState({
+  simulationId: props.simulationId,
+  phase: phase.value,
+  step3HandoffInFlight: step3HandoffInFlight.value,
+  prepareInFlight: prepareInFlight.value,
+  selectedPrepareMode: selectedPrepareMode.value,
+  preparedArtifactSummary: preparedArtifactSummary.value,
+  capabilities: prepareCapabilities.value || {}
+}))
+
+const showPrepareActionPanel = computed(() => (
+  !capabilitiesLoading.value
+    && !prepareInFlight.value
+    && (
+      (selectedPrepareMode.value === 'probabilistic' && probabilisticPrepareEnabled.value)
+      || !hasStartedPrepare.value
+    )
+))
+
+const prepareActionDisabled = computed(() => {
+  if (!props.simulationId || capabilitiesLoading.value || prepareInFlight.value) {
+    return true
+  }
+
+  if (selectedPrepareMode.value !== 'probabilistic') {
+    return false
+  }
+
+  return (
+    !selectedUncertaintyProfile.value
+    || selectedOutcomeMetrics.value.length === 0
+    || !Number.isInteger(selectedProbabilisticRunCount.value)
+    || selectedProbabilisticRunCount.value <= 0
+  )
+})
+
+const prepareActionLabel = computed(() => (
+  selectedPrepareMode.value === 'probabilistic'
+    ? 'Prepare probabilistic artifact set'
+    : 'Start legacy prepare'
+))
+
+const showPreparedArtifactSummary = computed(() => (
+  !prepareInFlight.value
+    && Boolean(simulationConfig.value)
+    && (
+      Boolean(preparedArtifactSummary.value?.probabilistic_mode)
+      || preparedArtifactSummary.value?.mode === 'probabilistic'
+    )
+))
+
+const preparedArtifactRows = computed(() => (
+  Object.entries(preparedArtifactSummary.value?.artifacts || {}).map(([name, artifact]) => ({
+    name,
+    ...artifact
+  }))
+))
+
+const preparedMetricCount = computed(() => (
+  preparedArtifactSummary.value?.outcome_metrics?.length || selectedOutcomeMetrics.value.length || 0
+))
+
+const preparedFeatureMetadata = computed(() => (
+  preparedArtifactSummary.value?.feature_metadata || {}
+))
+
+const preparedRandomVariableCount = computed(() => (
+  preparedFeatureMetadata.value.random_variable_count || 0
+))
+
+const preparedNonFixedRandomVariableCount = computed(() => (
+  preparedFeatureMetadata.value.non_fixed_random_variable_count || 0
+))
+
+const preparedVariablePreview = computed(() => {
+  const preview = preparedFeatureMetadata.value.random_variable_preview
+  return Array.isArray(preview) && preview.length > 0
+    ? preview.join(', ')
+    : ''
+})
+
 // Polling timer
 let pollTimer = null
 let profilesTimer = null
@@ -693,17 +1018,170 @@ const addLog = (msg) => {
   emit('add-log', msg)
 }
 
-const handleStartSimulation = () => {
-  const params = {}
-
-  if (useCustomRounds.value) {
-    params.maxRounds = customMaxRounds.value
-    addLog(`Starting simulation with custom round count: ${customMaxRounds.value} rounds`)
-  } else {
-    addLog(`Starting simulation with auto-generated round count: ${autoGeneratedRounds.value} rounds`)
+const formatProfileLabel = (profile) => {
+  if (!profile) {
+    return '-'
   }
 
-  emit('next-step', params)
+  return profile
+    .split('-')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+const formatArtifactLabel = (artifactName) => (
+  artifactName
+    .split('_')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+)
+
+const selectPrepareMode = (mode) => {
+  selectedPrepareMode.value = mode
+  prepareError.value = ''
+}
+
+const toggleOutcomeMetric = (metricId) => {
+  if (selectedOutcomeMetrics.value.includes(metricId)) {
+    selectedOutcomeMetrics.value = selectedOutcomeMetrics.value.filter(id => id !== metricId)
+    return
+  }
+
+  selectedOutcomeMetrics.value = [...selectedOutcomeMetrics.value, metricId]
+}
+
+const syncPrepareMetadata = (payload = {}) => {
+  const summary = payload.prepared_artifact_summary || payload.prepare_info?.prepared_artifact_summary
+  if (summary) {
+    preparedArtifactSummary.value = summary
+  }
+
+  const outcomeMetrics = payload.outcome_metrics || summary?.outcome_metrics
+  if (Array.isArray(outcomeMetrics) && outcomeMetrics.length > 0) {
+    selectedOutcomeMetrics.value = [...outcomeMetrics]
+  }
+
+  const uncertaintyProfile = payload.uncertainty_profile || summary?.uncertainty_profile
+  if (uncertaintyProfile) {
+    selectedUncertaintyProfile.value = uncertaintyProfile
+  }
+
+  if (payload.probabilistic_mode || summary?.probabilistic_mode || summary?.mode === 'probabilistic') {
+    selectedPrepareMode.value = 'probabilistic'
+  }
+}
+
+const applyPrepareCapabilities = (capabilities) => {
+  prepareCapabilities.value = capabilities
+  capabilitiesError.value = ''
+
+  if (!selectedUncertaintyProfile.value) {
+    selectedUncertaintyProfile.value = capabilities?.default_uncertainty_profile || ''
+  }
+
+  if (selectedOutcomeMetrics.value.length === 0) {
+    selectedOutcomeMetrics.value = [...(capabilities?.default_outcome_metrics || [])]
+  }
+
+  const capabilityState = deriveProbabilisticCapabilityState(capabilities || {})
+  addLog(
+    'Probabilistic rollout surface: '
+      + `runtime ${capabilityState.runtimeEnabled ? 'available' : 'disabled'}, `
+      + `report ${capabilityState.reportModeLabel}, `
+      + `interaction ${capabilityState.interactionModeLabel}, `
+      + `calibration ${capabilityState.calibrationModeLabel}`
+  )
+}
+
+const fetchPrepareCapabilities = async () => {
+  capabilitiesLoading.value = true
+
+  try {
+    const res = await getPrepareCapabilities()
+    if (res.success && res.data) {
+      applyPrepareCapabilities(res.data)
+      return res.data
+    }
+  } catch (err) {
+    capabilitiesError.value = err.message
+    addLog(`Prepare capability discovery unavailable: ${err.message}. Falling back to legacy prepare.`)
+  } finally {
+    capabilitiesLoading.value = false
+  }
+
+  prepareCapabilities.value = null
+  return null
+}
+
+const handlePrepareAction = async () => {
+  await startPrepareSimulation({
+    mode: selectedPrepareMode.value
+  })
+}
+
+const handleStartSimulation = async () => {
+  if (!props.simulationId || step3HandoffInFlight.value || !step2StartState.value.enabled) {
+    return
+  }
+
+  step3HandoffInFlight.value = true
+  const params = {}
+
+  try {
+    if (useCustomRounds.value) {
+      params.maxRounds = customMaxRounds.value
+      addLog(`Starting simulation with custom round count: ${customMaxRounds.value} rounds`)
+    } else {
+      addLog(`Starting simulation with auto-generated round count: ${autoGeneratedRounds.value} rounds`)
+    }
+
+    if (shouldLaunchProbabilisticRuntime({
+      selectedPrepareMode: selectedPrepareMode.value,
+      preparedArtifactSummary: preparedArtifactSummary.value
+    })) {
+      const ensembleRequest = buildProbabilisticEnsembleRequest({
+        runCount: selectedProbabilisticRunCount.value,
+        maxConcurrency: 1
+      })
+      addLog(
+        `Preparing a stored probabilistic ensemble shell (${ensembleRequest.run_count} runs) for Step 3 monitoring...`
+      )
+
+      const response = await createSimulationEnsemble(props.simulationId, ensembleRequest)
+
+      if (!response?.success || !response?.data) {
+        throw new Error(response?.error || 'Stored run shell creation failed')
+      }
+
+      const ensembleId = response.data.ensemble_id
+      const runId = response.data.runs?.[0]?.run_id || response.data.state?.run_ids?.[0]
+
+      if (!ensembleId || !runId) {
+        throw new Error('The backend did not return a stored run identifier for Step 3')
+      }
+
+      params.runtimeMode = 'probabilistic'
+      params.ensembleId = ensembleId
+      params.runId = runId
+
+      addLog(
+        `OK Prepared probabilistic Step 3 shell: ensemble ${ensembleId}, run ${runId}, ${ensembleRequest.run_count} stored runs total`
+      )
+      addLog(
+        probabilisticCapabilityState.value.reportEnabled
+          ? 'Step 4 can add observed empirical ensemble context for this probabilistic runtime path once report generation completes.'
+          : 'Step 4 report generation remains legacy-only for this probabilistic runtime path.'
+      )
+    }
+
+    emit('next-step', params)
+  } catch (err) {
+    const errorMessage = getProbabilisticRuntimeShellErrorMessage(err)
+    prepareError.value = `Unable to prepare the probabilistic Step 3 runtime shell: ${errorMessage}`
+    addLog(`X ${prepareError.value}`)
+  } finally {
+    step3HandoffInFlight.value = false
+  }
 }
 
 const truncateBio = (bio) => {
@@ -717,27 +1195,54 @@ const selectProfile = (profile) => {
   selectedProfile.value = profile
 }
 
-const startPrepareSimulation = async () => {
+const startPrepareSimulation = async ({ mode = 'legacy' } = {}) => {
   if (!props.simulationId) {
     addLog('Error: missing simulationId')
     emit('update-status', 'error')
     return
   }
 
+  const probabilisticMode = mode === 'probabilistic'
+
+  stopPolling()
+  stopProfilesPolling()
+  stopConfigPolling()
+  taskId.value = null
+  prepareProgress.value = 0
+  progressMessage.value = ''
+  currentStage.value = ''
+  hasStartedPrepare.value = true
+  prepareError.value = ''
   phase.value = 1
+  simulationConfig.value = null
   addLog(`Simulation instance created: ${props.simulationId}`)
-  addLog('Preparing simulation environment...')
+  if (probabilisticMode) {
+    addLog(`Preparing probabilistic artifact set with profile ${selectedUncertaintyProfile.value || 'default'}`)
+  } else {
+    addLog('Preparing simulation environment...')
+  }
   emit('update-status', 'processing')
 
   try {
-    const res = await prepareSimulation({
+    const requestPayload = {
       simulation_id: props.simulationId,
       use_llm_for_profiles: true,
       parallel_profile_count: 5
-    })
+    }
+
+    if (probabilisticMode) {
+      requestPayload.probabilistic_mode = true
+      requestPayload.uncertainty_profile = selectedUncertaintyProfile.value
+      requestPayload.outcome_metrics = [...selectedOutcomeMetrics.value]
+    }
+
+    const res = await prepareSimulation(requestPayload)
 
     if (res.success && res.data) {
+      syncPrepareMetadata(res.data)
+
       if (res.data.already_prepared) {
+        taskId.value = null
         addLog('Detected completed preparation work. Reusing it directly.')
         await loadPreparedData()
         return
@@ -760,10 +1265,14 @@ const startPrepareSimulation = async () => {
       startProfilesPolling()
     } else {
       addLog(`Preparation failed: ${res.error || 'Unknown error'}`)
+      prepareError.value = res.error || 'Preparation could not be started.'
+      hasStartedPrepare.value = false
       emit('update-status', 'error')
     }
   } catch (err) {
     addLog(`Preparation exception: ${err.message}`)
+    prepareError.value = err.message
+    hasStartedPrepare.value = false
     emit('update-status', 'error')
   }
 }
@@ -796,7 +1305,8 @@ const pollPrepareStatus = async () => {
   try {
     const res = await getPrepareStatus({
       task_id: taskId.value,
-      simulation_id: props.simulationId
+      simulation_id: props.simulationId,
+      probabilistic_mode: selectedPrepareMode.value === 'probabilistic' || showPreparedArtifactSummary.value
     })
 
     if (res.success && res.data) {
@@ -804,6 +1314,7 @@ const pollPrepareStatus = async () => {
 
       prepareProgress.value = data.progress || 0
       progressMessage.value = data.message || ''
+      syncPrepareMetadata(data)
 
       if (data.progress_detail) {
         currentStage.value = data.progress_detail.current_stage_name || ''
@@ -834,11 +1345,15 @@ const pollPrepareStatus = async () => {
         addLog('OK Preparation completed')
         stopPolling()
         stopProfilesPolling()
+        taskId.value = null
         await loadPreparedData()
       } else if (data.status === 'failed') {
         addLog(`X Preparation failed: ${data.error || 'Unknown error'}`)
+        prepareError.value = data.error || 'Preparation failed.'
+        hasStartedPrepare.value = false
         stopPolling()
         stopProfilesPolling()
+        emit('update-status', 'error')
       }
     }
   } catch (err) {
@@ -915,7 +1430,13 @@ const fetchConfigRealtime = async () => {
         }
       }
 
-      if (data.config_generated && data.config) {
+      if (
+        shouldPromoteStep2ReadyState({
+          configGenerated: data.config_generated,
+          config: data.config,
+          activePrepareTaskId: taskId.value
+        })
+      ) {
         simulationConfig.value = data.config
         addLog('OK Simulation configuration generated')
 
@@ -949,6 +1470,7 @@ const fetchConfigRealtime = async () => {
 }
 
 const loadPreparedData = async () => {
+  hasStartedPrepare.value = true
   phase.value = 2
   addLog('Loading existing configuration data...')
 
@@ -992,11 +1514,26 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
-  if (props.simulationId) {
-    addLog('Step2 Environment SetupInitializing')
-    startPrepareSimulation()
+const initializeStep2 = async () => {
+  if (!props.simulationId) {
+    return
   }
+
+  addLog('Step2 Environment SetupInitializing')
+  const capabilities = await fetchPrepareCapabilities()
+
+  if (capabilities?.probabilistic_prepare_enabled) {
+    addLog('Probabilistic prepare is available. Starting the legacy baseline prepare first to preserve the current Step 2 flow.')
+    addLog('After the baseline prepare completes, switch to Probabilistic mode to persist uncertainty artifacts for the same simulation.')
+    addLog(`Supported uncertainty profiles: ${capabilities.supported_uncertainty_profiles.join(', ')}`)
+  }
+
+  addLog('Using the legacy prepare path for this simulation.')
+  await startPrepareSimulation({ mode: 'legacy' })
+}
+
+onMounted(() => {
+  initializeStep2()
 })
 
 onUnmounted(() => {
@@ -1100,6 +1637,262 @@ onUnmounted(() => {
   color: #666;
   line-height: 1.5;
   margin-bottom: 16px;
+}
+
+.prepare-mode-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid #E5E7EB;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%);
+}
+
+.prepare-mode-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.prepare-mode-title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #111827;
+}
+
+.prepare-mode-copy,
+.prepare-mode-note,
+.prepare-disclaimer,
+.control-help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #64748B;
+}
+
+.prepare-mode-note {
+  margin-top: 12px;
+}
+
+.prepare-mode-note.muted {
+  color: #475569;
+}
+
+.action-note {
+  margin-top: 10px;
+}
+
+.mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mode-toggle-btn {
+  border: 1px solid #D1D5DB;
+  border-radius: 999px;
+  background: #FFFFFF;
+  color: #334155;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mode-toggle-btn.active {
+  background: #111827;
+  border-color: #111827;
+  color: #FFFFFF;
+}
+
+.probabilistic-config {
+  margin-top: 16px;
+}
+
+.probabilistic-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.control-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #0F172A;
+}
+
+.control-select {
+  width: 100%;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #0F172A;
+  background: #FFFFFF;
+}
+
+.control-input {
+  width: 100%;
+  border: 1px solid #CBD5E1;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: #0F172A;
+  background: #FFFFFF;
+}
+
+.metrics-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.metric-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  background: #FFFFFF;
+  cursor: pointer;
+}
+
+.metric-option.selected {
+  border-color: #111827;
+  background: #F8FAFC;
+}
+
+.metric-option input {
+  margin-top: 2px;
+}
+
+.metric-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metric-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0F172A;
+}
+
+.metric-description {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748B;
+}
+
+.prepare-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #FEF2F2;
+  color: #B91C1C;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.prepare-summary-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #E2E8F0;
+  background: #F8FAFC;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-card {
+  padding: 12px;
+  border-radius: 6px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+}
+
+.summary-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #64748B;
+}
+
+.summary-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0F172A;
+}
+
+.summary-value.mono {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.summary-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #475569;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.artifact-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 6px;
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+}
+
+.artifact-name {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0F172A;
+}
+
+.artifact-file {
+  font-size: 11px;
+  color: #64748B;
+}
+
+.artifact-meta {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #0F766E;
 }
 
 /* Action Section */
@@ -2514,5 +3307,21 @@ onUnmounted(() => {
 .modal-leave-to .profile-modal {
   transform: scale(0.95) translateY(10px);
   opacity: 0;
+}
+
+@media (max-width: 1100px) {
+  .probabilistic-grid,
+  .summary-grid,
+  .stats-grid,
+  .config-grid,
+  .platforms-grid,
+  .agents-cards,
+  .profiles-list {
+    grid-template-columns: 1fr;
+  }
+
+  .action-group.dual {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -48,6 +48,26 @@ class Config:
     # OASIS simulation settings.
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
+    PROBABILISTIC_PREPARE_ENABLED = (
+        os.environ.get('PROBABILISTIC_PREPARE_ENABLED', 'false').lower() == 'true'
+    )
+    PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED = (
+        os.environ.get(
+            'PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED',
+            os.environ.get('ENSEMBLE_RUNTIME_ENABLED', 'false'),
+        ).lower() == 'true'
+    )
+    PROBABILISTIC_REPORT_ENABLED = (
+        os.environ.get('PROBABILISTIC_REPORT_ENABLED', 'false').lower() == 'true'
+    )
+    PROBABILISTIC_INTERACTION_ENABLED = (
+        os.environ.get('PROBABILISTIC_INTERACTION_ENABLED', 'false').lower() == 'true'
+    )
+    CALIBRATED_PROBABILITY_ENABLED = (
+        os.environ.get('CALIBRATED_PROBABILITY_ENABLED', 'false').lower() == 'true'
+    )
+    # Keep the legacy name as a compatibility alias until all callers migrate.
+    ENSEMBLE_RUNTIME_ENABLED = PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED
     
     # OASIS platform action settings.
     OASIS_TWITTER_ACTIONS = [

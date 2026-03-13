@@ -70,6 +70,7 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { buildSimulationRunRouteQuery } from '../utils/probabilisticRuntime'
 
 const route = useRoute()
 const router = useRouter()
@@ -160,12 +161,17 @@ const handleNextStep = (params = {}) => {
     name: 'SimulationRun',
     params: { simulationId: currentSimulationId.value }
   }
-  
-  // Pass custom rounds through the query string when provided
-  if (params.maxRounds) {
-    routeParams.query = { maxRounds: params.maxRounds }
+
+  const query = buildSimulationRunRouteQuery({
+    maxRounds: params.maxRounds,
+    runtimeMode: params.runtimeMode,
+    ensembleId: params.ensembleId,
+    runId: params.runId
+  })
+  if (Object.keys(query).length > 0) {
+    routeParams.query = query
   }
-  
+
   // Navigate to the Step 3 page
   router.push(routeParams)
 }

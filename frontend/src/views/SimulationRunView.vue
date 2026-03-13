@@ -52,6 +52,9 @@
         <Step3Simulation
           :simulationId="currentSimulationId"
           :maxRounds="maxRounds"
+          :runtimeMode="runtimeMode"
+          :ensembleId="ensembleId"
+          :runId="runId"
           :minutesPerRound="minutesPerRound"
           :projectData="projectData"
           :graphData="graphData"
@@ -72,7 +75,21 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step3Simulation from '../components/Step3Simulation.vue'
 import { getProject, getGraphData } from '../api/graph'
-import { getSimulation, getSimulationConfig, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
+import { isRequestCanceled } from '../api/index.js'
+import {
+  getSimulation,
+  getSimulationConfig,
+  stopSimulation,
+  closeSimulationEnv,
+  getEnvStatus,
+  getSimulationEnsembleRunStatus
+} from '../api/simulation'
+import {
+  deriveStep3GraphRequest,
+  mergeGraphDataPayloads,
+  normalizeSimulationRunRouteQuery,
+  resolveStep3GraphScope
+} from '../utils/probabilisticRuntime'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,14 +104,23 @@ const viewMode = ref('split')
 
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
-// Read maxRounds from the query at initialization so the child receives it immediately
-const maxRounds = ref(route.query.maxRounds ? parseInt(route.query.maxRounds) : null)
+const initialRouteQuery = normalizeSimulationRunRouteQuery(route.query)
+const maxRounds = ref(initialRouteQuery.maxRounds)
+const runtimeMode = ref(initialRouteQuery.runtimeMode)
+const ensembleId = ref(initialRouteQuery.ensembleId)
+const runId = ref(initialRouteQuery.runId)
 const minutesPerRound = ref(30) // Default to 30 minutes per round
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
+const graphScope = ref({
+  graphId: null,
+  baseGraphId: null,
+  runtimeGraphId: null,
+  usesRuntimeGraph: false
+})
 const systemLogs = ref([])
-const currentStatus = ref('processing') // processing | completed | error
+const currentStatus = ref('processing') // ready | processing | completed | error
 
 // --- Computed Layout Styles ---
 const leftPanelStyle = computed(() => {
@@ -117,6 +143,7 @@ const statusClass = computed(() => {
 const statusText = computed(() => {
   if (currentStatus.value === 'error') return 'Error'
   if (currentStatus.value === 'completed') return 'Completed'
+  if (currentStatus.value === 'ready') return 'Ready'
   return 'Running'
 })
 
@@ -198,6 +225,17 @@ const handleNextStep = () => {
   addLog('Entering Step 4: Report Generation')
 }
 
+watch(
+  () => route.query,
+  (query) => {
+    const normalized = normalizeSimulationRunRouteQuery(query)
+    maxRounds.value = normalized.maxRounds
+    runtimeMode.value = normalized.runtimeMode
+    ensembleId.value = normalized.ensembleId
+    runId.value = normalized.runId
+  }
+)
+
 // --- Data Logic ---
 const loadSimulationData = async () => {
   try {
@@ -225,11 +263,8 @@ const loadSimulationData = async () => {
         if (projRes.success && projRes.data) {
           projectData.value = projRes.data
           addLog(`Project loaded: ${projRes.data.project_id}`)
-          
-          // Fetch graph data
-          if (projRes.data.graph_id) {
-            await loadGraph(projRes.data.graph_id)
-          }
+
+          await loadGraph()
         }
       }
     } else {
@@ -240,42 +275,176 @@ const loadSimulationData = async () => {
   }
 }
 
-const loadGraph = async (graphId) => {
-  // Skip full-screen loading during live simulation refreshes to avoid flicker
-  // Show loading on manual refresh or the initial load
-  if (!isSimulating.value) {
-    graphLoading.value = true
+let graphRefreshTimer = null
+let activeGraphRequestController = null
+let activeGraphRequestKey = null
+let activeGraphRequestSequence = 0
+
+const cancelActiveGraphRequest = () => {
+  if (!activeGraphRequestController) {
+    return
   }
-  
+
+  activeGraphRequestController.abort()
+  activeGraphRequestController = null
+  activeGraphRequestKey = null
+}
+
+const resolveGraphScope = async () => {
+  const projectGraphId = projectData.value?.graph_id || null
+
+  if (
+    runtimeMode.value !== 'probabilistic'
+    || !currentSimulationId.value
+    || !ensembleId.value
+    || !runId.value
+  ) {
+    const nextScope = resolveStep3GraphScope({
+      runtimeMode: runtimeMode.value,
+      projectGraphId
+    })
+    graphScope.value = nextScope
+    return nextScope
+  }
+
   try {
-    const res = await getGraphData(graphId)
-    if (res.success) {
-      graphData.value = res.data
-      if (!isSimulating.value) {
-        addLog('Graph data loaded')
-      }
+    const res = await getSimulationEnsembleRunStatus(
+      currentSimulationId.value,
+      ensembleId.value,
+      runId.value
+    )
+    if (res.success && res.data) {
+      const nextScope = resolveStep3GraphScope({
+        runtimeMode: runtimeMode.value,
+        projectGraphId,
+        runStatus: res.data
+      })
+      graphScope.value = nextScope
+      return nextScope
     }
   } catch (err) {
+    if (isRequestCanceled(err)) {
+      return graphScope.value
+    }
+  }
+
+  const fallbackScope = resolveStep3GraphScope({
+    runtimeMode: runtimeMode.value,
+    projectGraphId
+  })
+  graphScope.value = fallbackScope
+  return fallbackScope
+}
+
+const loadGraph = async ({
+  manual = false
+} = {}) => {
+  const nextScope = await resolveGraphScope()
+  const graphIds = [
+    nextScope.runtimeGraphId,
+    nextScope.baseGraphId || nextScope.graphId
+  ].filter((graphId, index, values) => Boolean(graphId) && values.indexOf(graphId) === index)
+
+  if (!graphIds.length) {
+    return
+  }
+
+  const requestPlan = deriveStep3GraphRequest({
+    currentStatus: currentStatus.value
+  })
+  const requestKey = [
+    graphIds.join(','),
+    requestPlan.mode,
+    requestPlan.maxNodes || 'all',
+    requestPlan.maxEdges || 'all'
+  ].join(':')
+
+  if (activeGraphRequestController) {
+    if (activeGraphRequestKey === requestKey) {
+      return
+    }
+
+    cancelActiveGraphRequest()
+  }
+
+  const controller = new AbortController()
+  const requestSequence = ++activeGraphRequestSequence
+  const shouldShowLoading = manual || requestPlan.mode === 'full' || !graphData.value
+
+  activeGraphRequestController = controller
+  activeGraphRequestKey = requestKey
+
+  if (shouldShowLoading) {
+    graphLoading.value = true
+  }
+
+  try {
+    const graphResults = await Promise.allSettled(
+      graphIds.map((graphId) => getGraphData(graphId, {
+        mode: requestPlan.mode,
+        maxNodes: requestPlan.maxNodes,
+        maxEdges: requestPlan.maxEdges,
+        signal: controller.signal
+      }))
+    )
+
+    if (requestSequence !== activeGraphRequestSequence) {
+      return
+    }
+
+    const successfulPayloads = graphResults
+      .filter((result) => result.status === 'fulfilled' && result.value?.success)
+      .map((result) => result.value.data)
+      .filter((payload) => payload && typeof payload === 'object')
+
+    if (!successfulPayloads.length) {
+      const rejectedReason = graphResults.find((result) => result.status === 'rejected')?.reason
+      if (isRequestCanceled(rejectedReason)) {
+        return
+      }
+
+      throw rejectedReason || new Error('Failed to load graph data')
+    }
+
+    graphData.value = mergeGraphDataPayloads({
+      payloads: successfulPayloads,
+      mode: requestPlan.mode,
+      maxNodes: requestPlan.maxNodes,
+      maxEdges: requestPlan.maxEdges
+    })
+
+    if (manual) {
+      addLog(requestPlan.mode === 'full' ? 'Full graph data loaded' : 'Graph preview loaded')
+    } else if (!isSimulating.value) {
+      addLog('Graph data loaded')
+    }
+  } catch (err) {
+    if (isRequestCanceled(err)) {
+      return
+    }
+
     addLog(`Failed to load graph data: ${err.message}`)
   } finally {
-    graphLoading.value = false
+    if (requestSequence === activeGraphRequestSequence) {
+      activeGraphRequestController = null
+      activeGraphRequestKey = null
+      graphLoading.value = false
+    }
   }
 }
 
-const refreshGraph = () => {
-  if (projectData.value?.graph_id) {
-    loadGraph(projectData.value.graph_id)
-  }
+const refreshGraph = ({ manual = true } = {}) => {
+  loadGraph({ manual })
 }
 
 // --- Auto Refresh Logic ---
-let graphRefreshTimer = null
-
 const startGraphRefresh = () => {
   if (graphRefreshTimer) return
   addLog('Started live graph refresh (30s)')
-  // Refresh immediately, then every 30 seconds
-  graphRefreshTimer = setInterval(refreshGraph, 30000)
+  refreshGraph({ manual: false })
+  graphRefreshTimer = setInterval(() => {
+    refreshGraph({ manual: false })
+  }, 30000)
 }
 
 const stopGraphRefresh = () => {
@@ -294,6 +463,20 @@ watch(isSimulating, (newValue) => {
   }
 }, { immediate: true })
 
+watch(
+  [
+    () => runtimeMode.value,
+    () => ensembleId.value,
+    () => runId.value,
+    () => projectData.value?.graph_id
+  ],
+  () => {
+    if (projectData.value?.graph_id) {
+      refreshGraph({ manual: false })
+    }
+  }
+)
+
 onMounted(() => {
   addLog('SimulationRunView initialized')
   
@@ -307,6 +490,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopGraphRefresh()
+  cancelActiveGraphRequest()
 })
 </script>
 

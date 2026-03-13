@@ -442,6 +442,88 @@ class ZepToolsService:
         if self._llm_client is None:
             self._llm_client = LLMClient()
         return self._llm_client
+
+    def _normalize_graph_ids(
+        self,
+        graph_id: Optional[str] = None,
+        graph_ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Support merged retrieval while keeping single-graph callers unchanged."""
+        normalized: List[str] = []
+        seen = set()
+        for candidate in [graph_id, *(graph_ids or [])]:
+            if not candidate:
+                continue
+            candidate_text = str(candidate).strip()
+            if not candidate_text or candidate_text in seen:
+                continue
+            normalized.append(candidate_text)
+            seen.add(candidate_text)
+        if not normalized:
+            raise ValueError("graph_id or graph_ids is required")
+        return normalized
+
+    def _merge_search_results(
+        self,
+        results: List[SearchResult],
+        *,
+        query: str,
+        limit: int,
+    ) -> SearchResult:
+        """Merge search results deterministically across multiple graphs."""
+        facts: List[str] = []
+        edges: List[Dict[str, Any]] = []
+        nodes: List[Dict[str, Any]] = []
+        seen_facts = set()
+        seen_edges = set()
+        seen_nodes = set()
+
+        for result in results:
+            for fact in result.facts:
+                if fact in seen_facts:
+                    continue
+                seen_facts.add(fact)
+                facts.append(fact)
+
+            for edge in result.edges:
+                edge_key = (
+                    edge.get("uuid")
+                    or (
+                        edge.get("name"),
+                        edge.get("fact"),
+                        edge.get("source_node_uuid"),
+                        edge.get("target_node_uuid"),
+                    )
+                )
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                edges.append(edge)
+
+            for node in result.nodes:
+                node_key = (
+                    node.get("uuid")
+                    or (
+                        node.get("name"),
+                        tuple(node.get("labels", [])),
+                        node.get("summary"),
+                    )
+                )
+                if node_key in seen_nodes:
+                    continue
+                seen_nodes.add(node_key)
+                nodes.append(node)
+
+        merged_facts = facts[:limit]
+        merged_edges = edges[:limit]
+        merged_nodes = nodes[:limit]
+        return SearchResult(
+            facts=merged_facts,
+            edges=merged_edges,
+            nodes=merged_nodes,
+            query=query,
+            total_count=len(merged_facts),
+        )
     
     def _call_with_retry(self, func, operation_name: str, max_retries: int = None):
         """Call the API with retries."""
@@ -468,10 +550,11 @@ class ZepToolsService:
     
     def search_graph(
         self, 
-        graph_id: str, 
+        graph_id: Optional[str], 
         query: str, 
         limit: int = 10,
-        scope: str = "edges"
+        scope: str = "edges",
+        graph_ids: Optional[List[str]] = None,
     ) -> SearchResult:
         """
         Semantic graph search.
@@ -488,8 +571,38 @@ class ZepToolsService:
         Returns:
             SearchResult: Search results
         """
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        if len(normalized_graph_ids) > 1:
+            logger.info(
+                "Merged graph search: graph_ids=%s, query=%s...",
+                normalized_graph_ids,
+                query[:50],
+            )
+            return self._merge_search_results(
+                [
+                    self._search_single_graph(current_graph_id, query, limit, scope)
+                    for current_graph_id in normalized_graph_ids
+                ],
+                query=query,
+                limit=limit,
+            )
+        return self._search_single_graph(
+            normalized_graph_ids[0],
+            query,
+            limit,
+            scope,
+        )
+
+    def _search_single_graph(
+        self,
+        graph_id: str,
+        query: str,
+        limit: int = 10,
+        scope: str = "edges",
+    ) -> SearchResult:
+        """Run graph search against one concrete graph."""
         logger.info(f"Graph search: graph_id={graph_id}, query={query[:50]}...")
-        
+
         # Try the Zep Cloud Search API first.
         try:
             search_results = self._call_with_retry(
@@ -652,7 +765,11 @@ class ZepToolsService:
             total_count=len(facts)
         )
     
-    def get_all_nodes(self, graph_id: str) -> List[NodeInfo]:
+    def get_all_nodes(
+        self,
+        graph_id: Optional[str],
+        graph_ids: Optional[List[str]] = None,
+    ) -> List[NodeInfo]:
         """
         Fetch all graph nodes with pagination.
 
@@ -662,25 +779,36 @@ class ZepToolsService:
         Returns:
             Node list
         """
-        logger.info(f"Fetching all nodes for graph {graph_id}...")
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        result: List[NodeInfo] = []
+        seen = set()
+        for current_graph_id in normalized_graph_ids:
+            logger.info(f"Fetching all nodes for graph {current_graph_id}...")
+            nodes = fetch_all_nodes(self.client, current_graph_id)
+            for node in nodes:
+                node_uuid = getattr(node, 'uuid_', None) or getattr(node, 'uuid', None) or ""
+                serialized_uuid = str(node_uuid) if node_uuid else ""
+                dedupe_key = serialized_uuid or (node.name or "", tuple(node.labels or []))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                result.append(NodeInfo(
+                    uuid=serialized_uuid,
+                    name=node.name or "",
+                    labels=node.labels or [],
+                    summary=node.summary or "",
+                    attributes=node.attributes or {}
+                ))
 
-        nodes = fetch_all_nodes(self.client, graph_id)
-
-        result = []
-        for node in nodes:
-            node_uuid = getattr(node, 'uuid_', None) or getattr(node, 'uuid', None) or ""
-            result.append(NodeInfo(
-                uuid=str(node_uuid) if node_uuid else "",
-                name=node.name or "",
-                labels=node.labels or [],
-                summary=node.summary or "",
-                attributes=node.attributes or {}
-            ))
-
-        logger.info(f"Fetched {len(result)} nodes")
+        logger.info("Fetched %s merged nodes across %s graphs", len(result), len(normalized_graph_ids))
         return result
 
-    def get_all_edges(self, graph_id: str, include_temporal: bool = True) -> List[EdgeInfo]:
+    def get_all_edges(
+        self,
+        graph_id: Optional[str],
+        include_temporal: bool = True,
+        graph_ids: Optional[List[str]] = None,
+    ) -> List[EdgeInfo]:
         """
         Fetch all graph edges with pagination and temporal data.
 
@@ -691,31 +819,42 @@ class ZepToolsService:
         Returns:
             Edge list including `created_at`, `valid_at`, `invalid_at`, and `expired_at`
         """
-        logger.info(f"Fetching all edges for graph {graph_id}...")
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        result: List[EdgeInfo] = []
+        seen = set()
+        for current_graph_id in normalized_graph_ids:
+            logger.info(f"Fetching all edges for graph {current_graph_id}...")
+            edges = fetch_all_edges(self.client, current_graph_id)
+            for edge in edges:
+                edge_uuid = getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', None) or ""
+                serialized_uuid = str(edge_uuid) if edge_uuid else ""
+                dedupe_key = serialized_uuid or (
+                    edge.name or "",
+                    edge.fact or "",
+                    edge.source_node_uuid or "",
+                    edge.target_node_uuid or "",
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
 
-        edges = fetch_all_edges(self.client, graph_id)
+                edge_info = EdgeInfo(
+                    uuid=serialized_uuid,
+                    name=edge.name or "",
+                    fact=edge.fact or "",
+                    source_node_uuid=edge.source_node_uuid or "",
+                    target_node_uuid=edge.target_node_uuid or ""
+                )
 
-        result = []
-        for edge in edges:
-            edge_uuid = getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', None) or ""
-            edge_info = EdgeInfo(
-                uuid=str(edge_uuid) if edge_uuid else "",
-                name=edge.name or "",
-                fact=edge.fact or "",
-                source_node_uuid=edge.source_node_uuid or "",
-                target_node_uuid=edge.target_node_uuid or ""
-            )
+                if include_temporal:
+                    edge_info.created_at = getattr(edge, 'created_at', None)
+                    edge_info.valid_at = getattr(edge, 'valid_at', None)
+                    edge_info.invalid_at = getattr(edge, 'invalid_at', None)
+                    edge_info.expired_at = getattr(edge, 'expired_at', None)
 
-            # Attach temporal information.
-            if include_temporal:
-                edge_info.created_at = getattr(edge, 'created_at', None)
-                edge_info.valid_at = getattr(edge, 'valid_at', None)
-                edge_info.invalid_at = getattr(edge, 'invalid_at', None)
-                edge_info.expired_at = getattr(edge, 'expired_at', None)
+                result.append(edge_info)
 
-            result.append(edge_info)
-
-        logger.info(f"Fetched {len(result)} edges")
+        logger.info("Fetched %s merged edges across %s graphs", len(result), len(normalized_graph_ids))
         return result
     
     def get_node_detail(self, node_uuid: str) -> Optional[NodeInfo]:
@@ -750,7 +889,12 @@ class ZepToolsService:
             logger.error(f"Failed to fetch node detail: {str(e)}")
             return None
     
-    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[EdgeInfo]:
+    def get_node_edges(
+        self,
+        graph_id: Optional[str],
+        node_uuid: str,
+        graph_ids: Optional[List[str]] = None,
+    ) -> List[EdgeInfo]:
         """
         Fetch all edges related to a node.
 
@@ -767,7 +911,7 @@ class ZepToolsService:
         
         try:
             # Fetch all graph edges, then filter them.
-            all_edges = self.get_all_edges(graph_id)
+            all_edges = self.get_all_edges(graph_id, graph_ids=graph_ids)
             
             result = []
             for edge in all_edges:
@@ -784,8 +928,9 @@ class ZepToolsService:
     
     def get_entities_by_type(
         self, 
-        graph_id: str, 
-        entity_type: str
+        graph_id: Optional[str], 
+        entity_type: str,
+        graph_ids: Optional[List[str]] = None,
     ) -> List[NodeInfo]:
         """
         Fetch entities by type.
@@ -799,7 +944,7 @@ class ZepToolsService:
         """
         logger.info(f"Fetching entities of type {entity_type}...")
         
-        all_nodes = self.get_all_nodes(graph_id)
+        all_nodes = self.get_all_nodes(graph_id, graph_ids=graph_ids)
         
         filtered = []
         for node in all_nodes:
@@ -812,8 +957,9 @@ class ZepToolsService:
     
     def get_entity_summary(
         self, 
-        graph_id: str, 
-        entity_name: str
+        graph_id: Optional[str], 
+        entity_name: str,
+        graph_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Fetch a relationship summary for a specific entity.
@@ -829,15 +975,20 @@ class ZepToolsService:
         """
         logger.info(f"Fetching relationship summary for entity {entity_name}...")
         
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
         # Search for information related to the entity first.
         search_result = self.search_graph(
-            graph_id=graph_id,
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
             query=entity_name,
             limit=20
         )
         
         # Try to find the entity among all nodes.
-        all_nodes = self.get_all_nodes(graph_id)
+        all_nodes = self.get_all_nodes(
+            normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         entity_node = None
         for node in all_nodes:
             if node.name.lower() == entity_name.lower():
@@ -847,7 +998,11 @@ class ZepToolsService:
         related_edges = []
         if entity_node:
             # Pass through graph_id explicitly.
-            related_edges = self.get_node_edges(graph_id, entity_node.uuid)
+            related_edges = self.get_node_edges(
+                normalized_graph_ids[0],
+                entity_node.uuid,
+                graph_ids=normalized_graph_ids,
+            )
         
         return {
             "entity_name": entity_name,
@@ -857,7 +1012,11 @@ class ZepToolsService:
             "total_relations": len(related_edges)
         }
     
-    def get_graph_statistics(self, graph_id: str) -> Dict[str, Any]:
+    def get_graph_statistics(
+        self,
+        graph_id: Optional[str],
+        graph_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Fetch graph statistics.
         
@@ -867,10 +1026,14 @@ class ZepToolsService:
         Returns:
             Statistics
         """
-        logger.info(f"Fetching statistics for graph {graph_id}...")
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        logger.info(f"Fetching statistics for graph_ids {normalized_graph_ids}...")
         
-        nodes = self.get_all_nodes(graph_id)
-        edges = self.get_all_edges(graph_id)
+        nodes = self.get_all_nodes(normalized_graph_ids[0], graph_ids=normalized_graph_ids)
+        edges = self.get_all_edges(
+            normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         
         # Count entity type distribution.
         entity_types = {}
@@ -885,7 +1048,8 @@ class ZepToolsService:
             relation_types[edge.name] = relation_types.get(edge.name, 0) + 1
         
         return {
-            "graph_id": graph_id,
+            "graph_id": normalized_graph_ids[0],
+            "graph_ids": normalized_graph_ids,
             "total_nodes": len(nodes),
             "total_edges": len(edges),
             "entity_types": entity_types,
@@ -894,9 +1058,10 @@ class ZepToolsService:
     
     def get_simulation_context(
         self, 
-        graph_id: str,
+        graph_id: Optional[str],
         simulation_requirement: str,
-        limit: int = 30
+        limit: int = 30,
+        graph_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Fetch simulation-relevant context.
@@ -913,18 +1078,26 @@ class ZepToolsService:
         """
         logger.info(f"Fetching simulation context: {simulation_requirement[:50]}...")
         
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
         # Search for information related to the simulation requirement.
         search_result = self.search_graph(
-            graph_id=graph_id,
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
             query=simulation_requirement,
             limit=limit
         )
         
         # Fetch graph statistics.
-        stats = self.get_graph_statistics(graph_id)
+        stats = self.get_graph_statistics(
+            normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         
         # Fetch all entity nodes.
-        all_nodes = self.get_all_nodes(graph_id)
+        all_nodes = self.get_all_nodes(
+            normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         
         # Keep only entities with meaningful custom labels.
         entities = []
@@ -949,11 +1122,12 @@ class ZepToolsService:
     
     def insight_forge(
         self,
-        graph_id: str,
+        graph_id: Optional[str],
         query: str,
         simulation_requirement: str,
         report_context: str = "",
-        max_sub_queries: int = 5
+        max_sub_queries: int = 5,
+        graph_ids: Optional[List[str]] = None,
     ) -> InsightForgeResult:
         """
         InsightForge - deep insight retrieval.
@@ -983,6 +1157,7 @@ class ZepToolsService:
             simulation_requirement=simulation_requirement,
             sub_queries=[]
         )
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
         
         # Step 1: Use the LLM to generate subquestions.
         sub_queries = self._generate_sub_queries(
@@ -1001,7 +1176,8 @@ class ZepToolsService:
         
         for sub_query in sub_queries:
             search_result = self.search_graph(
-                graph_id=graph_id,
+                graph_id=normalized_graph_ids[0],
+                graph_ids=normalized_graph_ids,
                 query=sub_query,
                 limit=15,
                 scope="edges"
@@ -1016,7 +1192,8 @@ class ZepToolsService:
         
         # Also search for the original question directly.
         main_search = self.search_graph(
-            graph_id=graph_id,
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
             query=query,
             limit=20,
             scope="edges"
@@ -1153,10 +1330,11 @@ Return the subquestion list as JSON."""
     
     def panorama_search(
         self,
-        graph_id: str,
+        graph_id: Optional[str],
         query: str,
         include_expired: bool = True,
-        limit: int = 50
+        limit: int = 50,
+        graph_ids: Optional[List[str]] = None,
     ) -> PanoramaResult:
         """
         PanoramaSearch - breadth search.
@@ -1181,15 +1359,23 @@ Return the subquestion list as JSON."""
         logger.info(f"PanoramaSearch breadth search: {query[:50]}...")
         
         result = PanoramaResult(query=query)
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
         
         # Fetch all nodes.
-        all_nodes = self.get_all_nodes(graph_id)
+        all_nodes = self.get_all_nodes(
+            normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         node_map = {n.uuid: n for n in all_nodes}
         result.all_nodes = all_nodes
         result.total_nodes = len(all_nodes)
         
         # Fetch all edges with temporal information.
-        all_edges = self.get_all_edges(graph_id, include_temporal=True)
+        all_edges = self.get_all_edges(
+            normalized_graph_ids[0],
+            include_temporal=True,
+            graph_ids=normalized_graph_ids,
+        )
         result.all_edges = all_edges
         result.total_edges = len(all_edges)
         
@@ -1249,9 +1435,10 @@ Return the subquestion list as JSON."""
     
     def quick_search(
         self,
-        graph_id: str,
+        graph_id: Optional[str],
         query: str,
-        limit: int = 10
+        limit: int = 10,
+        graph_ids: Optional[List[str]] = None,
     ) -> SearchResult:
         """
         QuickSearch - simple search.
@@ -1274,6 +1461,7 @@ Return the subquestion list as JSON."""
         # Directly reuse the existing search_graph implementation.
         result = self.search_graph(
             graph_id=graph_id,
+            graph_ids=graph_ids,
             query=query,
             limit=limit,
             scope="edges"

@@ -1,0 +1,75 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect backend tests
+        id: backend-tests
+        run: |
+          if [ -d backend/tests ] && find backend/tests -type f -name '*.py' -print -quit | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Verify frontend
+        run: npm run verify:frontend
+
+      - name: Set up Python
+        if: steps.backend-tests.outputs.present == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        if: steps.backend-tests.outputs.present == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt pytest pytest-asyncio
+
+      - name: Install Playwright browsers
+        if: steps.backend-tests.outputs.present == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify probabilistic smoke
+        if: steps.backend-tests.outputs.present == 'true'
+        run: npm run verify:smoke
+
+      - name: Verify backend
+        if: steps.backend-tests.outputs.present == 'true'
+        run: npm run verify:backend
+
+      - name: Skip backend verification
+        if: steps.backend-tests.outputs.present != 'true'
+        run: echo "No backend tests under backend/tests; skipping backend verification."

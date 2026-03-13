@@ -1,0 +1,278 @@
+{
+  "evidenceClass": "local-only non-fixture",
+  "mutationAllowed": true,
+  "simulationId": "sim_7a6661c37719",
+  "startedAt": "2026-03-10T14:08:08.257Z",
+  "operatorActions": [
+    {
+      "action": "step2-handoff",
+      "result": "created ensemble and opened Step 3 shell",
+      "ensembleId": "0008",
+      "runId": "0001",
+      "responseStatus": 200
+    },
+    {
+      "action": "stop",
+      "result": "selected run stopped cleanly",
+      "runId": "0001",
+      "responseStatus": 200
+    },
+    {
+      "action": "retry",
+      "result": "same run ID relaunched",
+      "runId": "0001",
+      "responseStatus": 200
+    },
+    {
+      "action": "stop-after-retry",
+      "result": "retried run stopped cleanly",
+      "runId": "0001",
+      "responseStatus": 200
+    },
+    {
+      "action": "cleanup",
+      "result": "selected run reset to prepared shell",
+      "runId": "0001",
+      "responseStatus": 200
+    },
+    {
+      "action": "rerun",
+      "result": "child run created and selected",
+      "sourceRunId": "0001",
+      "childRunId": "0009",
+      "responseStatus": 200
+    }
+  ],
+  "network": [
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/status?limit=200"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/run-status"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/actions?limit=500"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/timeline"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/start"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/actions?limit=500"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/timeline"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/stop"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/start"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/actions?limit=500"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/timeline"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/stop"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/cleanup"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/status?limit=200"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/run-status"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/actions?limit=500"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/timeline"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/sensitivity"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/clusters"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/summary"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0001/rerun"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/status?limit=200"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "http://localhost:5001/api/simulation/sim_7a6661c37719/ensembles/0008/runs/0009"
+    }
+  ],
+  "console": [
+    {
+      "type": "debug",
+      "text": "[vite] connecting..."
+    },
+    {
+      "type": "debug",
+      "text": "[vite] connected."
+    }
+  ],
+  "pageErrors": [],
+  "ensembleId": "0008",
+  "initialRunId": "0001",
+  "childRunId": "0009",
+  "completedAt": "2026-03-10T14:08:09.314Z"
+}

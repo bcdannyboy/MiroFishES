@@ -146,6 +146,15 @@
           </div>
         </div>
 
+        <div
+          v-if="step5InteractionState.showNotice"
+          class="probabilistic-step5-banner"
+          data-testid="probabilistic-step5-banner"
+        >
+          <div class="probabilistic-step5-title">{{ step5InteractionState.title }}</div>
+          <p class="probabilistic-step5-copy">{{ step5InteractionState.body }}</p>
+        </div>
+
         <!-- Chat Mode -->
         <div v-if="activeTab === 'chat'" class="chat-container">
 
@@ -414,13 +423,43 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
 import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { renderSafeMarkdown } from '../utils/safeMarkdown'
+import {
+  buildReportAgentChatRequest,
+  getStep5InteractionState
+} from '../utils/probabilisticRuntime'
 
 const props = defineProps({
   reportId: String,
-  simulationId: String
+  simulationId: String,
+  runtimeMode: {
+    type: String,
+    default: 'legacy'
+  },
+  ensembleId: {
+    type: String,
+    default: null
+  },
+  runId: {
+    type: String,
+    default: null
+  },
+  probabilisticContext: {
+    type: Object,
+    default: null
+  }
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const step5InteractionState = computed(() => getStep5InteractionState(
+  props.runtimeMode,
+  {
+    hasSavedProbabilisticContext: (
+      props.probabilisticContext
+      && typeof props.probabilisticContext === 'object'
+    )
+  }
+))
 
 // State
 const activeTab = ref('chat')
@@ -546,81 +585,7 @@ const formatTime = (timestamp) => {
   }
 }
 
-const renderMarkdown = (content) => {
-  if (!content) return ''
-
-  let processedContent = content.replace(/^##\s+.+\n+/, '')
-  let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
-  html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
-  html = html.replace(/^#### (.+)$/gm, '<h5 class="md-h5">$1</h5>')
-  html = html.replace(/^### (.+)$/gm, '<h4 class="md-h4">$1</h4>')
-  html = html.replace(/^## (.+)$/gm, '<h3 class="md-h3">$1</h3>')
-  html = html.replace(/^# (.+)$/gm, '<h2 class="md-h2">$1</h2>')
-  html = html.replace(/^> (.+)$/gm, '<blockquote class="md-quote">$1</blockquote>')
-
-  html = html.replace(/^(\s*)- (.+)$/gm, (match, indent, text) => {
-    const level = Math.floor(indent.length / 2)
-    return `<li class="md-li" data-level="${level}">${text}</li>`
-  })
-  html = html.replace(/^(\s*)(\d+)\. (.+)$/gm, (match, indent, num, text) => {
-    const level = Math.floor(indent.length / 2)
-    return `<li class="md-oli" data-level="${level}">${text}</li>`
-  })
-
-  html = html.replace(/(<li class="md-li"[^>]*>.*?<\/li>\s*)+/g, '<ul class="md-ul">$&</ul>')
-  html = html.replace(/(<li class="md-oli"[^>]*>.*?<\/li>\s*)+/g, '<ol class="md-ol">$&</ol>')
-
-  html = html.replace(/<\/li>\s+<li/g, '</li><li')
-  html = html.replace(/<ul class="md-ul">\s+/g, '<ul class="md-ul">')
-  html = html.replace(/<ol class="md-ol">\s+/g, '<ol class="md-ol">')
-  html = html.replace(/\s+<\/ul>/g, '</ul>')
-  html = html.replace(/\s+<\/ol>/g, '</ol>')
-
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-  html = html.replace(/_(.+?)_/g, '<em>$1</em>')
-  html = html.replace(/^---$/gm, '<hr class="md-hr">')
-  html = html.replace(/\n\n/g, '</p><p class="md-p">')
-  html = html.replace(/\n/g, '<br>')
-  html = '<p class="md-p">' + html + '</p>'
-  html = html.replace(/<p class="md-p"><\/p>/g, '')
-  html = html.replace(/<p class="md-p">(<h[2-5])/g, '$1')
-  html = html.replace(/(<\/h[2-5]>)<\/p>/g, '$1')
-  html = html.replace(/<p class="md-p">(<ul|<ol|<blockquote|<pre|<hr)/g, '$1')
-  html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>|<\/pre>)<\/p>/g, '$1')
-  html = html.replace(/<br>\s*(<ul|<ol|<blockquote)/g, '$1')
-  html = html.replace(/(<\/ul>|<\/ol>|<\/blockquote>)\s*<br>/g, '$1')
-  html = html.replace(/<p class="md-p">(<br>\s*)+(<ul|<ol|<blockquote|<pre|<hr)/g, '$2')
-  html = html.replace(/(<br>\s*){2,}/g, '<br>')
-  html = html.replace(/(<\/ol>|<\/ul>|<\/blockquote>)<br>(<p|<div)/g, '$1$2')
-
-  const tokens = html.split(/(<ol class="md-ol">(?:<li class="md-oli"[^>]*>[\s\S]*?<\/li>)+<\/ol>)/g)
-  let olCounter = 0
-  let inSequence = false
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i].startsWith('<ol class="md-ol">')) {
-      const liCount = (tokens[i].match(/<li class="md-oli"/g) || []).length
-      if (liCount === 1) {
-        olCounter++
-        if (olCounter > 1) {
-          tokens[i] = tokens[i].replace('<ol class="md-ol">', `<ol class="md-ol" start="${olCounter}">`)
-        }
-        inSequence = true
-      } else {
-        olCounter = 0
-        inSequence = false
-      }
-    } else if (inSequence) {
-      if (/<h[2-5]/.test(tokens[i])) {
-        olCounter = 0
-        inSequence = false
-      }
-    }
-  }
-  html = tokens.join('')
-
-  return html
-}
+const renderMarkdown = renderSafeMarkdown
 
 // Chat Methods
 const sendMessage = async () => {
@@ -672,9 +637,12 @@ const sendToReportAgent = async (message) => {
     }))
 
   const res = await chatWithReport({
-    simulation_id: props.simulationId,
-    message: message,
-    chat_history: historyForApi
+    ...buildReportAgentChatRequest({
+      simulationId: props.simulationId,
+      reportId: props.reportId,
+      message,
+      chatHistory: historyForApi
+    })
   })
 
   if (res.success && res.data) {
@@ -1330,6 +1298,28 @@ watch(() => props.simulationId, (newId) => {
   gap: 6px;
   flex: 1;
   justify-content: flex-end;
+}
+
+.probabilistic-step5-banner {
+  margin: 14px 20px 0;
+  border: 1px solid rgba(198, 146, 66, 0.4);
+  background: linear-gradient(180deg, rgba(255, 250, 242, 0.95) 0%, rgba(255, 247, 234, 0.95) 100%);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.probabilistic-step5-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #7a5424;
+}
+
+.probabilistic-step5-copy {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #6a5231;
 }
 
 .tab-pill {

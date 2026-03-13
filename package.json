@@ -7,11 +7,17 @@
     "setup:backend": "cd backend && uv sync",
     "setup:all": "npm run setup && npm run setup:backend",
     "dev": "concurrently --kill-others -n \"backend,frontend\" -c \"green,cyan\" \"npm run backend\" \"npm run frontend\"",
-    "backend": "cd backend && uv run python run.py",
+    "backend": "cd backend && FLASK_HOST=127.0.0.1 uv run python run.py",
     "frontend": "cd frontend && npm run dev",
-    "build": "cd frontend && npm run build"
+    "build": "cd frontend && npm run build",
+    "verify:frontend": "npm --prefix frontend run verify",
+    "verify:backend": "sh -c 'if [ -d backend/tests ] && find backend/tests -type f -name \"*.py\" -print -quit | grep -q .; then if [ -x backend/.venv/bin/python ]; then cd backend && .venv/bin/python -m pytest tests -q; else cd backend && python3 -m pytest tests -q; fi; else echo \"No backend tests under backend/tests; skipping backend verification.\"; fi'",
+    "verify:smoke": "playwright test --config=playwright.config.mjs tests/smoke/probabilistic-runtime.spec.mjs",
+    "verify:operator:local": "playwright test --config=playwright.live.config.mjs",
+    "verify": "npm run verify:frontend && npm run verify:backend"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "concurrently": "^9.1.2"
   },
   "engines": {
