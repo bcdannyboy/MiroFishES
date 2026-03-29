@@ -238,6 +238,22 @@ def _write_run_metrics(run_dir: Path, *, total_actions: int, twitter_actions: in
                     "probability_mode": "empirical",
                     "value": twitter_actions,
                 },
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "label": "Simulation Completed",
+                    "aggregation": "flag",
+                    "unit": "boolean",
+                    "probability_mode": "empirical",
+                    "value": status == "complete",
+                },
+                "platform.leading_platform": {
+                    "metric_id": "platform.leading_platform",
+                    "label": "Leading Platform",
+                    "aggregation": "category",
+                    "unit": "category",
+                    "probability_mode": "empirical",
+                    "value": "twitter" if twitter_actions >= max(total_actions - twitter_actions, 0) else "reddit",
+                },
             },
             "top_topics": [
                 {
@@ -349,6 +365,13 @@ def test_build_context_assembles_prepare_run_and_empirical_analytics(
         artifact["aggregate_summary"]["metric_summaries"]["simulation.total_actions"]["sample_count"]
         == 3
     )
+    assert artifact["top_outcomes"][0]["metric_id"] == "simulation.total_actions"
+    assert artifact["top_outcomes"][0]["value_summary"]["mean"] == 8.0
+    assert artifact["selected_run"]["key_metrics"][0]["metric_id"] == "simulation.total_actions"
+    assert any(
+        item["metric_id"] == "platform.leading_platform" and item["value"] == "twitter"
+        for item in artifact["selected_run"]["key_metrics"]
+    )
     assert artifact["scenario_clusters"]["artifact_type"] == "scenario_clusters"
     assert artifact["sensitivity"]["artifact_type"] == "sensitivity"
     assert artifact["sensitivity"]["driver_rankings"][0]["driver_id"] == (
@@ -379,3 +402,8 @@ def test_build_context_allows_ensemble_scope_without_selected_run(
     assert artifact["scope"]["level"] == "ensemble"
     assert artifact["selected_run"] is None
     assert artifact["aggregate_summary"]["artifact_type"] == "aggregate_summary"
+    assert any(
+        outcome["metric_id"] == "simulation.completed"
+        and outcome["value_summary"]["empirical_probability"] == 2 / 3
+        for outcome in artifact["top_outcomes"]
+    )

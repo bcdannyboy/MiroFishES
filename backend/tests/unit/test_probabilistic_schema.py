@@ -95,6 +95,71 @@ def test_supported_outcome_metric_registry_is_explicit(probabilistic_domain):
     assert set(probabilistic_domain["metrics"]).issubset(SUPPORTED_OUTCOME_METRICS)
 
 
+def test_supported_outcome_metric_definitions_expose_richer_contract_metadata():
+    from app.models.probabilistic import build_supported_outcome_metric
+
+    completion_metric = build_supported_outcome_metric("simulation.completed")
+    leading_platform_metric = build_supported_outcome_metric("platform.leading_platform")
+    top_topic_share_metric = build_supported_outcome_metric("content.top_topic_share")
+
+    assert completion_metric.aggregation == "flag"
+    assert completion_metric.unit == "boolean"
+    assert leading_platform_metric.aggregation == "category"
+    assert leading_platform_metric.unit == "category"
+    assert top_topic_share_metric.aggregation == "ratio"
+    assert top_topic_share_metric.unit == "share"
+
+
+def test_supported_outcome_metric_registry_exposes_richer_grounded_metrics():
+    from app.models.probabilistic import SUPPORTED_OUTCOME_METRIC_DEFINITIONS
+
+    expected_metric_ids = {
+        "simulation.any_actions",
+        "simulation.completed",
+        "simulation.unique_active_agents",
+        "simulation.rounds_with_actions",
+        "simulation.observed_action_window_seconds",
+        "simulation.observed_completion_window_seconds",
+        "simulation.agent_action_concentration_hhi",
+        "platform.twitter.any_actions",
+        "platform.reddit.any_actions",
+        "platform.twitter.action_share",
+        "platform.reddit.action_share",
+        "platform.twitter.observed_action_window_seconds",
+        "platform.reddit.observed_action_window_seconds",
+        "platform.leading_platform",
+        "platform.action_balance_gap",
+        "cross_platform.first_action_lag_seconds",
+        "content.unique_topics_mentioned",
+        "content.top_topic_share",
+        "content.dominant_topic",
+    }
+
+    assert expected_metric_ids.issubset(SUPPORTED_OUTCOME_METRIC_DEFINITIONS)
+
+
+def test_supported_outcome_metric_metadata_carries_value_shape():
+    from app.models.probabilistic import build_supported_outcome_metric
+
+    completed = build_supported_outcome_metric("simulation.completed")
+    observed_window = build_supported_outcome_metric(
+        "simulation.observed_action_window_seconds"
+    )
+    dominant_topic = build_supported_outcome_metric("content.dominant_topic")
+
+    assert completed.aggregation == "flag"
+    assert completed.unit == "boolean"
+    assert completed.value_kind == "binary"
+
+    assert observed_window.aggregation == "duration"
+    assert observed_window.unit == "seconds"
+    assert observed_window.value_kind == "numeric"
+
+    assert dominant_topic.aggregation == "category"
+    assert dominant_topic.unit == "category"
+    assert dominant_topic.value_kind == "categorical"
+
+
 def test_ensemble_spec_round_trips_to_dict():
     from app.models.probabilistic import EnsembleSpec
 

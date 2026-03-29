@@ -205,6 +205,8 @@ class ProbabilisticReportContextBuilder:
             if numeric_sort_value is None:
                 numeric_sort_value = summary.get("empirical_probability")
             if numeric_sort_value is None:
+                numeric_sort_value = summary.get("dominant_probability")
+            if numeric_sort_value is None:
                 numeric_sort_value = summary.get("sample_count", 0)
 
             sample_count = summary.get("sample_count", 0)
@@ -458,6 +460,8 @@ class ProbabilisticReportContextBuilder:
             "max",
             "quantiles",
             "empirical_probability",
+            "dominant_value",
+            "dominant_probability",
             "counts",
             "category_counts",
             "category_probabilities",

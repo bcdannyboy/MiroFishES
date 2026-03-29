@@ -25,14 +25,164 @@ SUPPORTED_OUTCOME_METRIC_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "simulation.total_actions": {
         "label": "Simulation Total Actions",
         "description": "Count all actions across every enabled platform.",
+        "aggregation": "count",
+        "unit": "count",
+        "value_kind": "numeric",
+    },
+    "simulation.any_actions": {
+        "label": "Simulation Any Actions",
+        "description": "Flag whether the run produced any observed action logs.",
+        "aggregation": "flag",
+        "unit": "boolean",
+        "value_kind": "binary",
+    },
+    "simulation.completed": {
+        "label": "Simulation Completed",
+        "description": "Flag whether every expected platform emitted an explicit simulation_end marker.",
+        "aggregation": "flag",
+        "unit": "boolean",
+        "value_kind": "binary",
+    },
+    "simulation.unique_active_agents": {
+        "label": "Simulation Unique Active Agents",
+        "description": "Count the distinct agents that produced at least one observed action.",
+        "aggregation": "count",
+        "unit": "agents",
+        "value_kind": "numeric",
+    },
+    "simulation.rounds_with_actions": {
+        "label": "Simulation Rounds With Actions",
+        "description": "Count the observed rounds that contained at least one action entry.",
+        "aggregation": "count",
+        "unit": "rounds",
+        "value_kind": "numeric",
+    },
+    "simulation.observed_action_window_seconds": {
+        "label": "Simulation Observed Action Window",
+        "description": (
+            "Measure the observed span in seconds between the first and last action log entries."
+        ),
+        "aggregation": "duration",
+        "unit": "seconds",
+        "value_kind": "numeric",
+    },
+    "simulation.observed_completion_window_seconds": {
+        "label": "Simulation Observed Completion Window",
+        "description": (
+            "Measure elapsed seconds from the first observed action to the recorded run completion time when both timestamps are explicit."
+        ),
+        "aggregation": "duration",
+        "unit": "seconds",
+        "value_kind": "numeric",
+    },
+    "simulation.agent_action_concentration_hhi": {
+        "label": "Agent Action Concentration",
+        "description": "Summarize how concentrated activity was across active agents using a Herfindahl-Hirschman style index.",
+        "aggregation": "concentration",
+        "unit": "hhi",
+        "value_kind": "numeric",
     },
     "platform.twitter.total_actions": {
         "label": "Twitter Total Actions",
         "description": "Count all Twitter-side actions.",
+        "aggregation": "count",
+        "unit": "count",
+        "value_kind": "numeric",
     },
     "platform.reddit.total_actions": {
         "label": "Reddit Total Actions",
         "description": "Count all Reddit-side actions.",
+        "aggregation": "count",
+        "unit": "count",
+        "value_kind": "numeric",
+    },
+    "platform.twitter.any_actions": {
+        "label": "Twitter Any Actions",
+        "description": "Flag whether Twitter emitted any observed actions in the run.",
+        "aggregation": "flag",
+        "unit": "boolean",
+        "value_kind": "binary",
+    },
+    "platform.reddit.any_actions": {
+        "label": "Reddit Any Actions",
+        "description": "Flag whether Reddit emitted any observed actions in the run.",
+        "aggregation": "flag",
+        "unit": "boolean",
+        "value_kind": "binary",
+    },
+    "platform.twitter.action_share": {
+        "label": "Twitter Action Share",
+        "description": "Measure Twitter's share of all observed actions in the run.",
+        "aggregation": "ratio",
+        "unit": "share",
+        "value_kind": "numeric",
+    },
+    "platform.reddit.action_share": {
+        "label": "Reddit Action Share",
+        "description": "Measure Reddit's share of all observed actions in the run.",
+        "aggregation": "ratio",
+        "unit": "share",
+        "value_kind": "numeric",
+    },
+    "platform.twitter.observed_action_window_seconds": {
+        "label": "Twitter Observed Action Window",
+        "description": (
+            "Measure the observed span in seconds between Twitter's first and last action log entries."
+        ),
+        "aggregation": "duration",
+        "unit": "seconds",
+        "value_kind": "numeric",
+    },
+    "platform.reddit.observed_action_window_seconds": {
+        "label": "Reddit Observed Action Window",
+        "description": (
+            "Measure the observed span in seconds between Reddit's first and last action log entries."
+        ),
+        "aggregation": "duration",
+        "unit": "seconds",
+        "value_kind": "numeric",
+    },
+    "platform.leading_platform": {
+        "label": "Leading Platform",
+        "description": "Identify which platform contributed the larger share of observed actions, or whether activity was tied.",
+        "aggregation": "category",
+        "unit": "category",
+        "value_kind": "categorical",
+    },
+    "platform.action_balance_gap": {
+        "label": "Platform Action Balance Gap",
+        "description": "Measure the absolute difference between Twitter and Reddit action share.",
+        "aggregation": "ratio",
+        "unit": "share",
+        "value_kind": "numeric",
+    },
+    "cross_platform.first_action_lag_seconds": {
+        "label": "Cross-Platform First Action Lag",
+        "description": "Measure the observed lag in seconds between Twitter's first action and Reddit's first action.",
+        "aggregation": "duration",
+        "unit": "seconds",
+        "value_kind": "numeric",
+    },
+    "content.unique_topics_mentioned": {
+        "label": "Unique Topics Mentioned",
+        "description": "Count the distinct topic labels or configured hot topics that appeared in observed actions.",
+        "aggregation": "count",
+        "unit": "topics",
+        "value_kind": "numeric",
+    },
+    "content.top_topic_share": {
+        "label": "Top Topic Share",
+        "description": "Measure the share of all observed topic mentions captured by the most-mentioned topic.",
+        "aggregation": "ratio",
+        "unit": "share",
+        "value_kind": "numeric",
+    },
+    "content.dominant_topic": {
+        "label": "Dominant Topic",
+        "description": "Identify the most-mentioned observed topic when at least one topic mention exists.",
+        "aggregation": "category",
+        "unit": "category",
+        "value_kind": "categorical",
     },
 }
 SUPPORTED_OUTCOME_METRICS = frozenset(SUPPORTED_OUTCOME_METRIC_DEFINITIONS)
@@ -108,6 +258,10 @@ def build_supported_outcome_metric(metric_id: str) -> "OutcomeMetricDefinition":
         metric_id=metric_id,
         label=definition["label"],
         description=definition["description"],
+        aggregation=definition.get("aggregation", "count"),
+        unit=definition.get("unit", "count"),
+        probability_mode=definition.get("probability_mode", "empirical"),
+        value_kind=definition.get("value_kind", "numeric"),
     )
 
 
@@ -185,6 +339,7 @@ class OutcomeMetricDefinition:
     aggregation: str = "count"
     unit: str = "count"
     probability_mode: str = "empirical"
+    value_kind: str = "numeric"
     schema_version: str = PROBABILISTIC_SCHEMA_VERSION
     generator_version: str = PROBABILISTIC_GENERATOR_VERSION
 
@@ -195,6 +350,8 @@ class OutcomeMetricDefinition:
             raise ValueError("label is required")
         if not self.description:
             raise ValueError("description is required")
+        if self.value_kind not in {"numeric", "binary", "categorical"}:
+            raise ValueError("value_kind must be numeric, binary, or categorical")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -204,6 +361,7 @@ class OutcomeMetricDefinition:
             "aggregation": self.aggregation,
             "unit": self.unit,
             "probability_mode": self.probability_mode,
+            "value_kind": self.value_kind,
             "schema_version": self.schema_version,
             "generator_version": self.generator_version,
         }
@@ -217,6 +375,7 @@ class OutcomeMetricDefinition:
             aggregation=data.get("aggregation", "count"),
             unit=data.get("unit", "count"),
             probability_mode=data.get("probability_mode", "empirical"),
+            value_kind=data.get("value_kind", "numeric"),
             schema_version=data.get("schema_version", PROBABILISTIC_SCHEMA_VERSION),
             generator_version=data.get(
                 "generator_version", PROBABILISTIC_GENERATOR_VERSION

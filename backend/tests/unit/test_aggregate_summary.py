@@ -2,6 +2,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _load_ensemble_module():
     return importlib.import_module("app.services.ensemble_manager")
@@ -241,6 +243,8 @@ def test_get_aggregate_summary_supports_binary_and_categorical_metrics(
     assert binary_summary["sample_count"] == 3
     assert binary_summary["empirical_probability"] == 2 / 3
     assert binary_summary["counts"] == {"false": 1, "true": 2}
+    assert binary_summary["dominant_value"] is True
+    assert binary_summary["dominant_probability"] == 2 / 3
 
     assert categorical_summary["distribution_kind"] == "categorical"
     assert categorical_summary["sample_count"] == 3
@@ -249,3 +253,171 @@ def test_get_aggregate_summary_supports_binary_and_categorical_metrics(
         "alpha": 2 / 3,
         "beta": 1 / 3,
     }
+
+
+def test_get_aggregate_summary_ignores_missing_numeric_samples_but_preserves_other_distributions(
+    simulation_data_dir, monkeypatch
+):
+    ensemble_module = _load_ensemble_module()
+    monkeypatch.setattr(
+        ensemble_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-summary-rich"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.completed": {"metric_id": "simulation.completed", "value": True},
+                        "platform.leading_platform": {"metric_id": "platform.leading_platform", "value": "twitter"},
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "value": 900,
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.completed": {"metric_id": "simulation.completed", "value": False},
+                        "platform.leading_platform": {"metric_id": "platform.leading_platform", "value": "reddit"},
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "value": None,
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.completed": {"metric_id": "simulation.completed", "value": True},
+                        "platform.leading_platform": {"metric_id": "platform.leading_platform", "value": "twitter"},
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "value": 1200,
+                        },
+                    },
+                },
+            },
+        ],
+    )
+
+    manager = ensemble_module.EnsembleManager(simulation_data_dir=str(simulation_data_dir))
+    summary = manager.get_aggregate_summary(simulation_id, ensemble_id)
+
+    completion_summary = summary["metric_summaries"]["simulation.completed"]
+    platform_summary = summary["metric_summaries"]["platform.leading_platform"]
+    completion_window_summary = summary["metric_summaries"]["simulation.observed_completion_window_seconds"]
+
+    assert completion_summary["distribution_kind"] == "binary"
+    assert completion_summary["empirical_probability"] == pytest.approx(2 / 3)
+    assert platform_summary["distribution_kind"] == "categorical"
+    assert platform_summary["category_counts"] == {"reddit": 1, "twitter": 2}
+    assert platform_summary["dominant_value"] == "twitter"
+    assert platform_summary["dominant_probability"] == pytest.approx(2 / 3)
+    assert completion_window_summary["distribution_kind"] == "continuous"
+    assert completion_window_summary["sample_count"] == 2
+    assert completion_window_summary["missing_sample_count"] == 0
+    assert completion_window_summary["mean"] == 1050.0
+
+
+def test_get_aggregate_summary_ignores_missing_numeric_values_and_preserves_metadata(
+    simulation_data_dir, monkeypatch
+):
+    ensemble_module = _load_ensemble_module()
+    monkeypatch.setattr(
+        ensemble_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-summary-expanded"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "label": "Observed Completion Window",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": 1200.0,
+                        }
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "label": "Observed Completion Window",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": None,
+                        }
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.observed_completion_window_seconds": {
+                            "metric_id": "simulation.observed_completion_window_seconds",
+                            "label": "Observed Completion Window",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": 1800.0,
+                        }
+                    },
+                },
+            },
+        ],
+    )
+
+    manager = ensemble_module.EnsembleManager(simulation_data_dir=str(simulation_data_dir))
+    summary = manager.get_aggregate_summary(simulation_id, ensemble_id)
+
+    duration_summary = summary["metric_summaries"]["simulation.observed_completion_window_seconds"]
+
+    assert duration_summary["aggregation"] == "duration"
+    assert duration_summary["unit"] == "seconds"
+    assert duration_summary["value_kind"] == "numeric"
+    assert duration_summary["sample_count"] == 2
+    assert duration_summary["missing_sample_count"] == 0
+    assert duration_summary["mean"] == 1500.0
+    assert duration_summary["quantiles"]["p50"] == 1500.0

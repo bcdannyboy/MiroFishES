@@ -562,11 +562,14 @@ class EnsembleManager:
         degraded_runs_present: bool,
     ) -> Dict[str, Any]:
         metric_entry = observations[0]["metric_entry"] if observations else {"metric_id": metric_id}
-        values = [item["value"] for item in observations if item.get("value") is not None]
+        usable_observations = [
+            item for item in observations if item.get("value") is not None
+        ]
+        values = [item["value"] for item in usable_observations]
         complete_sample_count = sum(
-            1 for item in observations if item.get("quality_status") == "complete"
+            1 for item in usable_observations if item.get("quality_status") == "complete"
         )
-        partial_sample_count = len(observations) - complete_sample_count
+        partial_sample_count = len(usable_observations) - complete_sample_count
         warnings = []
         if len(values) < self.THIN_SAMPLE_WARNING_THRESHOLD:
             warnings.append("thin_sample")
@@ -582,6 +585,7 @@ class EnsembleManager:
             {
                 "metric_id": metric_id,
                 "sample_count": len(values),
+                "observed_sample_count": len(observations),
                 "complete_sample_count": complete_sample_count,
                 "partial_sample_count": partial_sample_count,
                 "missing_sample_count": max(total_runs - len(observations), 0),
@@ -592,10 +596,14 @@ class EnsembleManager:
         if values and all(isinstance(value, bool) for value in values):
             true_count = sum(1 for value in values if value)
             false_count = len(values) - true_count
+            dominant_value = true_count >= false_count
+            dominant_probability = max(true_count, false_count) / len(values)
             summary.update(
                 {
                     "distribution_kind": "binary",
                     "empirical_probability": true_count / len(values),
+                    "dominant_value": dominant_value,
+                    "dominant_probability": dominant_probability,
                     "counts": {
                         "false": false_count,
                         "true": true_count,
@@ -608,9 +616,15 @@ class EnsembleManager:
             category_counts: Dict[str, int] = {}
             for value in values:
                 category_counts[value] = category_counts.get(value, 0) + 1
+            dominant_category, dominant_count = sorted(
+                category_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0]
             summary.update(
                 {
                     "distribution_kind": "categorical",
+                    "dominant_value": dominant_category,
+                    "dominant_probability": dominant_count / len(values),
                     "category_counts": category_counts,
                     "category_probabilities": {
                         category: count / len(values)

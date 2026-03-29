@@ -1295,6 +1295,83 @@ const formatProbabilityMass = (value) => {
   return `${(value * 100).toFixed(0)}%`
 }
 
+const getDominantCategory = (metricSummary = {}) => {
+  const dominantValue = normalizeOptionalString(metricSummary?.dominant_value)
+  if (dominantValue) {
+    return dominantValue
+  }
+
+  const categoryCounts = metricSummary?.category_counts
+  if (!categoryCounts || typeof categoryCounts !== 'object') {
+    return null
+  }
+
+  const ranked = Object.entries(categoryCounts)
+    .filter(([, count]) => typeof count === 'number' && Number.isFinite(count))
+    .sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1]
+      }
+      return String(left[0]).localeCompare(String(right[0]))
+    })
+
+  return ranked[0]?.[0] || null
+}
+
+const buildSummaryHeadline = (metricSummary, metricLabel) => {
+  if (!metricSummary) {
+    return 'Aggregate metrics available'
+  }
+
+  if (metricSummary.distribution_kind === 'binary') {
+    const probability = formatProbabilityMass(metricSummary.empirical_probability)
+    return `${metricLabel}: ${probability || '-'} true`
+  }
+
+  if (metricSummary.distribution_kind === 'categorical') {
+    const dominantCategory = getDominantCategory(metricSummary)
+    return dominantCategory
+      ? `${metricLabel}: ${dominantCategory}`
+      : `${metricLabel}: categorical summary`
+  }
+
+  const mean = formatAnalyticsNumber(metricSummary.mean)
+  return `${metricLabel}: mean ${mean ?? '-'}`
+}
+
+const buildSummaryBody = (metricSummary) => {
+  if (!metricSummary) {
+    return 'No aggregate metric summaries were returned for this stored ensemble.'
+  }
+
+  const sampleCount = metricSummary.sample_count ?? 0
+
+  if (metricSummary.distribution_kind === 'binary') {
+    const trueCount = metricSummary.counts?.true ?? 0
+    const falseCount = metricSummary.counts?.false ?? 0
+    const probability = formatProbabilityMass(metricSummary.empirical_probability)
+    return `${sampleCount} runs contribute to this empirical summary; ${trueCount} true and ${falseCount} false, with ${probability || '-'} observed true overall.`
+  }
+
+  if (metricSummary.distribution_kind === 'categorical') {
+    const dominantCategory = getDominantCategory(metricSummary)
+    const dominantProbability = (
+      typeof metricSummary.dominant_probability === 'number'
+        ? metricSummary.dominant_probability
+        : metricSummary.category_probabilities?.[dominantCategory]
+    )
+    const dominantCount = dominantCategory
+      ? metricSummary.category_counts?.[dominantCategory] ?? 0
+      : 0
+    return dominantCategory
+      ? `${sampleCount} runs contribute to this empirical summary; ${dominantCategory} led with ${dominantCount} of ${sampleCount} runs (${formatProbabilityMass(dominantProbability) || '-'}).`
+      : `${sampleCount} runs contribute to this empirical categorical summary.`
+  }
+
+  const mean = formatAnalyticsNumber(metricSummary.mean)
+  return `${sampleCount} runs contribute to this empirical summary; mean ${mean ?? '-'} with range ${formatAnalyticsNumber(metricSummary.min) ?? '-'} to ${formatAnalyticsNumber(metricSummary.max) ?? '-'}.`
+}
+
 const getPreferredMetricSummary = (metricSummaries = {}) => {
   if (!metricSummaries || typeof metricSummaries !== 'object') {
     return null
@@ -1337,18 +1414,12 @@ const buildSummaryCard = ({ artifact, loading, error }) => {
   }
 
   const metricSummary = getPreferredMetricSummary(artifact.metric_summaries)
-  const mean = formatAnalyticsNumber(metricSummary?.mean)
-  const sampleCount = metricSummary?.sample_count ?? null
   const metricLabel = metricSummary?.label || 'Aggregate metrics'
 
   return {
     status: artifact.quality_summary?.status || 'complete',
-    headline: metricSummary
-      ? `${metricLabel}: mean ${mean ?? '-'}`
-      : 'Aggregate metrics available',
-    body: metricSummary
-      ? `${sampleCount || 0} runs with complete metrics contribute to this empirical summary; mean ${mean ?? '-'} with range ${formatAnalyticsNumber(metricSummary.min) ?? '-'} to ${formatAnalyticsNumber(metricSummary.max) ?? '-'}.`
-      : 'No aggregate metric summaries were returned for this stored ensemble.',
+    headline: buildSummaryHeadline(metricSummary, metricLabel),
+    body: buildSummaryBody(metricSummary),
     warnings: normalizeWarningList(artifact.quality_summary?.warnings)
   }
 }

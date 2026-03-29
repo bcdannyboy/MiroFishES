@@ -90,19 +90,29 @@ class OutcomeExtractor:
             run_dir=run_dir,
             expected_platforms=expected_platforms,
         )
+        effective_run_status = (
+            (run_status or (run_state or {}).get("runner_status") or run_manifest.get("status", "unknown"))
+            if run_manifest
+            else run_status or (run_state or {}).get("runner_status") or "unknown"
+        )
+        top_topics = self._build_top_topics(
+            config_payload=config_payload,
+            actions=log_summary["actions"],
+        )
         metric_values = self._compute_metric_values(
             requested_metric_ids=requested_metric_ids,
             actions=log_summary["actions"],
+            expected_platforms=expected_platforms,
+            platform_completion=log_summary["platform_completion"],
+            platform_completion_times=log_summary["platform_completion_times"],
+            effective_run_status=effective_run_status,
+            top_topics=top_topics,
         )
         timeline_summaries = self._build_timeline_summaries(
             actions=log_summary["actions"],
             observed_rounds=log_summary["observed_rounds"],
         )
         top_agents = self._build_top_agents(log_summary["actions"])
-        top_topics = self._build_top_topics(
-            config_payload=config_payload,
-            actions=log_summary["actions"],
-        )
 
         missing_platform_logs = [
             platform
@@ -114,11 +124,6 @@ class OutcomeExtractor:
             for platform in expected_platforms
             if not log_summary["platform_completion"].get(platform, False)
         ]
-        effective_run_status = (
-            (run_status or (run_state or {}).get("runner_status") or run_manifest.get("status", "unknown"))
-            if run_manifest
-            else run_status or (run_state or {}).get("runner_status") or "unknown"
-        )
         missing_artifacts = [
             f"{platform}/actions.jsonl"
             for platform in missing_platform_logs
@@ -321,6 +326,7 @@ class OutcomeExtractor:
         observed_platforms = set()
         log_presence: Dict[str, bool] = {}
         platform_completion: Dict[str, bool] = {}
+        platform_completion_times: Dict[str, str] = {}
         legacy_layout_fallback_used = False
 
         for platform in self.SUPPORTED_PLATFORMS:
@@ -336,6 +342,9 @@ class OutcomeExtractor:
                 event_type = entry.get("event_type")
                 if event_type == "simulation_end":
                     platform_completion[platform] = True
+                    timestamp = entry.get("timestamp")
+                    if isinstance(timestamp, str) and timestamp:
+                        platform_completion_times[platform] = timestamp
                 round_num = entry.get("round")
                 if isinstance(round_num, int):
                     observed_rounds.add(round_num)
@@ -365,6 +374,9 @@ class OutcomeExtractor:
                     if entry.get("event_type") == "simulation_end" and entry.get("platform"):
                         platform = str(entry["platform"])
                         platform_completion[platform] = True
+                        timestamp = entry.get("timestamp")
+                        if isinstance(timestamp, str) and timestamp:
+                            platform_completion_times[platform] = timestamp
                     if entry.get("action_type"):
                         platform = str(entry.get("platform") or "legacy")
                         observed_platforms.add(platform)
@@ -397,6 +409,7 @@ class OutcomeExtractor:
             "expected_platforms": list(expected_platforms),
             "log_presence": log_presence,
             "platform_completion": platform_completion,
+            "platform_completion_times": platform_completion_times,
             "observed_rounds": observed_rounds,
             "observed_platforms": observed_platforms,
             "legacy_layout_fallback_used": legacy_layout_fallback_used,
@@ -407,20 +420,162 @@ class OutcomeExtractor:
         *,
         requested_metric_ids: Iterable[str],
         actions: List[Dict[str, Any]],
+        expected_platforms: Iterable[str],
+        platform_completion: Dict[str, bool],
+        platform_completion_times: Dict[str, str],
+        effective_run_status: str,
+        top_topics: List[Dict[str, Any]],
     ) -> Dict[str, Dict[str, Any]]:
         metric_values: Dict[str, Dict[str, Any]] = {}
-        twitter_total = sum(1 for action in actions if action["platform"] == "twitter")
-        reddit_total = sum(1 for action in actions if action["platform"] == "reddit")
+        expected_platforms = list(expected_platforms)
         total_actions = len(actions)
+        actions_by_platform = {
+            platform: [
+                action for action in actions if action.get("platform") == platform
+            ]
+            for platform in self.SUPPORTED_PLATFORMS
+        }
+        platform_totals = {
+            platform: len(platform_actions)
+            for platform, platform_actions in actions_by_platform.items()
+        }
+        unique_active_agents = len(
+            {
+                self._normalize_agent_identity(action)
+                for action in actions
+                if self._normalize_agent_identity(action) is not None
+            }
+        )
+        rounds_with_actions = len(
+            {
+                int(action.get("round_num", 0))
+                for action in actions
+                if isinstance(action.get("round_num"), int)
+            }
+        )
+        simulation_first_action_time = self._get_first_action_timestamp(actions)
+        simulation_last_action_time = self._get_last_action_timestamp(actions)
+        platform_first_action_times = {
+            platform: self._get_first_action_timestamp(platform_actions)
+            for platform, platform_actions in actions_by_platform.items()
+        }
+        platform_last_action_times = {
+            platform: self._get_last_action_timestamp(platform_actions)
+            for platform, platform_actions in actions_by_platform.items()
+        }
+        completion_timestamp = self._get_latest_timestamp(
+            platform_completion_times.get(platform)
+            for platform in expected_platforms
+        )
+        simulation_completed = (
+            effective_run_status == "completed"
+            and bool(list(expected_platforms))
+            and all(platform_completion.get(platform, False) for platform in expected_platforms)
+        )
+        topic_mentions_total = sum(
+            int(topic.get("mentions", 0))
+            for topic in top_topics
+            if isinstance(topic.get("mentions"), int)
+        )
+        dominant_topic = top_topics[0]["topic"] if top_topics else "none"
+        dominant_topic_mentions = (
+            int(top_topics[0].get("mentions", 0))
+            if top_topics and isinstance(top_topics[0].get("mentions"), int)
+            else 0
+        )
+        twitter_total = platform_totals["twitter"]
+        reddit_total = platform_totals["reddit"]
+        twitter_share = (twitter_total / total_actions) if total_actions else 0.0
+        reddit_share = (reddit_total / total_actions) if total_actions else 0.0
+        agent_identities = [
+            identity
+            for identity in (
+                self._normalize_agent_identity(action)
+                for action in actions
+            )
+            if identity is not None
+        ]
+        if total_actions <= 0:
+            agent_action_concentration_hhi = None
+            leading_platform = "none"
+        else:
+            agent_action_concentration_hhi = sum(
+                (count / total_actions) ** 2
+                for count in Counter(agent_identities).values()
+            )
+            if twitter_total > reddit_total:
+                leading_platform = "twitter"
+            elif reddit_total > twitter_total:
+                leading_platform = "reddit"
+            else:
+                leading_platform = "tie"
 
         for metric_id in requested_metric_ids:
             metric_payload = build_supported_outcome_metric(metric_id).to_dict()
             if metric_id == "simulation.total_actions":
                 metric_payload["value"] = total_actions
+            elif metric_id == "simulation.any_actions":
+                metric_payload["value"] = total_actions > 0
+            elif metric_id == "simulation.completed":
+                metric_payload["value"] = simulation_completed
+            elif metric_id == "simulation.unique_active_agents":
+                metric_payload["value"] = unique_active_agents
+            elif metric_id == "simulation.rounds_with_actions":
+                metric_payload["value"] = rounds_with_actions
+            elif metric_id == "simulation.observed_action_window_seconds":
+                metric_payload["value"] = self._seconds_between(
+                    simulation_first_action_time,
+                    simulation_last_action_time,
+                )
+            elif metric_id == "simulation.observed_completion_window_seconds":
+                metric_payload["value"] = self._seconds_between(
+                    simulation_first_action_time,
+                    completion_timestamp,
+                )
+            elif metric_id == "simulation.agent_action_concentration_hhi":
+                metric_payload["value"] = agent_action_concentration_hhi
             elif metric_id == "platform.twitter.total_actions":
                 metric_payload["value"] = twitter_total
             elif metric_id == "platform.reddit.total_actions":
                 metric_payload["value"] = reddit_total
+            elif metric_id == "platform.twitter.any_actions":
+                metric_payload["value"] = twitter_total > 0
+            elif metric_id == "platform.reddit.any_actions":
+                metric_payload["value"] = reddit_total > 0
+            elif metric_id == "platform.twitter.action_share":
+                metric_payload["value"] = twitter_share
+            elif metric_id == "platform.reddit.action_share":
+                metric_payload["value"] = reddit_share
+            elif metric_id == "platform.twitter.observed_action_window_seconds":
+                metric_payload["value"] = self._seconds_between(
+                    platform_first_action_times["twitter"],
+                    platform_last_action_times["twitter"],
+                )
+            elif metric_id == "platform.reddit.observed_action_window_seconds":
+                metric_payload["value"] = self._seconds_between(
+                    platform_first_action_times["reddit"],
+                    platform_last_action_times["reddit"],
+                )
+            elif metric_id == "platform.leading_platform":
+                metric_payload["value"] = leading_platform
+            elif metric_id == "platform.action_balance_gap":
+                metric_payload["value"] = abs(twitter_share - reddit_share)
+            elif metric_id == "cross_platform.first_action_lag_seconds":
+                metric_payload["value"] = self._seconds_between(
+                    platform_first_action_times["twitter"],
+                    platform_first_action_times["reddit"],
+                    absolute=True,
+                )
+            elif metric_id == "content.unique_topics_mentioned":
+                metric_payload["value"] = len(top_topics)
+            elif metric_id == "content.top_topic_share":
+                metric_payload["value"] = (
+                    dominant_topic_mentions / topic_mentions_total
+                    if topic_mentions_total > 0
+                    else 0.0
+                )
+            elif metric_id == "content.dominant_topic":
+                metric_payload["value"] = dominant_topic
             else:  # pragma: no cover - the allowlist validation should block this.
                 raise ValueError(f"Unsupported outcome metric: {metric_id}")
             metric_values[metric_id] = metric_payload
@@ -490,15 +645,46 @@ class OutcomeExtractor:
         actions: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         hot_topics = config_payload.get("event_config", {}).get("hot_topics", [])
-        if not isinstance(hot_topics, list):
-            return []
+        mentions = self._build_topic_mentions(
+            config_payload=config_payload,
+            actions=actions,
+        )
+        topic_order = {
+            topic.strip(): index
+            for index, topic in enumerate(hot_topics)
+            if isinstance(topic, str) and topic.strip()
+        }
 
+        ranked_topics = sorted(
+            mentions.items(),
+            key=lambda item: (
+                -item[1],
+                topic_order.get(item[0], len(topic_order)),
+                item[0],
+            ),
+        )
+        return [
+            {"topic": topic, "mentions": count}
+            for topic, count in ranked_topics
+        ]
+
+    def _build_topic_mentions(
+        self,
+        *,
+        config_payload: Dict[str, Any],
+        actions: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        hot_topics = config_payload.get("event_config", {}).get("hot_topics", [])
         mentions: Dict[str, int] = {}
-        for topic in hot_topics:
-            if not isinstance(topic, str) or not topic.strip():
-                continue
-            normalized_topic = topic.strip()
-            topic_lower = normalized_topic.lower()
+        normalized_hot_topics = [
+            topic.strip()
+            for topic in hot_topics
+            if isinstance(topic, str) and topic.strip()
+        ]
+        hot_topic_set = set(normalized_hot_topics)
+
+        for topic in normalized_hot_topics:
+            topic_lower = topic.lower()
             mention_count = 0
             for action in actions:
                 action_args = action.get("action_args", {})
@@ -506,22 +692,112 @@ class OutcomeExtractor:
                     content = action_args.get(field_name)
                     if isinstance(content, str):
                         mention_count += content.lower().count(topic_lower)
-                if action_args.get("topic") == normalized_topic:
-                    mention_count += 1
-                topics = action_args.get("topics")
-                if isinstance(topics, list):
-                    mention_count += sum(1 for item in topics if item == normalized_topic)
             if mention_count > 0:
-                mentions[normalized_topic] = mention_count
+                mentions[topic] = mention_count
 
-        ranked_topics = sorted(
-            mentions.items(),
-            key=lambda item: (-item[1], item[0]),
+        for action in actions:
+            action_args = action.get("action_args", {})
+            explicit_topics = self._extract_explicit_topics(action_args)
+            for topic in explicit_topics:
+                if topic in hot_topic_set:
+                    mentions[topic] = mentions.get(topic, 0) + 1
+                    continue
+                mentions[topic] = mentions.get(topic, 0) + 1
+
+        return mentions
+
+    def _extract_explicit_topics(self, action_args: Dict[str, Any]) -> List[str]:
+        explicit_topics: List[str] = []
+        topic = action_args.get("topic")
+        if isinstance(topic, str) and topic.strip():
+            explicit_topics.append(topic.strip())
+
+        topics = action_args.get("topics")
+        if isinstance(topics, list):
+            explicit_topics.extend(
+                item.strip()
+                for item in topics
+                if isinstance(item, str) and item.strip()
+            )
+        return explicit_topics
+
+    def _normalize_agent_identity(self, action: Dict[str, Any]) -> Optional[str]:
+        agent_id = action.get("agent_id")
+        if isinstance(agent_id, int):
+            return f"id:{agent_id}"
+        agent_name = action.get("agent_name")
+        if isinstance(agent_name, str) and agent_name.strip():
+            return f"name:{agent_name.strip()}"
+        return None
+
+    def _get_first_action_timestamp(
+        self,
+        actions: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        return self._get_earliest_timestamp(
+            action.get("timestamp")
+            for action in actions
+            if action.get("timestamp")
         )
-        return [
-            {"topic": topic, "mentions": count}
-            for topic, count in ranked_topics
+
+    def _get_last_action_timestamp(
+        self,
+        actions: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        return self._get_latest_timestamp(
+            action.get("timestamp")
+            for action in actions
+            if action.get("timestamp")
+        )
+
+    def _get_earliest_timestamp(
+        self,
+        timestamps: Iterable[Optional[str]],
+    ) -> Optional[str]:
+        parsed = [
+            (self._parse_timestamp(timestamp), timestamp)
+            for timestamp in timestamps
+            if isinstance(timestamp, str) and self._parse_timestamp(timestamp) is not None
         ]
+        if not parsed:
+            return None
+        return min(parsed, key=lambda item: item[0])[1]
+
+    def _get_latest_timestamp(
+        self,
+        timestamps: Iterable[Optional[str]],
+    ) -> Optional[str]:
+        parsed = [
+            (self._parse_timestamp(timestamp), timestamp)
+            for timestamp in timestamps
+            if isinstance(timestamp, str) and self._parse_timestamp(timestamp) is not None
+        ]
+        if not parsed:
+            return None
+        return max(parsed, key=lambda item: item[0])[1]
+
+    def _seconds_between(
+        self,
+        start_timestamp: Optional[str],
+        end_timestamp: Optional[str],
+        *,
+        absolute: bool = False,
+    ) -> Optional[float]:
+        start_dt = self._parse_timestamp(start_timestamp)
+        end_dt = self._parse_timestamp(end_timestamp)
+        if start_dt is None or end_dt is None:
+            return None
+        delta = (end_dt - start_dt).total_seconds()
+        return abs(delta) if absolute else delta
+
+    def _parse_timestamp(self, timestamp: Optional[str]) -> Optional[datetime]:
+        if not isinstance(timestamp, str) or not timestamp:
+            return None
+        normalized = timestamp.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
 
     def _read_json(self, file_path: str) -> Dict[str, Any]:
         with open(file_path, "r", encoding="utf-8") as handle:

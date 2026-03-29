@@ -121,6 +121,11 @@ def simulation_data_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def probabilistic_domain():
     """Canonical probabilistic input domain used across backend tests."""
+    from app.models.probabilistic import (
+        DEFAULT_OUTCOME_METRICS,
+        SUPPORTED_OUTCOME_METRIC_DEFINITIONS,
+    )
+
     return {
         "profiles": [
             "deterministic-baseline",
@@ -128,21 +133,8 @@ def probabilistic_domain():
             "stress-test",
         ],
         "default_profile": "deterministic-baseline",
-        "metrics": {
-            "simulation.total_actions": {
-                "label": "Simulation Total Actions",
-                "description": "Count all actions across every enabled platform.",
-            },
-            "platform.twitter.total_actions": {
-                "label": "Twitter Total Actions",
-                "description": "Count all Twitter-side actions.",
-            },
-            "platform.reddit.total_actions": {
-                "label": "Reddit Total Actions",
-                "description": "Count all Reddit-side actions.",
-            },
-        },
-        "default_metrics": ["simulation.total_actions"],
+        "metrics": dict(SUPPORTED_OUTCOME_METRIC_DEFINITIONS),
+        "default_metrics": list(DEFAULT_OUTCOME_METRICS),
         "seed_policy": {
             "strategy": "deterministic-root",
             "root_seed": 0,

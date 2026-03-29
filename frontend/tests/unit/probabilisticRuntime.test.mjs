@@ -1516,6 +1516,60 @@ test('deriveProbabilisticAnalyticsCards summarizes partial empirical artifacts t
   assert.deepEqual(cards.sensitivity.warnings, ['Observational only', 'Thin sample'])
 })
 
+test('deriveProbabilisticAnalyticsCards explains binary and categorical aggregate summaries generically', () => {
+  const binaryCards = deriveProbabilisticAnalyticsCards({
+    summaryArtifact: {
+      quality_summary: {
+        status: 'complete',
+        warnings: []
+      },
+      metric_summaries: {
+        'simulation.completed': {
+          label: 'Simulation Completed',
+          distribution_kind: 'binary',
+          sample_count: 6,
+          empirical_probability: 2 / 3,
+          counts: {
+            true: 4,
+            false: 2
+          }
+        }
+      }
+    }
+  })
+
+  assert.match(binaryCards.summary.headline, /Simulation Completed/i)
+  assert.match(binaryCards.summary.body, /4 true and 2 false/i)
+
+  const categoricalCards = deriveProbabilisticAnalyticsCards({
+    summaryArtifact: {
+      quality_summary: {
+        status: 'complete',
+        warnings: []
+      },
+      metric_summaries: {
+        'platform.leading_platform': {
+          label: 'Leading Platform',
+          distribution_kind: 'categorical',
+          sample_count: 5,
+          category_counts: {
+            twitter: 3,
+            reddit: 2
+          },
+          category_probabilities: {
+            twitter: 0.6,
+            reddit: 0.4
+          }
+        }
+      }
+    }
+  })
+
+  assert.match(categoricalCards.summary.headline, /Leading Platform/i)
+  assert.match(categoricalCards.summary.body, /twitter/i)
+  assert.match(categoricalCards.summary.body, /60%/i)
+})
+
 test('deriveProbabilisticAnalyticsCards exposes loading, error, and empty states', () => {
   const cards = deriveProbabilisticAnalyticsCards({
     loadingByKey: {

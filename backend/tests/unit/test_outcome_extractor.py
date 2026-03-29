@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_probabilistic_module():
     return importlib.import_module("app.models.probabilistic")
@@ -118,10 +120,11 @@ def _write_probabilistic_run_root(
             "config_path": str(run_dir / "resolved_config.json"),
             "platform_mode": platform_mode,
             "runner_status": run_status,
+            "started_at": "2026-03-08T11:55:00",
             "twitter_running": False,
             "reddit_running": False,
             "updated_at": "2026-03-08T12:00:00",
-            "completed_at": "2026-03-08T12:10:00",
+            "completed_at": "2026-03-08T12:31:00",
         },
     )
     return run_dir
@@ -216,6 +219,133 @@ def test_extract_run_metrics_computes_first_pass_catalog_from_run_logs(
     assert payload["quality_checks"]["timeline_matches_total_actions"] is True
 
 
+def test_extract_run_metrics_computes_grounded_binary_timing_mix_and_topic_metrics(
+    simulation_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    extractor_module = _load_outcome_extractor_module()
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-metrics-expanded",
+        metric_ids=[
+            "simulation.total_actions",
+            "simulation.any_actions",
+            "simulation.completed",
+            "simulation.unique_active_agents",
+            "simulation.rounds_with_actions",
+            "simulation.observed_action_window_seconds",
+            "simulation.observed_completion_window_seconds",
+            "simulation.agent_action_concentration_hhi",
+            "platform.twitter.any_actions",
+            "platform.reddit.any_actions",
+            "platform.twitter.action_share",
+            "platform.reddit.action_share",
+            "platform.twitter.observed_action_window_seconds",
+            "platform.reddit.observed_action_window_seconds",
+            "platform.leading_platform",
+            "platform.action_balance_gap",
+            "cross_platform.first_action_lag_seconds",
+            "content.unique_topics_mentioned",
+            "content.top_topic_share",
+            "content.dominant_topic",
+        ],
+        hot_topics=["seed", "markets"],
+    )
+
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {"content": "seed narrative"},
+                "success": True,
+            },
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:10:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "QUOTE_POST",
+                "action_args": {"content": "seed follow-up", "topics": ["markets"]},
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:30:00",
+                "platform": "twitter",
+                "total_rounds": 2,
+                "total_actions": 2,
+            },
+        ],
+    )
+    _write_jsonl(
+        run_dir / "reddit" / "actions.jsonl",
+        [
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:20:00",
+                "platform": "reddit",
+                "agent_id": 2,
+                "agent_name": "beta",
+                "action_type": "CREATE_POST",
+                "action_args": {"content": "seed discussion", "topic": "markets"},
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:31:00",
+                "platform": "reddit",
+                "total_rounds": 2,
+                "total_actions": 1,
+            },
+        ],
+    )
+
+    extractor = extractor_module.OutcomeExtractor(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    payload = extractor.extract_run_metrics(
+        simulation_id="sim-metrics-expanded",
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    metric_values = payload["metric_values"]
+
+    assert metric_values["simulation.total_actions"]["value"] == 3
+    assert metric_values["simulation.any_actions"]["value"] is True
+    assert metric_values["simulation.completed"]["value"] is True
+    assert metric_values["simulation.unique_active_agents"]["value"] == 2
+    assert metric_values["simulation.rounds_with_actions"]["value"] == 2
+    assert metric_values["simulation.observed_action_window_seconds"]["value"] == 1200.0
+    assert metric_values["simulation.observed_completion_window_seconds"]["value"] == 1860.0
+    assert metric_values["simulation.agent_action_concentration_hhi"]["value"] == pytest.approx(5 / 9)
+
+    assert metric_values["platform.twitter.any_actions"]["value"] is True
+    assert metric_values["platform.reddit.any_actions"]["value"] is True
+    assert metric_values["platform.twitter.action_share"]["value"] == pytest.approx(2 / 3)
+    assert metric_values["platform.reddit.action_share"]["value"] == pytest.approx(1 / 3)
+    assert metric_values["platform.twitter.observed_action_window_seconds"]["value"] == 600.0
+    assert metric_values["platform.reddit.observed_action_window_seconds"]["value"] == 0.0
+    assert metric_values["platform.leading_platform"]["value"] == "twitter"
+    assert metric_values["platform.action_balance_gap"]["value"] == pytest.approx(1 / 3)
+    assert metric_values["cross_platform.first_action_lag_seconds"]["value"] == 1200.0
+
+    assert metric_values["content.unique_topics_mentioned"]["value"] == 2
+    assert metric_values["content.top_topic_share"]["value"] == pytest.approx(3 / 5)
+    assert metric_values["content.dominant_topic"]["value"] == "seed"
+    assert payload["top_topics"][:2] == [
+        {"topic": "seed", "mentions": 3},
+        {"topic": "markets", "mentions": 2},
+    ]
+
+
 def test_extract_run_metrics_marks_missing_requested_platform_logs_as_partial(
     simulation_data_dir, monkeypatch
 ):
@@ -265,6 +395,135 @@ def test_extract_run_metrics_marks_missing_requested_platform_logs_as_partial(
     assert payload["quality_checks"]["status"] == "partial"
     assert "reddit/actions.jsonl" in payload["quality_checks"]["missing_artifacts"]
     assert "run_status:failed" in payload["quality_checks"]["warnings"]
+
+
+def test_extract_run_metrics_computes_richer_grounded_metrics(
+    simulation_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    extractor_module = _load_outcome_extractor_module()
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-metrics-rich",
+        metric_ids=[
+            "simulation.total_actions",
+            "simulation.any_actions",
+            "simulation.completed",
+            "simulation.unique_active_agents",
+            "simulation.rounds_with_actions",
+            "simulation.observed_action_window_seconds",
+            "simulation.observed_completion_window_seconds",
+            "simulation.agent_action_concentration_hhi",
+            "platform.twitter.total_actions",
+            "platform.reddit.total_actions",
+            "platform.twitter.any_actions",
+            "platform.reddit.any_actions",
+            "platform.twitter.action_share",
+            "platform.reddit.action_share",
+            "platform.twitter.observed_action_window_seconds",
+            "platform.reddit.observed_action_window_seconds",
+            "platform.leading_platform",
+            "platform.action_balance_gap",
+            "cross_platform.first_action_lag_seconds",
+            "content.unique_topics_mentioned",
+            "content.top_topic_share",
+            "content.dominant_topic",
+        ],
+        hot_topics=["seed", "rates"],
+    )
+
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "seed narrative rates",
+                    "topic": "seed",
+                },
+                "success": True,
+            },
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:04:00",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "QUOTE_POST",
+                "action_args": {
+                    "content": "seed follow-up",
+                    "topics": ["seed", "rates"],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:29:00",
+                "platform": "twitter",
+                "total_rounds": 2,
+                "total_actions": 2,
+            },
+        ],
+    )
+    _write_jsonl(
+        run_dir / "reddit" / "actions.jsonl",
+        [
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:06:00",
+                "agent_id": 2,
+                "agent_name": "beta",
+                "action_type": "COMMENT",
+                "action_args": {
+                    "content": "rates discussion",
+                    "topic": "rates",
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:31:00",
+                "platform": "reddit",
+                "total_rounds": 2,
+                "total_actions": 1,
+            },
+        ],
+    )
+
+    extractor = extractor_module.OutcomeExtractor(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    payload = extractor.extract_run_metrics(
+        simulation_id="sim-metrics-rich",
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    metric_values = payload["metric_values"]
+    assert metric_values["simulation.any_actions"]["value"] is True
+    assert metric_values["simulation.completed"]["value"] is True
+    assert metric_values["simulation.unique_active_agents"]["value"] == 2
+    assert metric_values["simulation.rounds_with_actions"]["value"] == 2
+    assert metric_values["simulation.observed_action_window_seconds"]["value"] == 360.0
+    assert metric_values["simulation.observed_completion_window_seconds"]["value"] == 1860.0
+    assert metric_values["simulation.agent_action_concentration_hhi"]["value"] == pytest.approx(
+        ((2 / 3) ** 2) + ((1 / 3) ** 2)
+    )
+    assert metric_values["platform.twitter.any_actions"]["value"] is True
+    assert metric_values["platform.reddit.any_actions"]["value"] is True
+    assert metric_values["platform.twitter.action_share"]["value"] == pytest.approx(2 / 3)
+    assert metric_values["platform.reddit.action_share"]["value"] == pytest.approx(1 / 3)
+    assert metric_values["platform.twitter.observed_action_window_seconds"]["value"] == 240.0
+    assert metric_values["platform.reddit.observed_action_window_seconds"]["value"] == 0.0
+    assert metric_values["platform.leading_platform"]["value"] == "twitter"
+    assert metric_values["platform.action_balance_gap"]["value"] == pytest.approx(1 / 3)
+    assert metric_values["cross_platform.first_action_lag_seconds"]["value"] == 360.0
+    assert metric_values["content.unique_topics_mentioned"]["value"] == 2
+    assert metric_values["content.top_topic_share"]["value"] == pytest.approx(0.5)
+    assert metric_values["content.dominant_topic"]["value"] == "seed"
 
 
 def test_extract_run_metrics_respects_single_platform_run_state_for_completeness(
