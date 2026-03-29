@@ -1,5 +1,6 @@
 const LEGACY_RUNTIME_MODE = 'legacy'
 const PROBABILISTIC_RUNTIME_MODE = 'probabilistic'
+const PROBABILISTIC_SCOPE_LEVELS = new Set(['ensemble', 'cluster', 'run'])
 const DEFAULT_PROBABILISTIC_RUN_COUNT = 8
 const DEFAULT_PROBABILISTIC_MAX_CONCURRENCY = 1
 const DEFAULT_STEP3_PREVIEW_MAX_NODES = 180
@@ -25,6 +26,45 @@ const normalizeRuntimeMode = (runtimeMode) => {
   return runtimeMode === PROBABILISTIC_RUNTIME_MODE
     ? PROBABILISTIC_RUNTIME_MODE
     : LEGACY_RUNTIME_MODE
+}
+
+const normalizeScopeLevel = (scopeLevel) => {
+  const normalizedScopeLevel = normalizeOptionalString(scopeLevel)
+  return PROBABILISTIC_SCOPE_LEVELS.has(normalizedScopeLevel)
+    ? normalizedScopeLevel
+    : null
+}
+
+const resolveRouteScopeLevel = ({
+  scopeLevel,
+  clusterId,
+  runId
+} = {}) => {
+  const normalizedScopeLevel = normalizeScopeLevel(scopeLevel)
+  const normalizedClusterId = normalizeOptionalString(clusterId)
+  const normalizedRunId = normalizeOptionalString(runId)
+
+  if (normalizedScopeLevel === 'run' && normalizedRunId) {
+    return 'run'
+  }
+
+  if (normalizedScopeLevel === 'cluster' && normalizedClusterId) {
+    return 'cluster'
+  }
+
+  if (normalizedScopeLevel === 'ensemble') {
+    return 'ensemble'
+  }
+
+  if (normalizedRunId) {
+    return 'run'
+  }
+
+  if (normalizedClusterId) {
+    return 'cluster'
+  }
+
+  return 'ensemble'
 }
 
 const normalizePositiveInteger = (value) => {
@@ -98,6 +138,7 @@ const getHistoryProbabilisticReplaySource = (project = {}) => {
       source: normalizeOptionalString(latestRuntime.source) || 'report',
       reportId: normalizeOptionalString(latestRuntime.report_id),
       ensembleId: normalizeOptionalString(latestRuntime.ensemble_id),
+      clusterId: normalizeOptionalString(latestRuntime.cluster_id),
       runId: normalizeOptionalString(latestRuntime.run_id)
     }
   }
@@ -114,6 +155,7 @@ const getHistoryProbabilisticReplaySource = (project = {}) => {
       source: null,
       reportId: null,
       ensembleId: null,
+      clusterId: null,
       runId: null
     }
   }
@@ -122,6 +164,7 @@ const getHistoryProbabilisticReplaySource = (project = {}) => {
     source: 'report',
     reportId: normalizeOptionalString(latestReport.report_id),
     ensembleId: normalizeOptionalString(latestReport.ensemble_id),
+    clusterId: normalizeOptionalString(latestReport.cluster_id),
     runId: normalizeOptionalString(latestReport.run_id)
   }
 }
@@ -244,6 +287,7 @@ export const deriveHistoryStep3ReplayState = (project = {}) => {
   const simulationId = normalizeOptionalString(project?.simulation_id)
   const replaySource = getHistoryProbabilisticReplaySource(project)
   const ensembleId = replaySource.ensembleId
+  const clusterId = replaySource.clusterId
   const runId = replaySource.runId
   const enabled = Boolean(simulationId && ensembleId && runId)
 
@@ -252,6 +296,7 @@ export const deriveHistoryStep3ReplayState = (project = {}) => {
       enabled: false,
       simulationId,
       ensembleId: null,
+      clusterId: null,
       runId: null,
       routeTarget: null,
       helperText: 'Step 3 replay is available only when history includes probabilistic runtime scope for one ensemble and run.'
@@ -262,6 +307,7 @@ export const deriveHistoryStep3ReplayState = (project = {}) => {
     enabled: true,
     simulationId,
     ensembleId,
+    clusterId,
     runId,
     routeTarget: {
       name: 'SimulationRun',
@@ -271,7 +317,9 @@ export const deriveHistoryStep3ReplayState = (project = {}) => {
       query: buildSimulationRunRouteQuery({
         runtimeMode: PROBABILISTIC_RUNTIME_MODE,
         ensembleId,
-        runId
+        clusterId,
+        runId,
+        scopeLevel: 'run'
       })
     },
     helperText: replaySource.source === 'storage'
@@ -664,13 +712,23 @@ export const buildSimulationRunRouteQuery = ({
   maxRounds,
   runtimeMode,
   ensembleId,
-  runId
+  clusterId,
+  runId,
+  scopeLevel,
+  compareId
 } = {}) => {
   const query = {}
   const normalizedMaxRounds = normalizePositiveInteger(maxRounds)
   const normalizedRuntimeMode = normalizeRuntimeMode(runtimeMode)
   const normalizedEnsembleId = normalizeOptionalString(ensembleId)
+  const normalizedClusterId = normalizeOptionalString(clusterId)
   const normalizedRunId = normalizeOptionalString(runId)
+  const normalizedCompareId = normalizeOptionalString(compareId)
+  const resolvedScopeLevel = resolveRouteScopeLevel({
+    scopeLevel,
+    clusterId: normalizedClusterId,
+    runId: normalizedRunId
+  })
 
   if (normalizedMaxRounds !== null) {
     query.maxRounds = String(normalizedMaxRounds)
@@ -680,9 +738,18 @@ export const buildSimulationRunRouteQuery = ({
   }
   if (normalizedEnsembleId) {
     query.ensembleId = normalizedEnsembleId
+    if (normalizedRuntimeMode === PROBABILISTIC_RUNTIME_MODE) {
+      query.scope = resolvedScopeLevel
+    }
+  }
+  if (normalizedEnsembleId && normalizedClusterId) {
+    query.clusterId = normalizedClusterId
   }
   if (normalizedRunId) {
     query.runId = normalizedRunId
+  }
+  if (normalizedCompareId) {
+    query.compareId = normalizedCompareId
   }
 
   return query
@@ -692,6 +759,7 @@ export const buildReportGenerationRequest = ({
   simulationId,
   runtimeMode,
   ensembleId,
+  clusterId,
   runId,
   forceRegenerate = true
 } = {}) => {
@@ -705,10 +773,14 @@ export const buildReportGenerationRequest = ({
   }
 
   const normalizedEnsembleId = normalizeOptionalString(ensembleId)
+  const normalizedClusterId = normalizeOptionalString(clusterId)
   const normalizedRunId = normalizeOptionalString(runId)
 
   if (normalizedEnsembleId) {
     payload.ensemble_id = normalizedEnsembleId
+  }
+  if (normalizedEnsembleId && normalizedClusterId) {
+    payload.cluster_id = normalizedClusterId
   }
   if (normalizedEnsembleId && normalizedRunId) {
     payload.run_id = normalizedRunId
@@ -720,6 +792,13 @@ export const buildReportGenerationRequest = ({
 export const buildReportAgentChatRequest = ({
   simulationId,
   reportId,
+  runtimeMode,
+  ensembleId,
+  clusterId,
+  runId,
+  scopeLevel,
+  compareId,
+  reportContext = null,
   message,
   chatHistory = []
 } = {}) => {
@@ -734,23 +813,67 @@ export const buildReportAgentChatRequest = ({
     payload.report_id = normalizedReportId
   }
 
+  if (normalizeRuntimeMode(runtimeMode) === PROBABILISTIC_RUNTIME_MODE) {
+    const evidenceSummary = deriveProbabilisticEvidenceSummary({
+      runtimeMode,
+      ensembleId,
+      clusterId,
+      runId,
+      scopeLevel,
+      compareId,
+      reportContext
+    })
+    const scopedEnsembleId = normalizeOptionalString(evidenceSummary.scope?.ensembleId)
+    const scopedClusterId = normalizeOptionalString(evidenceSummary.scope?.clusterId)
+    const scopedRunId = normalizeOptionalString(evidenceSummary.scope?.runId)
+    const scopedLevel = normalizeScopeLevel(evidenceSummary.scope?.level)
+    const scopedCompareId = normalizeOptionalString(
+      evidenceSummary.selectedCompare?.compareId
+    ) || normalizeOptionalString(compareId)
+
+    if (scopedEnsembleId) {
+      payload.ensemble_id = scopedEnsembleId
+    }
+    if (scopedEnsembleId && scopedClusterId) {
+      payload.cluster_id = scopedClusterId
+    }
+    if (scopedEnsembleId && scopedRunId) {
+      payload.run_id = scopedRunId
+    }
+    if (scopedLevel) {
+      payload.scope_level = scopedLevel
+    }
+    if (scopedCompareId) {
+      payload.compare_id = scopedCompareId
+    }
+  }
+
   return payload
 }
 
 export const normalizeSimulationRunRouteQuery = (query = {}) => {
   const runtimeMode = normalizeRuntimeMode(query.mode)
   const ensembleId = normalizeOptionalString(query.ensembleId)
+  const clusterId = normalizeOptionalString(query.clusterId)
   const runId = normalizeOptionalString(query.runId)
+  const compareId = normalizeOptionalString(query.compareId)
+  const scopeLevel = resolveRouteScopeLevel({
+    scopeLevel: query.scope ?? query.scopeLevel,
+    clusterId,
+    runId
+  })
 
   return {
     maxRounds: normalizePositiveInteger(query.maxRounds),
     runtimeMode,
     ensembleId,
+    clusterId,
     runId,
+    compareId,
+    scopeLevel,
     probabilisticRuntimeActive: (
       runtimeMode === PROBABILISTIC_RUNTIME_MODE
       && Boolean(ensembleId)
-      && Boolean(runId)
     )
   }
 }
@@ -772,11 +895,20 @@ export const deriveProbabilisticReportRouteState = ({
     normalizeOptionalString(normalizedRecord.ensemble_id)
     || normalizeOptionalString(normalizedContext.ensemble_id)
   )
+  const reportClusterId = (
+    normalizeOptionalString(normalizedRecord.cluster_id)
+    || normalizeOptionalString(normalizedContext.cluster_id)
+    || normalizeOptionalString(normalizedContext.scope?.cluster_id)
+  )
   const reportRunId = (
     normalizeOptionalString(normalizedRecord.run_id)
     || normalizeOptionalString(normalizedContext.run_id)
   )
-  const probabilisticReportActive = Boolean(reportEnsembleId || reportRunId)
+  const reportScopeLevel = (
+    normalizeOptionalString(normalizedContext.scope?.level)
+    || (reportRunId ? 'run' : (reportClusterId ? 'cluster' : 'ensemble'))
+  )
+  const probabilisticReportActive = Boolean(reportEnsembleId || reportRunId || reportClusterId)
 
   if (hasLoadedReportRecord) {
     return {
@@ -784,7 +916,10 @@ export const deriveProbabilisticReportRouteState = ({
         ? PROBABILISTIC_RUNTIME_MODE
         : LEGACY_RUNTIME_MODE,
       ensembleId: reportEnsembleId,
+      clusterId: reportClusterId,
       runId: reportRunId,
+      compareId: normalizedRoute.compareId,
+      scopeLevel: probabilisticReportActive ? reportScopeLevel : 'ensemble',
       probabilisticReportActive
     }
   }
@@ -794,8 +929,31 @@ export const deriveProbabilisticReportRouteState = ({
       ? PROBABILISTIC_RUNTIME_MODE
       : normalizedRoute.runtimeMode,
     ensembleId: reportEnsembleId || normalizedRoute.ensembleId,
+    clusterId: reportClusterId || normalizedRoute.clusterId,
     runId: reportRunId || normalizedRoute.runId,
+    compareId: normalizedRoute.compareId,
+    scopeLevel: probabilisticReportActive
+      ? reportScopeLevel
+      : normalizedRoute.scopeLevel,
     probabilisticReportActive: probabilisticReportActive || normalizedRoute.probabilisticRuntimeActive
+  }
+}
+
+export const getStep2PrepareBootstrapState = ({
+  probabilisticPrepareEnabled = false,
+  preparedArtifactSummary = null
+} = {}) => {
+  const hasPreparedForecastArtifacts = hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
+  if (probabilisticPrepareEnabled || hasPreparedForecastArtifacts) {
+    return {
+      selectedPrepareMode: PROBABILISTIC_RUNTIME_MODE,
+      autoStartMode: null
+    }
+  }
+
+  return {
+    selectedPrepareMode: LEGACY_RUNTIME_MODE,
+    autoStartMode: LEGACY_RUNTIME_MODE
   }
 }
 
@@ -923,7 +1081,11 @@ export const getStep3ReportState = (runtimeMode, capabilities = {}) => {
 export const getStep5InteractionState = (
   runtimeMode,
   {
-    hasSavedProbabilisticContext = false
+    hasSavedProbabilisticContext = false,
+    ensembleId = null,
+    clusterId = null,
+    runId = null,
+    reportContext = null
   } = {}
 ) => {
   if (normalizeRuntimeMode(runtimeMode) !== PROBABILISTIC_RUNTIME_MODE) {
@@ -934,18 +1096,48 @@ export const getStep5InteractionState = (
     }
   }
 
-  if (hasSavedProbabilisticContext === true) {
+  const evidenceSummary = deriveProbabilisticEvidenceSummary({
+    runtimeMode,
+    ensembleId,
+    clusterId,
+    runId,
+    reportContext
+  })
+  const hasScopedProbabilisticContext = (
+    hasSavedProbabilisticContext === true
+    || Boolean(normalizeOptionalString(evidenceSummary.scope?.ensembleId))
+  )
+
+  if (hasScopedProbabilisticContext) {
+    const scopeLevel = evidenceSummary.scope?.level || 'ensemble'
+    const scopeLabel = scopeLevel === 'run'
+      ? 'Run-scoped probabilistic context available'
+      : (scopeLevel === 'cluster'
+        ? 'Cluster-scoped probabilistic context available'
+        : 'Ensemble-scoped probabilistic context available')
+    let body = 'Report Agent chat can request ensemble evidence directly for this probabilistic scope.'
+    if (scopeLevel === 'cluster') {
+      body = 'Report Agent chat can request ensemble and scenario-family evidence directly for this probabilistic scope.'
+    } else if (scopeLevel === 'run') {
+      body = 'Report Agent chat can request ensemble, scenario-family, and run evidence directly for this probabilistic scope.'
+    }
+    if (Array.isArray(evidenceSummary.calibration?.readyMetricIds) && evidenceSummary.calibration.readyMetricIds.length) {
+      body += ` Backtested calibration artifacts are available for ${evidenceSummary.calibration.readyMetricIds.join(', ')}.`
+    } else if (evidenceSummary.confidenceStatus?.status === 'not_ready') {
+      body += ' Calibration artifacts are present but not ready for calibrated language yet.'
+    }
+    body += ' Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
     return {
       showNotice: true,
-      title: 'Saved probabilistic context detected',
-      body: 'Report Agent chat can use this saved ensemble and run context from the current report. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: scopeLabel,
+      body
     }
   }
 
   return {
     showNotice: true,
     title: 'Probabilistic interaction context unavailable',
-    body: 'Step 5 still uses the legacy report and simulation context. Ensemble, run, and scenario-family grounding are not yet wired into chat or survey flows.'
+    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. Interviews and surveys still use the legacy interaction path.'
   }
 }
 
@@ -956,7 +1148,12 @@ export const deriveProbabilisticCapabilityState = (capabilities = {}) => {
   )
   const reportEnabled = capabilities.probabilistic_report_enabled === true
   const interactionEnabled = capabilities.probabilistic_interaction_enabled === true
-  const calibratedEnabled = capabilities.calibrated_probability_enabled === true
+  const calibratedEnabled = (
+    capabilities.calibrated_probability_enabled === true
+    || capabilities.calibration_artifact_support_enabled === true
+  )
+  const calibrationSurfaceMode = normalizeOptionalString(capabilities.calibration_surface_mode)
+    || (calibratedEnabled ? 'artifact-gated' : 'empirical-only')
 
   return {
     prepareEnabled: capabilities.probabilistic_prepare_enabled === true,
@@ -964,9 +1161,10 @@ export const deriveProbabilisticCapabilityState = (capabilities = {}) => {
     reportEnabled,
     interactionEnabled,
     calibratedEnabled,
+    calibrationSurfaceMode,
     reportModeLabel: reportEnabled ? 'probabilistic-ready' : 'legacy-only',
     interactionModeLabel: interactionEnabled ? 'probabilistic-ready' : 'legacy-only',
-    calibrationModeLabel: calibratedEnabled ? 'calibrated' : 'empirical-only'
+    calibrationModeLabel: calibrationSurfaceMode
   }
 }
 
@@ -974,6 +1172,7 @@ export const deriveProbabilisticReportContextState = ({
   simulationId = null,
   runtimeMode = LEGACY_RUNTIME_MODE,
   ensembleId = null,
+  clusterId = null,
   runId = null,
   reportContext = null,
   capabilities = null,
@@ -1011,7 +1210,6 @@ export const deriveProbabilisticReportContextState = ({
   const hasExplicitScope = (
     Boolean(normalizeOptionalString(simulationId))
     && Boolean(normalizeOptionalString(ensembleId))
-    && Boolean(normalizeOptionalString(runId))
   )
 
   return {
@@ -1258,6 +1456,16 @@ const normalizeAnalyticsRecord = (value) => {
   return value && typeof value === 'object' ? value : null
 }
 
+const normalizeStringList = (values = []) => {
+  if (!Array.isArray(values)) {
+    return []
+  }
+
+  return values
+    .map((value) => normalizeOptionalString(value))
+    .filter(Boolean)
+}
+
 const normalizeWarningList = (warnings = []) => {
   if (!Array.isArray(warnings)) {
     return []
@@ -1293,6 +1501,541 @@ const formatProbabilityMass = (value) => {
     return null
   }
   return `${(value * 100).toFixed(0)}%`
+}
+
+const formatScoringRuleLabel = (rule) => {
+  const labels = {
+    brier_score: 'Brier score',
+    log_score: 'Log score',
+    crps: 'CRPS'
+  }
+
+  if (typeof rule !== 'string') {
+    return null
+  }
+  return labels[rule] || rule.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+const countNonEmptyReliabilityBins = (bins = []) => {
+  if (!Array.isArray(bins)) {
+    return 0
+  }
+
+  return bins.reduce((count, bin) => {
+    const caseCount = normalizeNonNegativeInteger(bin?.case_count)
+    return count + (caseCount && caseCount > 0 ? 1 : 0)
+  }, 0)
+}
+
+const normalizeConfidenceStatus = (reportContext = null) => {
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const rawStatus = normalizeAnalyticsRecord(normalizedContext.confidence_status) || {}
+  const calibrationProvenance = normalizeAnalyticsRecord(normalizedContext.calibration_provenance) || {}
+  const readyMetricIds = normalizeStringList(
+    rawStatus.ready_metric_ids ?? calibrationProvenance.ready_metric_ids
+  )
+  const supportedMetricIds = normalizeStringList(
+    rawStatus.supported_metric_ids ?? calibrationProvenance.ready_metric_ids
+  )
+  const notReadyMetricIds = normalizeStringList(rawStatus.not_ready_metric_ids)
+  const status = normalizeOptionalString(rawStatus.status)
+    || (readyMetricIds.length
+      ? 'ready'
+      : ((supportedMetricIds.length || notReadyMetricIds.length) ? 'not_ready' : 'absent'))
+
+  return {
+    status,
+    supportedMetricIds,
+    readyMetricIds,
+    notReadyMetricIds,
+    gatingReasons: normalizeStringList(rawStatus.gating_reasons),
+    warnings: normalizeWarningList(rawStatus.warnings),
+    boundaryNote: (
+      normalizeOptionalString(rawStatus.boundary_note)
+      || 'Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.'
+    )
+  }
+}
+
+const resolveProbabilisticScope = ({
+  ensembleId = null,
+  clusterId = null,
+  runId = null,
+  scopeLevel = null,
+  reportContext = null
+} = {}) => {
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const normalizedScope = normalizeAnalyticsRecord(normalizedContext.scope) || {}
+  const normalizedSelectedCluster = normalizeAnalyticsRecord(normalizedContext.selected_cluster) || {}
+  const normalizedSelectedRun = normalizeAnalyticsRecord(normalizedContext.selected_run) || {}
+  const requestedScopeLevel = normalizeScopeLevel(scopeLevel)
+  const resolvedLevel = (
+    requestedScopeLevel
+    || normalizeOptionalString(normalizedScope.level)
+    || ((
+      normalizeOptionalString(runId)
+      || normalizeOptionalString(normalizedContext.run_id)
+      || normalizeOptionalString(normalizedSelectedRun.run_id)
+    )
+      ? 'run'
+      : ((
+          normalizeOptionalString(clusterId)
+          || normalizeOptionalString(normalizedContext.cluster_id)
+          || normalizeOptionalString(normalizedSelectedCluster.cluster_id)
+        )
+          ? 'cluster'
+          : 'ensemble'))
+  )
+
+  return {
+    ensembleId: (
+      normalizeOptionalString(ensembleId)
+      || normalizeOptionalString(normalizedContext.ensemble_id)
+      || normalizeOptionalString(normalizedScope.ensemble_id)
+    ),
+    clusterId: (
+      resolvedLevel === 'ensemble'
+        ? null
+        : (
+            normalizeOptionalString(clusterId)
+            || normalizeOptionalString(normalizedContext.cluster_id)
+            || normalizeOptionalString(normalizedScope.cluster_id)
+            || normalizeOptionalString(normalizedSelectedCluster.cluster_id)
+          )
+    ),
+    runId: (
+      resolvedLevel === 'run'
+        ? (
+            normalizeOptionalString(runId)
+            || normalizeOptionalString(normalizedContext.run_id)
+            || normalizeOptionalString(normalizedScope.run_id)
+            || normalizeOptionalString(normalizedSelectedRun.run_id)
+          )
+        : null
+    ),
+    representativeRunId: (
+      resolvedLevel === 'ensemble'
+        ? null
+        : (
+            normalizeOptionalString(normalizedScope.representative_run_id)
+            || normalizeOptionalString(normalizedSelectedCluster.prototype_run_id)
+            || normalizeOptionalString(normalizedSelectedRun.run_id)
+          )
+    ),
+    source: (
+      normalizeOptionalString(normalizedScope.source)
+      || (normalizeOptionalString(normalizedSelectedCluster.cluster_id) ? 'derived_membership' : 'route')
+    ),
+    level: resolvedLevel
+  }
+}
+
+const buildScopeSupportLabel = (support = {}) => {
+  const preparedRunCount = normalizeNonNegativeInteger(support?.prepared_run_count)
+  const runsWithMetrics = normalizeNonNegativeInteger(support?.runs_with_metrics)
+
+  if (runsWithMetrics !== null && preparedRunCount !== null) {
+    return `${runsWithMetrics} of ${preparedRunCount} runs with metrics`
+  }
+  if (preparedRunCount !== null) {
+    return `${preparedRunCount} prepared runs`
+  }
+  return 'Support counts unavailable'
+}
+
+const buildSelectedRunSupportLabel = (selectedRun = {}) => {
+  const support = normalizeAnalyticsRecord(selectedRun?.support) || {}
+  const keyMetricCount = (
+    normalizeNonNegativeInteger(support.key_metric_count)
+    ?? (Array.isArray(selectedRun?.key_metrics) ? selectedRun.key_metrics.length : null)
+  )
+
+  if (keyMetricCount !== null) {
+    return `${keyMetricCount} key metric${keyMetricCount === 1 ? '' : 's'} surfaced`
+  }
+
+  return 'Key metric support unavailable'
+}
+
+const getReadyCalibrationMetric = (reportContext = null) => {
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const calibratedSummary = normalizeAnalyticsRecord(normalizedContext.calibrated_summary) || {}
+  const metrics = Array.isArray(calibratedSummary.metrics)
+    ? calibratedSummary.metrics
+    : []
+
+  for (const metric of metrics) {
+    if (metric?.readiness?.ready === true) {
+      return normalizeAnalyticsRecord(metric)
+    }
+  }
+
+  return normalizeAnalyticsRecord(metrics[0]) || null
+}
+
+const buildCalibrationSummary = (metric = null) => {
+  if (!metric) {
+    return ''
+  }
+
+  const scoringRules = normalizeStringList(metric.supported_scoring_rules)
+    .map((rule) => formatScoringRuleLabel(rule))
+    .filter(Boolean)
+  const caseCount = (
+    normalizeNonNegativeInteger(metric?.readiness?.actual_case_count)
+    ?? normalizeNonNegativeInteger(metric?.case_count)
+  )
+  const nonEmptyBinCount = (
+    normalizeNonNegativeInteger(metric?.readiness?.non_empty_bin_count)
+    ?? countNonEmptyReliabilityBins(metric?.reliability_bins)
+  )
+
+  const parts = []
+  if (scoringRules.length) {
+    parts.push(scoringRules.join(' + '))
+  }
+  if (caseCount !== null) {
+    parts.push(`${caseCount} resolved cases`)
+  }
+  if (nonEmptyBinCount !== null) {
+    parts.push(`${nonEmptyBinCount} non-empty reliability bins`)
+  }
+
+  return parts.join('; ')
+}
+
+const normalizeGroundingCitationCounts = (counts = {}) => ({
+  source: normalizeNonNegativeInteger(counts?.source) ?? 0,
+  graph: normalizeNonNegativeInteger(counts?.graph) ?? 0,
+  code: normalizeNonNegativeInteger(counts?.code) ?? 0
+})
+
+const buildGroundingSummary = (reportContext = null) => {
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const groundingContext = normalizeAnalyticsRecord(normalizedContext.grounding_context)
+
+  if (!groundingContext) {
+    return null
+  }
+
+  const evidenceItems = Array.isArray(groundingContext.evidence_items)
+    ? groundingContext.evidence_items
+      .filter((item) => item && typeof item === 'object')
+      .slice(0, 5)
+      .map((item) => ({
+        citationId: normalizeOptionalString(item.citation_id),
+        kind: normalizeOptionalString(item.kind) || 'evidence',
+        title: normalizeOptionalString(item.title) || 'Untitled evidence',
+        summary: normalizeOptionalString(item.summary) || '',
+        locator: normalizeOptionalString(item.locator) || '',
+        supportLabel: normalizeOptionalString(item.support_label) || ''
+      }))
+    : []
+
+  return {
+    status: normalizeOptionalString(groundingContext.status) || 'unavailable',
+    boundaryNote: normalizeOptionalString(groundingContext.boundary_note) || '',
+    citationCounts: normalizeGroundingCitationCounts(groundingContext.citation_counts),
+    warnings: normalizeWarningList(groundingContext.warnings),
+    evidenceCount: (
+      normalizeNonNegativeInteger(groundingContext.evidence_count)
+      ?? evidenceItems.length
+    ),
+    evidenceItems
+  }
+}
+
+const normalizeCompareScope = (scope = {}) => {
+  const normalizedScope = normalizeAnalyticsRecord(scope) || {}
+  return {
+    level: normalizeOptionalString(normalizedScope.level) || null,
+    ensembleId: normalizeOptionalString(normalizedScope.ensemble_id) || null,
+    clusterId: normalizeOptionalString(normalizedScope.cluster_id) || null,
+    runId: normalizeOptionalString(normalizedScope.run_id) || null
+  }
+}
+
+const normalizeCompareOptions = (compareOptions = []) => {
+  if (!Array.isArray(compareOptions)) {
+    return []
+  }
+
+  return compareOptions
+    .filter((option) => option && typeof option === 'object')
+    .map((option) => ({
+      compareId: normalizeOptionalString(option.compare_id) || null,
+      reason: normalizeOptionalString(option.reason) || '',
+      label: normalizeOptionalString(option.label) || 'Compare current evidence',
+      prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.',
+      left: normalizeCompareScope(option.left),
+      right: normalizeCompareScope(option.right)
+    }))
+}
+
+const normalizeCompareSnapshot = (snapshot = {}) => {
+  const normalizedSnapshot = normalizeAnalyticsRecord(snapshot) || {}
+  return {
+    scope: normalizeCompareScope(normalizedSnapshot.scope),
+    headline: normalizeOptionalString(normalizedSnapshot.headline) || 'Unavailable scope',
+    supportLabel: normalizeOptionalString(normalizedSnapshot.support_label) || 'Support unavailable',
+    semantics: normalizeOptionalString(normalizedSnapshot.semantics) || 'empirical',
+    representativeRunIds: normalizeStringList(normalizedSnapshot.representative_run_ids),
+    warnings: normalizeWarningList(normalizedSnapshot.warnings),
+    evidenceHighlights: normalizeStringList(normalizedSnapshot.evidence_highlights),
+    confidenceStatus: normalizeOptionalString(normalizedSnapshot.confidence_status) || null,
+    groundingStatus: normalizeOptionalString(normalizedSnapshot.grounding_status) || null
+  }
+}
+
+const normalizeCompareSummary = (summary = {}) => {
+  const normalizedSummary = normalizeAnalyticsRecord(summary) || {}
+  return {
+    whatDiffers: normalizeStringList(normalizedSummary.what_differs),
+    weakSupport: normalizeStringList(normalizedSummary.weak_support),
+    boundaryNote: normalizeOptionalString(normalizedSummary.boundary_note) || ''
+  }
+}
+
+const normalizeCompareCatalog = (compareCatalog = null) => {
+  const normalizedCatalog = normalizeAnalyticsRecord(compareCatalog)
+  if (!normalizedCatalog) {
+    return {
+      boundaryNote: '',
+      options: []
+    }
+  }
+
+  return {
+    boundaryNote: normalizeOptionalString(normalizedCatalog.boundary_note) || '',
+    options: Array.isArray(normalizedCatalog.options)
+      ? normalizedCatalog.options
+        .filter((option) => option && typeof option === 'object')
+        .map((option) => ({
+          compareId: normalizeOptionalString(option.compare_id) || null,
+          label: normalizeOptionalString(option.label) || 'Compare current evidence',
+          reason: normalizeOptionalString(option.reason) || '',
+          leftScope: normalizeCompareScope(option.left_scope),
+          rightScope: normalizeCompareScope(option.right_scope),
+          leftSnapshot: normalizeCompareSnapshot(option.left_snapshot),
+          rightSnapshot: normalizeCompareSnapshot(option.right_snapshot),
+          comparisonSummary: normalizeCompareSummary(option.comparison_summary),
+          warnings: normalizeWarningList(option.warnings),
+          prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.'
+        }))
+      : []
+  }
+}
+
+const buildComparePrompts = ({
+  scope,
+  selectedRun,
+  selectedCluster,
+  compareOptions,
+  compareCatalog,
+  selectedCompare,
+  representativeRunIds,
+  scenarioFamilies,
+  topOutcomes
+} = {}) => {
+  const prompts = []
+  if (selectedCompare?.prompt) {
+    prompts.push({
+      label: selectedCompare.label || 'Selected compare',
+      prompt: selectedCompare.prompt
+    })
+  }
+  const structuredComparePrompts = Array.isArray(compareOptions)
+    ? compareOptions
+      .filter((option) => option && typeof option === 'object')
+      .map((option) => ({
+        label: normalizeOptionalString(option.label) || 'Compare current evidence',
+        prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.'
+      }))
+    : []
+  const catalogPrompts = Array.isArray(compareCatalog?.options)
+    ? compareCatalog.options
+      .filter((option) => option && typeof option === 'object' && option.prompt)
+      .map((option) => ({
+        label: normalizeOptionalString(option.label) || 'Compare current evidence',
+        prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.'
+      }))
+    : []
+  const selectedRunId = normalizeOptionalString(selectedRun?.run_id) || scope.runId
+  const comparisonRunId = representativeRunIds.find((candidateId) => candidateId !== selectedRunId)
+  const topOutcome = Array.isArray(topOutcomes) ? topOutcomes[0] : null
+  const firstFamily = Array.isArray(scenarioFamilies) ? scenarioFamilies[0] : null
+  const secondFamily = Array.isArray(scenarioFamilies) ? scenarioFamilies[1] : null
+
+  if (selectedRunId && comparisonRunId) {
+    prompts.push({
+      label: `Run ${selectedRunId} vs ${comparisonRunId}`,
+      prompt: `Compare run ${selectedRunId} against representative run ${comparisonRunId}. Focus on support counts, distinguishing outcomes, warnings, and assumption ledger differences only.`
+    })
+  }
+
+  if (firstFamily?.cluster_id && secondFamily?.cluster_id) {
+    prompts.push({
+      label: `${firstFamily.cluster_id} vs ${secondFamily.cluster_id}`,
+      prompt: `Compare scenario family ${firstFamily.cluster_id} against ${secondFamily.cluster_id}. Focus on probability mass, support counts, distinguishing metrics, representative runs, and explicit warnings only.`
+    })
+  }
+
+  if (selectedCluster?.cluster_id && topOutcome?.metric_id) {
+    prompts.push({
+      label: `${selectedCluster.cluster_id} vs ensemble`,
+      prompt: `Explain how scenario family ${selectedCluster.cluster_id} differs from the ensemble summary for ${topOutcome.metric_id}. Use only observed metrics, representative runs, support counts, and warnings.`
+    })
+  }
+
+  if (selectedRunId && topOutcome?.metric_id) {
+    prompts.push({
+      label: `${selectedRunId} vs ensemble`,
+      prompt: `Explain how selected run ${selectedRunId} differs from the ensemble summary for ${topOutcome.metric_id}. Use only observed metrics, representative runs, support counts, and assumption ledger details.`
+    })
+  }
+
+  if (!prompts.length && scope.ensembleId) {
+    prompts.push({
+      label: 'Summarize current evidence',
+      prompt: `Summarize the current probabilistic evidence for ensemble ${scope.ensembleId}${scope.runId ? ` and run ${scope.runId}` : ''}. Focus on support, warnings, provenance, and representative runs only.`
+    })
+  }
+
+  for (const prompt of structuredComparePrompts) {
+    if (prompts.some((existingPrompt) => existingPrompt.label === prompt.label)) {
+      continue
+    }
+    prompts.push(prompt)
+  }
+
+  for (const prompt of catalogPrompts) {
+    if (prompts.some((existingPrompt) => existingPrompt.label === prompt.label)) {
+      continue
+    }
+    prompts.push(prompt)
+  }
+
+  return prompts.slice(0, 3)
+}
+
+export const deriveProbabilisticEvidenceSummary = ({
+  runtimeMode = LEGACY_RUNTIME_MODE,
+  ensembleId = null,
+  clusterId = null,
+  runId = null,
+  scopeLevel = null,
+  compareId = null,
+  reportContext = null
+} = {}) => {
+  const isProbabilisticRuntime = (
+    normalizeRuntimeMode(runtimeMode) === PROBABILISTIC_RUNTIME_MODE
+  )
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const hasContext = Object.keys(normalizedContext).length > 0
+  const scope = resolveProbabilisticScope({
+    ensembleId,
+    clusterId,
+    runId,
+    scopeLevel,
+    reportContext: normalizedContext
+  })
+  const representativeRuns = Array.isArray(normalizedContext.representative_runs)
+    ? normalizedContext.representative_runs
+    : []
+  const representativeRunIds = representativeRuns
+    .map((run) => normalizeOptionalString(run?.run_id))
+    .filter(Boolean)
+  const selectedRun = normalizeAnalyticsRecord(normalizedContext.selected_run)
+  const selectedCluster = normalizeAnalyticsRecord(normalizedContext.selected_cluster)
+  const selectedRunLedger = normalizeAnalyticsRecord(selectedRun?.assumption_ledger) || {}
+  const confidenceStatus = normalizeConfidenceStatus(normalizedContext)
+  const calibrationProvenance = normalizeAnalyticsRecord(normalizedContext.calibration_provenance)
+  const calibrationMetric = getReadyCalibrationMetric(normalizedContext)
+  const ensembleSupport = normalizeAnalyticsRecord(normalizedContext.ensemble_facts?.support) || {}
+  const selectedRunTemplates = normalizeStringList(selectedRunLedger.applied_templates)
+  const selectedRunNotes = normalizeStringList(selectedRunLedger.notes)
+  const calibrationSummaryText = buildCalibrationSummary(calibrationMetric)
+  const groundingSummary = buildGroundingSummary(normalizedContext)
+
+  const compareOptions = normalizeCompareOptions(
+    Array.isArray(normalizedContext.compare_options)
+      ? normalizedContext.compare_options
+      : (Array.isArray(normalizedContext.scope_catalog?.compare_options)
+        ? normalizedContext.scope_catalog.compare_options
+        : [])
+  )
+  const compareCatalog = normalizeCompareCatalog(normalizedContext.compare_catalog)
+  const selectedCompareId = normalizeOptionalString(compareId)
+  const selectedCompare = compareCatalog.options.find(
+    (option) => option.compareId && option.compareId === selectedCompareId
+  ) || null
+  const scopeSupportLabel = selectedCluster?.support?.label
+    || buildScopeSupportLabel(ensembleSupport)
+
+  return {
+    available: isProbabilisticRuntime && (hasContext || Boolean(scope.ensembleId || scope.runId || scope.clusterId)),
+    scope: {
+      level: scope.level,
+      ensembleId: scope.ensembleId,
+      clusterId: scope.clusterId,
+      runId: scope.runId,
+      representativeRunId: scope.representativeRunId,
+      source: scope.source,
+      supportLabel: scopeSupportLabel,
+      representativeRunIds,
+      representativeRunCount: representativeRunIds.length,
+      warnings: normalizeWarningList(normalizedContext.quality_summary?.warnings)
+    },
+    selectedCluster: selectedCluster
+      ? {
+          clusterId: normalizeOptionalString(selectedCluster.cluster_id),
+          familyLabel: normalizeOptionalString(selectedCluster.family_label) || null,
+          familySummary: normalizeOptionalString(selectedCluster.family_summary) || null
+        }
+      : null,
+    selectedRun: selectedRun
+      ? {
+          runId: normalizeOptionalString(selectedRun.run_id),
+          qualityStatus: normalizeOptionalString(selectedRun.quality_status) || 'unknown',
+          supportLabel: buildSelectedRunSupportLabel(selectedRun),
+          assumptionTemplates: selectedRunTemplates,
+          assumptionNotes: selectedRunNotes,
+          assumptionSummary: selectedRunTemplates.length
+            ? `Templates: ${selectedRunTemplates.join(', ')}`
+            : (selectedRunNotes[0] || 'No assumption ledger details stored')
+        }
+      : null,
+    confidenceStatus,
+    calibration: calibrationProvenance
+      ? {
+          mode: normalizeOptionalString(calibrationProvenance.mode) || 'calibrated',
+          readyMetricIds: normalizeStringList(calibrationProvenance.ready_metric_ids),
+          qualityStatus: normalizeOptionalString(calibrationProvenance.quality_status) || 'unknown',
+          warnings: normalizeWarningList(calibrationProvenance.warnings),
+          summary: calibrationSummaryText,
+          confidenceLabel: normalizeOptionalString(calibrationMetric?.readiness?.confidence_label) || null
+        }
+      : null,
+    grounding: groundingSummary,
+    compareOptions,
+    compareCatalog,
+    selectedCompare,
+    comparePrompts: buildComparePrompts({
+      scope,
+      selectedRun,
+      selectedCluster,
+      compareOptions,
+      compareCatalog,
+      selectedCompare,
+      representativeRunIds,
+      scenarioFamilies: Array.isArray(normalizedContext.scenario_families)
+        ? normalizedContext.scenario_families
+        : [],
+      topOutcomes: Array.isArray(normalizedContext.top_outcomes)
+        ? normalizedContext.top_outcomes
+        : []
+    })
+  }
 }
 
 const getDominantCategory = (metricSummary = {}) => {

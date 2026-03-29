@@ -66,6 +66,20 @@ class Config:
     CALIBRATED_PROBABILITY_ENABLED = (
         os.environ.get('CALIBRATED_PROBABILITY_ENABLED', 'false').lower() == 'true'
     )
+    CALIBRATION_MIN_CASE_COUNT = int(os.environ.get('CALIBRATION_MIN_CASE_COUNT', '10'))
+    CALIBRATION_MIN_POSITIVE_CASE_COUNT = int(
+        os.environ.get('CALIBRATION_MIN_POSITIVE_CASE_COUNT', '3')
+    )
+    CALIBRATION_MIN_NEGATIVE_CASE_COUNT = int(
+        os.environ.get('CALIBRATION_MIN_NEGATIVE_CASE_COUNT', '3')
+    )
+    CALIBRATION_MIN_SUPPORTED_BIN_COUNT = int(
+        os.environ.get('CALIBRATION_MIN_SUPPORTED_BIN_COUNT', '2')
+    )
+    CALIBRATION_BIN_COUNT = int(os.environ.get('CALIBRATION_BIN_COUNT', '5'))
+    CALIBRATION_LOG_SCORE_EPSILON = float(
+        os.environ.get('CALIBRATION_LOG_SCORE_EPSILON', '1e-6')
+    )
     # Keep the legacy name as a compatibility alias until all callers migrate.
     ENSEMBLE_RUNTIME_ENABLED = PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED
     

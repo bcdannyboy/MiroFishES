@@ -15,21 +15,21 @@
       <section class="hero-section">
         <div class="hero-left">
           <div class="tag-row">
-            <span class="orange-tag">Simple universal swarm-intelligence engine</span>
+            <span class="orange-tag">Artifact-first probabilistic forecasting engine</span>
             <span class="version-text">/ v0.1 preview</span>
           </div>
           
           <h1 class="main-title">
-            Upload any report<br>
-            <span class="gradient-text">simulate the future instantly</span>
+            Upload evidence<br>
+            <span class="gradient-text">stress-test futures with grounded ensembles</span>
           </h1>
           
           <div class="hero-desc">
             <p>
-              Even a single paragraph is enough for <span class="highlight-bold">MiroFishES</span> to extract real-world seeds and automatically generate a parallel world populated by up to <span class="highlight-orange">millions of agents</span>. From a god's-eye view, you can inject variables and search for the <span class="highlight-code">best local outcome</span> inside complex collective interactions.
+              <span class="highlight-bold">MiroFishES</span> turns reports, policies, market notes, and raw documents into a graph-grounded world model, then layers forecast briefs, uncertainty specs, outcome contracts, and ensemble runs on top of it. Instead of a single opaque simulation, you get inspectable artifacts, bounded scenario families, and scoped evidence about what happened and why.
             </p>
             <p class="slogan-text">
-              Rehearse the future through agent societies, then make decisions after countless simulations<span class="blinking-cursor">_</span>
+              Ground the world, specify uncertainty, run ensembles, inspect evidence<span class="blinking-cursor">_</span>
             </p>
           </div>
            
@@ -56,20 +56,20 @@
             <span class="status-dot">*</span> System Status
           </div>
           
-          <h2 class="section-title">Ready</h2>
+          <h2 class="section-title">Forecast-Ready</h2>
           <p class="section-desc">
-            The forecasting engine is standing by. Upload multiple unstructured files to initialize a new simulation run.
+            The forecast control plane is standing by. Upload multiple unstructured files to initialize a grounded simulation family with durable artifacts, bounded compare surfaces, and explicit evidence scopes.
           </p>
           
           <!-- Metric cards -->
           <div class="metrics-row">
             <div class="metric-card">
-              <div class="metric-value">Low Cost</div>
-              <div class="metric-label">Typical runs average about $5 each</div>
+              <div class="metric-value">Artifact-First</div>
+              <div class="metric-label">Grounding, uncertainty, outcomes, and report context persist as inspectable artifacts</div>
             </div>
             <div class="metric-card">
-              <div class="metric-value">High Scale</div>
-              <div class="metric-label">Supports simulations with up to millions of agents</div>
+              <div class="metric-value">Scope-Aware</div>
+              <div class="metric-label">Move between ensemble, scenario-family, and run evidence without losing provenance</div>
             </div>
           </div>
 
@@ -82,36 +82,36 @@
               <div class="workflow-item">
                 <span class="step-num">01</span>
                 <div class="step-info">
-                  <div class="step-title">Graph Construction</div>
-                  <div class="step-desc">Real-world seed extraction, individual and collective memory injection, and GraphRAG construction</div>
+                  <div class="step-title">Ground Sources &amp; Build Graph</div>
+                  <div class="step-desc">Upload evidence, extract entities and relationships, persist source provenance, and build GraphRAG-backed world state</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">02</span>
                 <div class="step-info">
-                  <div class="step-title">Environment Setup</div>
-                  <div class="step-desc">Entity and relationship extraction, persona generation, and simulation-parameter injection</div>
+                  <div class="step-title">Forecast Preparation</div>
+                  <div class="step-desc">Generate forecast briefs, uncertainty specs, outcome specs, and grounding bundles before runtime begins</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">03</span>
                 <div class="step-info">
-                  <div class="step-title">Run Simulation</div>
-                  <div class="step-desc">Dual-platform parallel simulation, automatic requirement parsing, and dynamic temporal-memory updates</div>
+                  <div class="step-title">Ensemble Execution</div>
+                  <div class="step-desc">Launch stored runs, vary scenarios, and monitor ensemble-, family-, and run-level behavior over time</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">04</span>
                 <div class="step-info">
-                  <div class="step-title">Report Generation</div>
-                  <div class="step-desc">The Report Agent uses a rich toolset to inspect and interrogate the post-simulation environment</div>
+                  <div class="step-title">Evidence &amp; Compare</div>
+                  <div class="step-desc">Assemble scoped report context, inspect scenario families and sensitivity, and compare bounded forecast views</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">05</span>
                 <div class="step-info">
-                  <div class="step-title">Deep Interaction</div>
-                  <div class="step-desc">Talk with any simulated individual and continue exploring through the Report Agent</div>
+                  <div class="step-title">Report-Agent Exploration</div>
+                  <div class="step-desc">Query the report agent with ensemble, cluster, or run scope and continue investigating grounded outcomes</div>
                 </div>
               </div>
             </div>

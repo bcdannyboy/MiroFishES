@@ -63,11 +63,11 @@
               <div>
                 <span class="prepare-mode-title">Prepare Mode</span>
                 <p class="prepare-mode-copy">
-                  Legacy prepare keeps the current single-run setup path. Probabilistic prepare now captures an explicit catalog of run-varying config fields plus provenance for later seeded resolution and runtime work.
+                  Legacy prepare keeps the current single-run setup path. Forecast prepare captures an explicit catalog of run-varying config fields plus provenance for later seeded resolution, report scope, and runtime work.
                 </p>
               </div>
               <span v-if="capabilitiesLoading" class="badge pending">Checking</span>
-              <span v-else-if="probabilisticPrepareEnabled" class="badge accent">Probabilistic Ready</span>
+              <span v-else-if="probabilisticPrepareEnabled" class="badge accent">Forecast Ready</span>
               <span v-else class="badge pending">Legacy Only</span>
             </div>
 
@@ -89,7 +89,7 @@
                   :class="{ active: selectedPrepareMode === 'probabilistic' }"
                   @click="selectPrepareMode('probabilistic')"
                 >
-                  Probabilistic
+                  Forecast
                 </button>
               </div>
 
@@ -161,7 +161,7 @@
                 </div>
 
                 <p class="prepare-disclaimer">
-                  This step prepares artifact contracts first. Runtime shells are {{ probabilisticCapabilityState.runtimeEnabled ? 'available' : 'disabled' }}, Step 4 is {{ probabilisticCapabilityState.reportModeLabel }}, Step 5 is {{ probabilisticCapabilityState.interactionModeLabel }}, and probability language remains {{ probabilisticCapabilityState.calibrationModeLabel }} until stronger artifacts exist.
+                  This step prepares artifact contracts first. Runtime shells are {{ probabilisticCapabilityState.runtimeEnabled ? 'available' : 'disabled' }}, Step 4 is {{ probabilisticCapabilityState.reportModeLabel }}, Step 5 is {{ probabilisticCapabilityState.interactionModeLabel }}, and confidence language is {{ probabilisticCapabilityState.calibrationModeLabel }}: only named binary metrics with ready backtest artifacts may be called calibrated.
                 </p>
               </div>
 
@@ -171,10 +171,10 @@
               >
                 {{ capabilitiesError
                   ? 'Prepare capability discovery failed, so Step 2 is staying on the legacy single-run path.'
-                  : 'Probabilistic prepare is disabled by the backend flag. Step 2 stays on the legacy single-run path.' }}
+                  : 'Forecast prepare is disabled by the backend flag. Step 2 stays on the legacy single-run path.' }}
               </div>
               <div v-else class="prepare-mode-note muted">
-                Legacy mode preserves the current auto-generated prepare flow and does not emit probabilistic sidecar artifacts.
+                Legacy mode preserves the current auto-generated prepare flow and does not emit forecast artifact sidecars.
               </div>
 
               <div v-if="prepareError" class="prepare-error">
@@ -223,9 +223,20 @@
                 <span class="summary-label">Run-varying</span>
                 <span class="summary-value">{{ preparedNonFixedRandomVariableCount }}</span>
               </div>
+              <div class="summary-card">
+                <span class="summary-label">Grounding</span>
+                <span class="summary-value">{{ preparedGroundingStatus }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Upstream Evidence</span>
+                <span class="summary-value">{{ preparedGroundingEvidenceCount }}</span>
+              </div>
             </div>
             <p v-if="preparedVariablePreview" class="summary-note">
               First tracked fields: <span class="mono">{{ preparedVariablePreview }}</span>
+            </p>
+            <p v-if="preparedGroundingBoundaryNote" class="summary-note">
+              Grounding boundary: {{ preparedGroundingBoundaryNote }}
             </p>
             <div class="artifact-list">
               <div
@@ -799,6 +810,7 @@ import {
 import {
   buildProbabilisticEnsembleRequest,
   getProbabilisticRuntimeShellErrorMessage,
+  getStep2PrepareBootstrapState,
   isStep2PrepareInFlight,
   shouldPromoteStep2ReadyState,
   shouldLaunchProbabilisticRuntime,
@@ -943,7 +955,7 @@ const prepareActionDisabled = computed(() => {
 
 const prepareActionLabel = computed(() => (
   selectedPrepareMode.value === 'probabilistic'
-    ? 'Prepare probabilistic artifact set'
+    ? 'Prepare forecast artifact set'
     : 'Start legacy prepare'
 ))
 
@@ -985,6 +997,22 @@ const preparedVariablePreview = computed(() => {
     ? preview.join(', ')
     : ''
 })
+
+const preparedGroundingSummary = computed(() => (
+  preparedArtifactSummary.value?.grounding_summary || null
+))
+
+const preparedGroundingStatus = computed(() => (
+  preparedGroundingSummary.value?.status || 'unavailable'
+))
+
+const preparedGroundingEvidenceCount = computed(() => (
+  preparedGroundingSummary.value?.evidence_count || 0
+))
+
+const preparedGroundingBoundaryNote = computed(() => (
+  preparedGroundingSummary.value?.boundary_note || ''
+))
 
 // Polling timer
 let pollTimer = null
@@ -1068,6 +1096,35 @@ const syncPrepareMetadata = (payload = {}) => {
 
   if (payload.probabilistic_mode || summary?.probabilistic_mode || summary?.mode === 'probabilistic') {
     selectedPrepareMode.value = 'probabilistic'
+  }
+}
+
+const reopenPreparedSimulation = async ({ mode = 'legacy' } = {}) => {
+  if (!props.simulationId) {
+    return false
+  }
+
+  try {
+    const res = await getPrepareStatus({
+      simulation_id: props.simulationId,
+      probabilistic_mode: mode === 'probabilistic'
+    })
+
+    if (!res?.success || !res.data?.already_prepared) {
+      return false
+    }
+
+    syncPrepareMetadata(res.data.prepare_info || res.data)
+    addLog(
+      mode === 'probabilistic'
+        ? 'Reopened existing forecast prepare artifacts for this simulation.'
+        : 'Reopened existing legacy prepare artifacts for this simulation.'
+    )
+    await loadPreparedData()
+    return true
+  } catch (err) {
+    console.warn('Failed to reopen prepared Step 2 state:', err)
+    return false
   }
 }
 
@@ -1519,17 +1576,36 @@ const initializeStep2 = async () => {
     return
   }
 
-  addLog('Step2 Environment SetupInitializing')
+  addLog('Step 2 environment setup initialized')
   const capabilities = await fetchPrepareCapabilities()
+  const bootstrapState = getStep2PrepareBootstrapState({
+    probabilisticPrepareEnabled: Boolean(capabilities?.probabilistic_prepare_enabled),
+    preparedArtifactSummary: preparedArtifactSummary.value
+  })
+
+  selectedPrepareMode.value = bootstrapState.selectedPrepareMode
 
   if (capabilities?.probabilistic_prepare_enabled) {
-    addLog('Probabilistic prepare is available. Starting the legacy baseline prepare first to preserve the current Step 2 flow.')
-    addLog('After the baseline prepare completes, switch to Probabilistic mode to persist uncertainty artifacts for the same simulation.')
+    addLog('Forecast prepare is available and is now the primary Step 2 path for this simulation.')
     addLog(`Supported uncertainty profiles: ${capabilities.supported_uncertainty_profiles.join(', ')}`)
   }
 
-  addLog('Using the legacy prepare path for this simulation.')
-  await startPrepareSimulation({ mode: 'legacy' })
+  if (await reopenPreparedSimulation({ mode: 'probabilistic' })) {
+    return
+  }
+
+  if (bootstrapState.autoStartMode === 'legacy' && await reopenPreparedSimulation({ mode: 'legacy' })) {
+    return
+  }
+
+  if (bootstrapState.autoStartMode) {
+    addLog('Using the legacy prepare path for this simulation.')
+    await startPrepareSimulation({ mode: bootstrapState.autoStartMode })
+    return
+  }
+
+  emit('update-status', 'ready')
+  addLog('Forecast prepare is selected. Start it from the Step 2 action panel when you are ready to persist forecast artifacts.')
 }
 
 onMounted(() => {

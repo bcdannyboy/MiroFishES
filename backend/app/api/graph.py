@@ -4,6 +4,7 @@ Uses a project context mechanism with server-persisted state.
 """
 
 import os
+import hashlib
 import traceback
 import threading
 from flask import request, jsonify
@@ -17,6 +18,11 @@ from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
 from ..models.project import ProjectManager, ProjectStatus
+from ..models.grounding import (
+    GROUNDING_GENERATOR_VERSION,
+    GROUNDING_SCHEMA_VERSION,
+    SOURCE_BOUNDARY_NOTE,
+)
 
 # Get logger
 logger = get_logger('mirofish.api')
@@ -28,6 +34,35 @@ def allowed_file(filename: str) -> bool:
         return False
     ext = os.path.splitext(filename)[1].lower().lstrip('.')
     return ext in Config.ALLOWED_EXTENSIONS
+
+
+def _classify_content_kind(filename: str) -> str:
+    """Classify one uploaded file coarsely for provenance reporting."""
+    extension = os.path.splitext(filename or "")[1].lower()
+    if extension in {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml"}:
+        return "code"
+    if extension in {".md", ".txt", ".pdf", ".docx", ".csv"}:
+        return "document"
+    return "unknown"
+
+
+def _sha256_file(path: str) -> str:
+    """Hash one stored file for durable source identity."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _project_payload(project):
+    """Serialize one project plus compact grounding artifact summaries."""
+    return {
+        **project.to_dict(),
+        "grounding_artifacts": ProjectManager.describe_grounding_artifacts(
+            project.project_id
+        ),
+    }
 
 
 # ============== Project management endpoints ==============
@@ -47,7 +82,7 @@ def get_project(project_id: str):
     
     return jsonify({
         "success": True,
-        "data": project.to_dict()
+        "data": _project_payload(project)
     })
 
 
@@ -61,7 +96,7 @@ def list_projects():
     
     return jsonify({
         "success": True,
-        "data": [p.to_dict() for p in projects],
+        "data": [_project_payload(p) for p in projects],
         "count": len(projects)
     })
 
@@ -107,12 +142,13 @@ def reset_project(project_id: str):
     project.graph_id = None
     project.graph_build_task_id = None
     project.error = None
+    ProjectManager.delete_graph_build_summary(project_id)
     ProjectManager.save_project(project)
     
     return jsonify({
         "success": True,
         "message": f"Project reset: {project_id}",
-        "data": project.to_dict()
+        "data": _project_payload(project)
     })
 
 
@@ -179,8 +215,9 @@ def generate_ontology():
         # Save files and extract text
         document_texts = []
         all_text = ""
+        source_records = []
         
-        for file in uploaded_files:
+        for source_index, file in enumerate(uploaded_files, start=1):
             if file and file.filename and allowed_file(file.filename):
                 # Save file to the project directory
                 file_info = ProjectManager.save_file_to_project(
@@ -192,12 +229,54 @@ def generate_ontology():
                     "filename": file_info["original_filename"],
                     "size": file_info["size"]
                 })
-                
-                # Extract text
-                text = FileParser.extract_text(file_info["path"])
-                text = TextProcessor.preprocess_text(text)
-                document_texts.append(text)
-                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
+
+                extracted_text = ""
+                extraction_status = "succeeded"
+                parser_warnings = []
+                try:
+                    extracted_text = FileParser.extract_text(file_info["path"])
+                    extracted_text = TextProcessor.preprocess_text(extracted_text)
+                except Exception as exc:
+                    extraction_status = "failed"
+                    parser_warnings.append(str(exc))
+                    logger.warning(
+                        "File extraction failed for %s: %s",
+                        file_info["original_filename"],
+                        exc,
+                    )
+
+                combined_text_start = None
+                combined_text_end = None
+                if extracted_text:
+                    combined_text_start = len(all_text)
+                    all_text += (
+                        f"\n\n=== {file_info['original_filename']} ===\n{extracted_text}"
+                    )
+                    combined_text_end = len(all_text)
+                    document_texts.append(extracted_text)
+
+                source_records.append(
+                    {
+                        "source_id": f"src-{source_index}",
+                        "original_filename": file_info["original_filename"],
+                        "saved_filename": file_info["saved_filename"],
+                        "relative_path": os.path.relpath(
+                            file_info["path"],
+                            ProjectManager._get_project_dir(project.project_id),
+                        ),
+                        "size_bytes": file_info["size"],
+                        "sha256": _sha256_file(file_info["path"]),
+                        "content_kind": _classify_content_kind(
+                            file_info["original_filename"]
+                        ),
+                        "extraction_status": extraction_status,
+                        "extracted_text_length": len(extracted_text),
+                        "combined_text_start": combined_text_start,
+                        "combined_text_end": combined_text_end,
+                        "parser_warnings": parser_warnings,
+                        "excerpt": extracted_text[:280],
+                    }
+                )
         
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
@@ -232,6 +311,20 @@ def generate_ontology():
         project.analysis_summary = ontology.get("analysis_summary", "")
         project.status = ProjectStatus.ONTOLOGY_GENERATED
         ProjectManager.save_project(project)
+        ProjectManager.save_source_manifest(
+            project.project_id,
+            {
+                "artifact_type": "source_manifest",
+                "schema_version": GROUNDING_SCHEMA_VERSION,
+                "generator_version": GROUNDING_GENERATOR_VERSION,
+                "project_id": project.project_id,
+                "created_at": project.updated_at,
+                "simulation_requirement": simulation_requirement,
+                "boundary_note": SOURCE_BOUNDARY_NOTE,
+                "source_count": len(source_records),
+                "sources": source_records,
+            },
+        )
         logger.info(f"=== Ontology generation completed === project_id: {project.project_id}")
         
         return jsonify({
@@ -242,7 +335,10 @@ def generate_ontology():
                 "ontology": project.ontology,
                 "analysis_summary": project.analysis_summary,
                 "files": project.files,
-                "total_text_length": project.total_text_length
+                "total_text_length": project.total_text_length,
+                "grounding_artifacts": ProjectManager.describe_grounding_artifacts(
+                    project.project_id
+                ),
             }
         })
         
@@ -334,6 +430,7 @@ def build_graph():
             project.graph_id = None
             project.graph_build_task_id = None
             project.error = None
+            ProjectManager.delete_graph_build_summary(project_id)
         
         # Get configuration
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
@@ -467,6 +564,53 @@ def build_graph():
                 # Update project status
                 project.status = ProjectStatus.GRAPH_COMPLETED
                 ProjectManager.save_project(project)
+                graph_summary_warnings = []
+                if not ProjectManager.get_source_manifest(project_id):
+                    graph_summary_warnings.append("missing_source_manifest")
+                ProjectManager.save_graph_build_summary(
+                    project_id,
+                    {
+                        "artifact_type": "graph_build_summary",
+                        "schema_version": GROUNDING_SCHEMA_VERSION,
+                        "generator_version": GROUNDING_GENERATOR_VERSION,
+                        "project_id": project_id,
+                        "graph_id": graph_id,
+                        "generated_at": project.updated_at,
+                        "source_artifacts": (
+                            {"source_manifest": "source_manifest.json"}
+                            if ProjectManager.get_source_manifest(project_id)
+                            else {}
+                        ),
+                        "ontology_summary": {
+                            "analysis_summary": project.analysis_summary,
+                            "entity_type_count": len(
+                                (ontology or {}).get("entity_types", [])
+                            ),
+                            "edge_type_count": len(
+                                (ontology or {}).get("edge_types", [])
+                            ),
+                            "entity_types": [
+                                item.get("name", "")
+                                for item in (ontology or {}).get("entity_types", [])
+                                if isinstance(item, dict)
+                            ],
+                            "edge_types": [
+                                item.get("name", "")
+                                for item in (ontology or {}).get("edge_types", [])
+                                if isinstance(item, dict)
+                            ],
+                        },
+                        "chunk_size": chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                        "chunk_count": total_chunks,
+                        "graph_counts": {
+                            "node_count": graph_data.get("node_count", 0),
+                            "edge_count": graph_data.get("edge_count", 0),
+                            "entity_types": graph_data.get("entity_types", []),
+                        },
+                        "warnings": graph_summary_warnings,
+                    },
+                )
                 
                 node_count = graph_data.get("node_count", 0)
                 edge_count = graph_data.get("edge_count", 0)

@@ -89,8 +89,12 @@
           :simulationId="simulationId"
           :runtimeMode="runtimeMode"
           :ensembleId="ensembleId"
+          :clusterId="clusterId"
           :runId="runId"
+          :compareId="selectedCompareId"
           :reportContext="probabilisticContext"
+          @update:compareId="handleCompareSelection"
+          @handoff-compare="handoffCompareToInteraction"
         />
 
         <!-- Workflow Overview (flat, status-based palette) -->
@@ -134,8 +138,8 @@
               </div>
             </div>
           </div>
-<button v-if="isComplete" class="next-step-btn" @click="goToInteraction">
-            <span>Enter Deep Interaction</span>
+<button v-if="isComplete" class="next-step-btn" @click="goToInteraction()">
+            <span>{{ selectedCompareId ? 'Enter Deep Interaction With Compare Selection' : 'Enter Deep Interaction' }}</span>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="5" y1="12" x2="19" y2="12"></line>
               <polyline points="12 5 19 12 12 19"></polyline>
@@ -420,7 +424,15 @@ const props = defineProps({
     type: String,
     default: null
   },
+  clusterId: {
+    type: String,
+    default: null
+  },
   runId: {
+    type: String,
+    default: null
+  },
+  compareId: {
     type: String,
     default: null
   },
@@ -435,15 +447,20 @@ const emit = defineEmits(['add-log', 'update-status'])
 const step5InteractionState = computed(() => getStep5InteractionState(
   props.runtimeMode,
   {
+    ensembleId: props.ensembleId,
+    clusterId: props.clusterId,
+    runId: props.runId,
+    reportContext: props.probabilisticContext,
     hasSavedProbabilisticContext: (
       props.probabilisticContext
       && typeof props.probabilisticContext === 'object'
     )
   }
 ))
+const selectedCompareId = ref(props.compareId || null)
 
 // Navigation
-const goToInteraction = () => {
+const goToInteraction = (compareIdOverride = selectedCompareId.value) => {
   if (props.reportId) {
     const interactionRoute = {
       name: 'Interaction',
@@ -452,13 +469,24 @@ const goToInteraction = () => {
     const probabilisticQuery = buildSimulationRunRouteQuery({
       runtimeMode: props.runtimeMode,
       ensembleId: props.ensembleId,
-      runId: props.runId
+      clusterId: props.clusterId,
+      runId: props.runId,
+      compareId: compareIdOverride
     })
     if (Object.keys(probabilisticQuery).length > 0) {
       interactionRoute.query = probabilisticQuery
     }
     router.push(interactionRoute)
   }
+}
+
+const handleCompareSelection = (compareId) => {
+  selectedCompareId.value = compareId || null
+}
+
+const handoffCompareToInteraction = (compareId) => {
+  selectedCompareId.value = compareId || null
+  goToInteraction(compareId || null)
 }
 
 // State
@@ -478,6 +506,14 @@ const leftPanel = ref(null)
 const rightPanel = ref(null)
 const logContent = ref(null)
 const showRawResult = reactive({})
+
+watch(
+  () => props.compareId,
+  (nextCompareId) => {
+    selectedCompareId.value = nextCompareId || null
+  },
+  { immediate: true }
+)
 
 // Toggle functions
 const toggleRawResult = (timestamp, event) => {

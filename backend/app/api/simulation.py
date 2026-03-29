@@ -25,6 +25,7 @@ from ..models.probabilistic import (
     build_default_run_lineage,
     get_prepare_capabilities_domain,
     normalize_uncertainty_profile,
+    normalize_forecast_brief,
     validate_outcome_metric_id,
 )
 from ..services.ensemble_manager import EnsembleManager
@@ -97,14 +98,19 @@ def _validate_probabilistic_prepare_request(
     probabilistic_mode: bool,
     uncertainty_profile,
     outcome_metrics,
-) -> tuple[Optional[str], list]:
+    forecast_brief,
+) -> tuple[Optional[str], list, Optional[dict]]:
     """Validate the minimal probabilistic prepare contract before work starts."""
     if not probabilistic_mode:
-        if uncertainty_profile is not None or outcome_metrics not in (None, [], ()):
+        if (
+            uncertainty_profile is not None
+            or outcome_metrics not in (None, [], ())
+            or forecast_brief is not None
+        ):
             raise ValueError(
-                "uncertainty_profile and outcome_metrics require probabilistic_mode=true"
+                "uncertainty_profile, outcome_metrics, and forecast_brief require probabilistic_mode=true"
             )
-        return None, []
+        return None, [], None
 
     if not Config.PROBABILISTIC_PREPARE_ENABLED:
         raise ValueError(
@@ -119,7 +125,17 @@ def _validate_probabilistic_prepare_request(
     for metric_id in normalized_outcome_metrics:
         validate_outcome_metric_id(metric_id)
 
-    return normalized_profile, normalized_outcome_metrics
+    normalized_forecast_brief = normalize_forecast_brief(
+        forecast_brief,
+        uncertainty_profile=normalized_profile,
+        outcome_metric_ids=normalized_outcome_metrics,
+    )
+
+    return (
+        normalized_profile,
+        normalized_outcome_metrics,
+        normalized_forecast_brief.to_dict() if normalized_forecast_brief else None,
+    )
 
 
 def _require_probabilistic_ensemble_storage_enabled() -> None:
@@ -190,6 +206,7 @@ def _build_requested_prepare_artifact_summary(
     probabilistic_mode: bool,
     uncertainty_profile: Optional[str],
     outcome_metric_ids: list,
+    forecast_brief: Optional[dict],
     existing_summary: dict,
 ) -> dict:
     """Expose the requested prepare contract even before async work completes."""
@@ -202,6 +219,7 @@ def _build_requested_prepare_artifact_summary(
     artifact_filenames = {
         "legacy_config": "simulation_config.json",
         "base_config": "simulation_config.base.json",
+        "forecast_brief": "forecast_brief.json",
         "uncertainty_spec": "uncertainty_spec.json",
         "outcome_spec": "outcome_spec.json",
         "prepared_snapshot": "prepared_snapshot.json",
@@ -217,7 +235,9 @@ def _build_requested_prepare_artifact_summary(
             os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id, filename),
         )
         artifact.setdefault("relative_path", filename)
-        if artifact_name != "legacy_config":
+        if artifact_name != "legacy_config" and (
+            artifact_name != "forecast_brief" or forecast_brief is not None
+        ):
             artifact.setdefault("planned", True)
         artifacts[artifact_name] = artifact
 
@@ -228,6 +248,7 @@ def _build_requested_prepare_artifact_summary(
         "sampling_enabled": False,
         "uncertainty_profile": profile,
         "outcome_metrics": default_metric_ids,
+        "forecast_brief_attached": forecast_brief is not None,
     })
 
     summary.update({
@@ -240,6 +261,7 @@ def _build_requested_prepare_artifact_summary(
         "probabilistic_mode": True,
         "uncertainty_profile": profile,
         "outcome_metrics": default_metric_ids,
+        "forecast_brief": forecast_brief,
         "lineage": summary.get("lineage", {}),
         "feature_metadata": feature_metadata,
         "artifacts": artifacts,
@@ -999,6 +1021,13 @@ def get_prepare_capabilities():
             "probabilistic_report_enabled": Config.PROBABILISTIC_REPORT_ENABLED,
             "probabilistic_interaction_enabled": Config.PROBABILISTIC_INTERACTION_ENABLED,
             "calibrated_probability_enabled": Config.CALIBRATED_PROBABILITY_ENABLED,
+            "calibration_artifact_support_enabled": Config.CALIBRATED_PROBABILITY_ENABLED,
+            "calibration_surface_mode": "artifact-gated",
+            "calibration_min_case_count": Config.CALIBRATION_MIN_CASE_COUNT,
+            "calibration_min_positive_case_count": Config.CALIBRATION_MIN_POSITIVE_CASE_COUNT,
+            "calibration_min_negative_case_count": Config.CALIBRATION_MIN_NEGATIVE_CASE_COUNT,
+            "calibration_min_supported_bin_count": Config.CALIBRATION_MIN_SUPPORTED_BIN_COUNT,
+            "calibration_bin_count": Config.CALIBRATION_BIN_COUNT,
             **get_prepare_capabilities_domain(),
         },
     })
@@ -1425,10 +1454,11 @@ def prepare_simulation():
             }), 404
 
         probabilistic_mode = bool(data.get('probabilistic_mode', False))
-        uncertainty_profile, outcome_metric_ids = _validate_probabilistic_prepare_request(
+        uncertainty_profile, outcome_metric_ids, normalized_forecast_brief = _validate_probabilistic_prepare_request(
             probabilistic_mode=probabilistic_mode,
             uncertainty_profile=data.get('uncertainty_profile'),
             outcome_metrics=data.get('outcome_metrics'),
+            forecast_brief=data.get('forecast_brief'),
         )
 
         # Check whether regeneration is being forced.
@@ -1444,6 +1474,14 @@ def prepare_simulation():
                 simulation_id,
                 require_probabilistic_artifacts=probabilistic_mode,
             )
+            if (
+                is_prepared
+                and probabilistic_mode
+                and normalized_forecast_brief is not None
+                and (prepare_info or {}).get("forecast_brief") != normalized_forecast_brief
+            ):
+                is_prepared = False
+                prepare_info = manager.get_prepare_artifact_summary(simulation_id)
             logger.debug(f"Preparation check result: is_prepared={is_prepared}, prepare_info={prepare_info}")
             if is_prepared:
                 logger.info(f"Simulation {simulation_id} is already prepared, skipping duplicate generation")
@@ -1605,6 +1643,7 @@ def prepare_simulation():
                     probabilistic_mode=probabilistic_mode,
                     uncertainty_profile=uncertainty_profile,
                     outcome_metrics=data.get('outcome_metrics'),
+                    forecast_brief=normalized_forecast_brief,
                 )
 
                 result_payload = result_state.to_simple_dict()
@@ -1620,6 +1659,7 @@ def prepare_simulation():
                     probabilistic_mode=probabilistic_mode,
                     uncertainty_profile=uncertainty_profile,
                     outcome_metric_ids=outcome_metric_ids,
+                    forecast_brief=normalized_forecast_brief,
                     existing_summary=manager.get_prepare_artifact_summary(simulation_id),
                 )
 
@@ -1649,6 +1689,7 @@ def prepare_simulation():
             probabilistic_mode=probabilistic_mode,
             uncertainty_profile=uncertainty_profile,
             outcome_metric_ids=outcome_metric_ids,
+            forecast_brief=normalized_forecast_brief,
             existing_summary=manager.get_prepare_artifact_summary(simulation_id),
         )
 

@@ -20,12 +20,17 @@ from typing import Any, Dict, List
 from ..config import Config
 from ..models.probabilistic import (
     EnsembleSpec,
+    ObservedTruthRegistry,
     PROBABILISTIC_GENERATOR_VERSION,
     PROBABILISTIC_SCHEMA_VERSION,
     UncertaintySpec,
     build_default_run_lifecycle,
     build_default_run_lineage,
 )
+from .analytics_policy import AnalyticsPolicy
+from .backtest_manager import BacktestManager
+from .calibration_manager import CalibrationManager
+from .experiment_design import ExperimentDesignService
 from .uncertainty_resolver import UncertaintyResolver
 
 
@@ -43,6 +48,10 @@ class EnsembleManager:
     ENSEMBLE_SPEC_FILENAME = "ensemble_spec.json"
     ENSEMBLE_STATE_FILENAME = "ensemble_state.json"
     AGGREGATE_SUMMARY_FILENAME = "aggregate_summary.json"
+    EXPERIMENT_DESIGN_FILENAME = "experiment_design.json"
+    OBSERVED_TRUTH_REGISTRY_FILENAME = "observed_truth_registry.json"
+    BACKTEST_SUMMARY_FILENAME = "backtest_summary.json"
+    CALIBRATION_SUMMARY_FILENAME = "calibration_summary.json"
     RUNS_DIRNAME = "runs"
     RUN_DIR_PREFIX = "run_"
     RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -56,11 +65,22 @@ class EnsembleManager:
         self,
         simulation_data_dir: str | None = None,
         uncertainty_resolver: UncertaintyResolver | None = None,
+        experiment_design_service: ExperimentDesignService | None = None,
     ) -> None:
         self.simulation_data_dir = (
             simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
         )
         self.uncertainty_resolver = uncertainty_resolver or UncertaintyResolver()
+        self.experiment_design_service = (
+            experiment_design_service or ExperimentDesignService()
+        )
+        self.analytics_policy = AnalyticsPolicy()
+        self.backtest_manager = BacktestManager(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.calibration_manager = CalibrationManager(
+            simulation_data_dir=self.simulation_data_dir
+        )
         os.makedirs(self.simulation_data_dir, exist_ok=True)
 
     def create_ensemble(
@@ -89,6 +109,13 @@ class EnsembleManager:
             prepare_inputs["uncertainty_spec"],
             effective_root_seed,
         )
+        experiment_design = self.experiment_design_service.build_plan(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_count=ensemble_spec.run_count,
+            root_seed=effective_root_seed,
+            uncertainty_spec=effective_uncertainty_spec,
+        )
 
         self._write_json(
             os.path.join(ensemble_dir, self.ENSEMBLE_SPEC_FILENAME),
@@ -97,6 +124,10 @@ class EnsembleManager:
                 ensemble_spec=ensemble_spec,
                 effective_root_seed=effective_root_seed,
             ),
+        )
+        self._write_json(
+            os.path.join(ensemble_dir, self.EXPERIMENT_DESIGN_FILENAME),
+            experiment_design,
         )
 
         run_ids: List[str] = []
@@ -108,6 +139,7 @@ class EnsembleManager:
             run_ids.append(run_id)
             run_dir = self._get_run_dir(simulation_id, ensemble_id, run_id)
             os.makedirs(run_dir, exist_ok=False)
+            experiment_design_row = experiment_design["rows"][run_index - 1]
 
             resolution_seed = self._derive_resolution_seed(
                 root_seed=effective_root_seed,
@@ -123,6 +155,7 @@ class EnsembleManager:
                 resolution_seed=resolution_seed,
                 ensemble_id=ensemble_id,
                 fallback_to_root_seed=ensemble_spec.sampling_mode != "unseeded",
+                experiment_design_row=experiment_design_row,
             )
             manifest_payload = resolved["run_manifest"].to_dict()
             manifest_payload["base_graph_id"] = (
@@ -321,6 +354,62 @@ class EnsembleManager:
         )
         return summary
 
+    def persist_observed_truth_registry(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+        registry: ObservedTruthRegistry | Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return self.backtest_manager.persist_observed_truth_registry(
+            simulation_id,
+            ensemble_id,
+            registry,
+        )
+
+    def load_observed_truth_registry(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        return self.backtest_manager.load_observed_truth_registry(
+            simulation_id,
+            ensemble_id,
+        )
+
+    def get_backtest_summary(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        return self.backtest_manager.get_backtest_summary(simulation_id, ensemble_id)
+
+    def load_backtest_summary(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        return self.backtest_manager.load_backtest_summary(simulation_id, ensemble_id)
+
+    def get_calibration_summary(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        return self.calibration_manager.get_calibration_summary(
+            simulation_id,
+            ensemble_id,
+        )
+
+    def load_calibration_summary(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        return self.calibration_manager.load_calibration_summary(
+            simulation_id,
+            ensemble_id,
+        )
+
     def _load_prepare_inputs(self, simulation_id: str) -> Dict[str, Any]:
         """Load the required probabilistic prepare artifacts or fail clearly."""
         sim_dir = self._get_simulation_dir(simulation_id)
@@ -418,7 +507,11 @@ class EnsembleManager:
             "prepared_run_count": len(run_ids),
             "run_ids": run_ids,
             "source_artifacts": {
-                name: filename for name, filename in self.PREPARE_ARTIFACT_FILENAMES.items()
+                **{
+                    name: filename
+                    for name, filename in self.PREPARE_ARTIFACT_FILENAMES.items()
+                },
+                "experiment_design": self.EXPERIMENT_DESIGN_FILENAME,
             },
             "simulation_relative_path": os.path.relpath(
                 self._get_ensemble_dir(simulation_id, ensemble_id),
@@ -465,6 +558,7 @@ class EnsembleManager:
                     "resolution_seed"
                 ),
                 "sampled_values": run_manifest.get("resolved_values", {}),
+                "assumption_ledger": run_manifest.get("assumption_ledger", {}),
                 "resolved_at": run_manifest.get("generated_at"),
             }
         )
@@ -475,6 +569,9 @@ class EnsembleManager:
         metric_observations: Dict[str, List[Dict[str, Any]]] = {}
         metrics_files: List[str] = []
         missing_metrics_runs: List[str] = []
+        invalid_metrics_runs: List[str] = []
+        eligible_run_ids: List[str] = []
+        excluded_runs: List[Dict[str, Any]] = []
         complete_runs = 0
         partial_runs = 0
         total_runs = len(ensemble_payload.get("runs", []))
@@ -485,12 +582,43 @@ class EnsembleManager:
             metrics_path = os.path.join(run_dir, "metrics.json")
             if not os.path.exists(metrics_path):
                 missing_metrics_runs.append(run_id)
+                excluded_runs.append(
+                    {"run_id": run_id, "reasons": ["missing_run_metrics"]}
+                )
                 continue
 
+            try:
+                metrics_payload = self._read_json(metrics_path)
+            except (json.JSONDecodeError, OSError):
+                invalid_metrics_runs.append(run_id)
+                excluded_runs.append(
+                    {"run_id": run_id, "reasons": ["invalid_run_metrics"]}
+                )
+                continue
+            if not isinstance(metrics_payload, dict):
+                invalid_metrics_runs.append(run_id)
+                excluded_runs.append(
+                    {"run_id": run_id, "reasons": ["invalid_run_metrics"]}
+                )
+                continue
+
+            eligibility = self.analytics_policy.assess_run(
+                mode="aggregate",
+                run_payload={
+                    "run_id": run_id,
+                    "metrics_payload": metrics_payload,
+                },
+            )
+            if not eligibility["eligible"]:
+                excluded_runs.append(
+                    {"run_id": run_id, "reasons": eligibility["reasons"]}
+                )
+                continue
+
+            eligible_run_ids.append(run_id)
             metrics_files.append(
                 os.path.relpath(metrics_path, ensemble_payload["ensemble_dir"])
             )
-            metrics_payload = self._read_json(metrics_path)
             quality_status = metrics_payload.get("quality_checks", {}).get("status", "unknown")
             if quality_status == "complete":
                 complete_runs += 1
@@ -526,6 +654,8 @@ class EnsembleManager:
             warnings.append("degraded_runs_present")
         if missing_metrics_runs:
             warnings.append("missing_run_metrics")
+        if invalid_metrics_runs:
+            warnings.append("invalid_run_metrics")
 
         return {
             "artifact_type": "aggregate_summary",
@@ -534,13 +664,23 @@ class EnsembleManager:
             "simulation_id": ensemble_payload["simulation_id"],
             "ensemble_id": ensemble_payload["ensemble_id"],
             "metric_summaries": metric_summaries,
+            "sample_policy": self.analytics_policy.build_sample_policy(
+                mode="aggregate",
+                total_runs=total_runs,
+                eligible_run_ids=eligible_run_ids,
+                excluded_runs=excluded_runs,
+            ),
             "quality_summary": {
-                "status": "partial" if partial_runs > 0 or missing_metrics_runs else "complete",
+                "status": "partial"
+                if partial_runs > 0 or missing_metrics_runs or invalid_metrics_runs
+                else "complete",
                 "total_runs": total_runs,
+                "eligible_run_count": len(eligible_run_ids),
                 "runs_with_metrics": runs_with_metrics,
                 "complete_runs": complete_runs,
                 "partial_runs": partial_runs,
                 "missing_metrics_runs": missing_metrics_runs,
+                "invalid_metrics_runs": invalid_metrics_runs,
                 "warnings": warnings,
             },
             "source_artifacts": {
@@ -566,6 +706,7 @@ class EnsembleManager:
             item for item in observations if item.get("value") is not None
         ]
         values = [item["value"] for item in usable_observations]
+        null_sample_count = max(len(observations) - len(values), 0)
         complete_sample_count = sum(
             1 for item in usable_observations if item.get("quality_status") == "complete"
         )
@@ -575,23 +716,45 @@ class EnsembleManager:
             warnings.append("thin_sample")
         if degraded_runs_present:
             warnings.append("degraded_runs_present")
+        if null_sample_count > 0:
+            warnings.append("undefined_samples_present")
+        for observation in observations:
+            for warning in observation.get("metric_entry", {}).get("warnings", []):
+                if isinstance(warning, str) and warning not in warnings:
+                    warnings.append(warning)
 
         summary = {
             key: value
             for key, value in metric_entry.items()
-            if key != "value"
+            if key not in {"value", "warnings"}
         }
         summary.update(
             {
                 "metric_id": metric_id,
                 "sample_count": len(values),
                 "observed_sample_count": len(observations),
+                "null_sample_count": null_sample_count,
                 "complete_sample_count": complete_sample_count,
                 "partial_sample_count": partial_sample_count,
                 "missing_sample_count": max(total_runs - len(observations), 0),
                 "warnings": warnings,
             }
         )
+        support_metadata = self.analytics_policy.build_support_metadata(
+            support_count=len(values),
+            total_count=total_runs,
+        )
+        summary.update(
+            {
+                "support_count": support_metadata["support_count"],
+                "support_fraction": support_metadata["support_fraction"],
+                "minimum_support_count": support_metadata["minimum_support_count"],
+                "minimum_support_met": support_metadata["minimum_support_met"],
+            }
+        )
+        for warning in support_metadata["warnings"]:
+            if warning not in summary["warnings"]:
+                summary["warnings"].append(warning)
 
         if values and all(isinstance(value, bool) for value in values):
             true_count = sum(1 for value in values if value)
@@ -662,8 +825,19 @@ class EnsembleManager:
         if isinstance(raw_metric_entry, dict):
             entry = dict(raw_metric_entry)
             entry.setdefault("metric_id", metric_id)
+            raw_warnings = entry.get("warnings", [])
+            if isinstance(raw_warnings, list):
+                entry["warnings"] = [
+                    warning
+                    for warning in raw_warnings
+                    if isinstance(warning, str) and warning
+                ]
+            elif isinstance(raw_warnings, str) and raw_warnings:
+                entry["warnings"] = [raw_warnings]
+            else:
+                entry["warnings"] = []
             return entry
-        return {"metric_id": metric_id, "value": raw_metric_entry}
+        return {"metric_id": metric_id, "value": raw_metric_entry, "warnings": []}
 
     def _compute_quantile(self, values: List[float], percentile: float) -> float | None:
         if not values:

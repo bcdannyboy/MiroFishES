@@ -12,6 +12,10 @@
     "build": "cd frontend && npm run build",
     "verify:frontend": "npm --prefix frontend run verify",
     "verify:backend": "sh -c 'if [ -d backend/tests ] && find backend/tests -type f -name \"*.py\" -print -quit | grep -q .; then if [ -x backend/.venv/bin/python ]; then cd backend && .venv/bin/python -m pytest tests -q; else cd backend && python3 -m pytest tests -q; fi; else echo \"No backend tests under backend/tests; skipping backend verification.\"; fi'",
+    "verify:confidence": "sh -c 'cd backend && python3 -m pytest tests/unit/test_probabilistic_schema.py tests/unit/test_backtest_manager.py tests/unit/test_calibration_manager.py tests/unit/test_probabilistic_report_context.py tests/unit/test_probabilistic_report_api.py tests/unit/test_probabilistic_prepare.py tests/unit/test_build_confidence_artifacts_script.py -q' && node --test frontend/tests/unit/probabilisticRuntime.test.mjs",
+    "ruflo:mcp": "bash ./scripts/ruflo-mcp-workspace.sh",
+    "verify:ruflo:contract": "node --test tests/ruflo/verify-ruflo-workspace.test.mjs",
+    "verify:ruflo": "node ./scripts/verify-ruflo-workspace.mjs",
     "verify:smoke": "playwright test --config=playwright.config.mjs tests/smoke/probabilistic-runtime.spec.mjs",
     "verify:operator:local": "playwright test --config=playwright.live.config.mjs",
     "verify": "npm run verify:frontend && npm run verify:backend"

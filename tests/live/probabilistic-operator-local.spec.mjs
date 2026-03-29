@@ -10,6 +10,7 @@ const repoRoot = path.resolve(__dirname, '..', '..')
 const liveEvidenceDir = path.join(repoRoot, 'output', 'playwright', 'live-operator')
 const defaultSimulationId = process.env.PLAYWRIGHT_LIVE_SIMULATION_ID || 'sim_7a6661c37719'
 const actionTimeout = 30_000
+const readinessTimeout = 5_000
 
 const buildEvidencePath = () => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -94,8 +95,81 @@ test.describe('local-only probabilistic operator pass', () => {
       const handoffButton = page.getByRole('button', {
         name: /Start Dual-World Parallel Simulation/i
       })
+      const handoffHelper = page.locator('.action-group.dual .action-note').first()
 
       await expect(handoffButton).toBeVisible({ timeout: actionTimeout })
+
+      try {
+        await expect(handoffButton).toBeEnabled({ timeout: readinessTimeout })
+      } catch (error) {
+        const helperText = (await handoffHelper.allTextContents())
+          .map((value) => value.trim())
+          .find(Boolean) || ''
+        let prepareStatus = null
+
+        try {
+          const prepareStatusResponse = await page.request.post('/api/simulation/prepare/status', {
+            data: {
+              simulation_id: defaultSimulationId
+            }
+          })
+          prepareStatus = await prepareStatusResponse.json()
+        } catch (statusError) {
+          prepareStatus = {
+            success: false,
+            error: String(statusError)
+          }
+        }
+
+        const prepareData = prepareStatus?.data && typeof prepareStatus.data === 'object'
+          ? prepareStatus.data
+          : {}
+        const prepareInfo = prepareData.prepare_info && typeof prepareData.prepare_info === 'object'
+          ? prepareData.prepare_info
+          : {}
+        const preparedArtifactSummary = (
+          prepareInfo.prepared_artifact_summary
+          && typeof prepareInfo.prepared_artifact_summary === 'object'
+        )
+          ? prepareInfo.prepared_artifact_summary
+          : {}
+        const missingProbabilisticArtifacts = Array.isArray(
+          preparedArtifactSummary.missing_probabilistic_artifacts
+        )
+          ? preparedArtifactSummary.missing_probabilistic_artifacts
+          : []
+        const derivedBlocker = (
+          helperText
+          || (missingProbabilisticArtifacts.length > 0
+            ? `Missing probabilistic prepare artifacts: ${missingProbabilisticArtifacts.join(', ')}`
+            : '')
+          || (typeof prepareInfo.reason === 'string' ? prepareInfo.reason.trim() : '')
+          || (typeof prepareData.message === 'string' ? prepareData.message.trim() : '')
+          || 'Step 2 handoff stayed disabled without a visible blocker'
+        )
+
+        evidence.step2Readiness = {
+          enabled: false,
+          helperText: derivedBlocker,
+          uiHelperText: helperText || null,
+          prepareStatus: {
+            status: prepareData.status || null,
+            alreadyPrepared: prepareData.already_prepared === true,
+            message: prepareData.message || null,
+            reason: prepareInfo.reason || null,
+            probabilisticMode: preparedArtifactSummary.probabilistic_mode === true,
+            missingProbabilisticArtifacts
+          }
+        }
+        evidence.operatorActions.push({
+          action: 'step2-handoff',
+          result: 'blocked before mutation',
+          helperText: derivedBlocker
+        })
+        throw new Error(
+          `Live operator simulation ${defaultSimulationId} is not Step 3 ready: ${derivedBlocker}`
+        )
+      }
 
       const createEnsembleResponsePromise = page.waitForResponse((response) => {
         return (

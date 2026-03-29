@@ -175,9 +175,15 @@ def test_get_aggregate_summary_persists_quantiles_and_quality_warnings(
     assert metric_summary["min"] == 2
     assert metric_summary["max"] == 6
     assert metric_summary["quantiles"]["p50"] == 4.0
+    assert metric_summary["support_count"] == 3
+    assert metric_summary["support_fraction"] == 1.0
+    assert metric_summary["minimum_support_count"] == 2
+    assert metric_summary["minimum_support_met"] is True
     assert "thin_sample" in metric_summary["warnings"]
     assert "degraded_runs_present" in metric_summary["warnings"]
     assert summary["quality_summary"]["partial_runs"] == 1
+    assert summary["sample_policy"]["analysis_mode"] == "aggregate"
+    assert summary["sample_policy"]["eligible_run_count"] == 3
     assert "thin_sample" in summary["quality_summary"]["warnings"]
     assert "degraded_runs_present" in summary["quality_summary"]["warnings"]
 
@@ -253,6 +259,77 @@ def test_get_aggregate_summary_supports_binary_and_categorical_metrics(
         "alpha": 2 / 3,
         "beta": 1 / 3,
     }
+
+
+def test_get_aggregate_summary_surfaces_minimum_support_for_sparse_metrics(
+    simulation_data_dir, monkeypatch
+):
+    ensemble_module = _load_ensemble_module()
+    monkeypatch.setattr(
+        ensemble_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-summary-support"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": {
+                            "metric_id": "simulation.total_actions",
+                            "value": 2,
+                        },
+                        "rare.metric": {
+                            "metric_id": "rare.metric",
+                            "value": 9,
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": {
+                            "metric_id": "simulation.total_actions",
+                            "value": 4,
+                        }
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": {
+                            "metric_id": "simulation.total_actions",
+                            "value": 6,
+                        }
+                    },
+                },
+            },
+        ],
+    )
+
+    manager = ensemble_module.EnsembleManager(simulation_data_dir=str(simulation_data_dir))
+    summary = manager.get_aggregate_summary(simulation_id, ensemble_id)
+
+    rare_summary = summary["metric_summaries"]["rare.metric"]
+    assert rare_summary["support_count"] == 1
+    assert rare_summary["support_fraction"] == 1 / 3
+    assert rare_summary["minimum_support_met"] is False
+    assert "minimum_support_not_met" in rare_summary["warnings"]
 
 
 def test_get_aggregate_summary_ignores_missing_numeric_samples_but_preserves_other_distributions(
@@ -421,3 +498,150 @@ def test_get_aggregate_summary_ignores_missing_numeric_values_and_preserves_meta
     assert duration_summary["missing_sample_count"] == 0
     assert duration_summary["mean"] == 1500.0
     assert duration_summary["quantiles"]["p50"] == 1500.0
+
+
+def test_get_aggregate_summary_preserves_richer_metric_warnings_and_null_samples(
+    simulation_data_dir, monkeypatch
+):
+    ensemble_module = _load_ensemble_module()
+    monkeypatch.setattr(
+        ensemble_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-summary-outcome-wave"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "cross_platform.topic_transfer_observed": {
+                            "metric_id": "cross_platform.topic_transfer_observed",
+                            "label": "Cross-Platform Topic Transfer Observed",
+                            "aggregation": "flag",
+                            "unit": "boolean",
+                            "probability_mode": "empirical",
+                            "value_kind": "binary",
+                            "value": True,
+                        },
+                        "platform.action_balance_band": {
+                            "metric_id": "platform.action_balance_band",
+                            "label": "Platform Action Balance Band",
+                            "aggregation": "category",
+                            "unit": "category",
+                            "probability_mode": "empirical",
+                            "value_kind": "categorical",
+                            "value": "tilted",
+                        },
+                        "cross_platform.topic_transfer_lag_seconds": {
+                            "metric_id": "cross_platform.topic_transfer_lag_seconds",
+                            "label": "Cross-Platform Topic Transfer Lag",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": 480.0,
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "cross_platform.topic_transfer_observed": {
+                            "metric_id": "cross_platform.topic_transfer_observed",
+                            "label": "Cross-Platform Topic Transfer Observed",
+                            "aggregation": "flag",
+                            "unit": "boolean",
+                            "probability_mode": "empirical",
+                            "value_kind": "binary",
+                            "value": None,
+                            "warnings": [
+                                "insufficient_cross_platform_topic_transfer_evidence"
+                            ],
+                        },
+                        "platform.action_balance_band": {
+                            "metric_id": "platform.action_balance_band",
+                            "value": "dominated",
+                        },
+                        "cross_platform.topic_transfer_lag_seconds": {
+                            "metric_id": "cross_platform.topic_transfer_lag_seconds",
+                            "label": "Cross-Platform Topic Transfer Lag",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": None,
+                            "warnings": [
+                                "insufficient_cross_platform_topic_transfer_evidence"
+                            ],
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "cross_platform.topic_transfer_observed": {
+                            "metric_id": "cross_platform.topic_transfer_observed",
+                            "label": "Cross-Platform Topic Transfer Observed",
+                            "aggregation": "flag",
+                            "unit": "boolean",
+                            "probability_mode": "empirical",
+                            "value_kind": "binary",
+                            "value": True,
+                        },
+                        "platform.action_balance_band": {
+                            "metric_id": "platform.action_balance_band",
+                            "value": "tilted",
+                        },
+                        "cross_platform.topic_transfer_lag_seconds": {
+                            "metric_id": "cross_platform.topic_transfer_lag_seconds",
+                            "label": "Cross-Platform Topic Transfer Lag",
+                            "aggregation": "duration",
+                            "unit": "seconds",
+                            "probability_mode": "empirical",
+                            "value_kind": "numeric",
+                            "value": 120.0,
+                        },
+                    },
+                },
+            },
+        ],
+    )
+
+    manager = ensemble_module.EnsembleManager(simulation_data_dir=str(simulation_data_dir))
+    summary = manager.get_aggregate_summary(simulation_id, ensemble_id)
+
+    transfer_summary = summary["metric_summaries"]["cross_platform.topic_transfer_observed"]
+    band_summary = summary["metric_summaries"]["platform.action_balance_band"]
+    lag_summary = summary["metric_summaries"]["cross_platform.topic_transfer_lag_seconds"]
+
+    assert transfer_summary["distribution_kind"] == "binary"
+    assert transfer_summary["sample_count"] == 2
+    assert transfer_summary["null_sample_count"] == 1
+    assert transfer_summary["empirical_probability"] == 1.0
+    assert "undefined_samples_present" in transfer_summary["warnings"]
+    assert "insufficient_cross_platform_topic_transfer_evidence" in transfer_summary["warnings"]
+
+    assert band_summary["distribution_kind"] == "categorical"
+    assert band_summary["category_counts"] == {"dominated": 1, "tilted": 2}
+    assert band_summary["dominant_value"] == "tilted"
+
+    assert lag_summary["distribution_kind"] == "continuous"
+    assert lag_summary["sample_count"] == 2
+    assert lag_summary["null_sample_count"] == 1
+    assert lag_summary["mean"] == 300.0
+    assert "insufficient_cross_platform_topic_transfer_evidence" in lag_summary["warnings"]

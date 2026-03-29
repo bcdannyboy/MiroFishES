@@ -126,6 +126,9 @@ test.describe('probabilistic runtime smoke', () => {
     await expect(page.getByTestId('probabilistic-prepared-summary')).toBeVisible()
     await expect(page.getByText('Prepared Artifact Summary')).toBeVisible()
     await expect(
+      page.getByTestId('probabilistic-prepared-summary').getByText('Grounding', { exact: true })
+    ).toBeVisible()
+    await expect(
       page.getByTestId('probabilistic-prepared-summary').getByText('Run-varying')
     ).toBeVisible()
   })
@@ -143,7 +146,7 @@ test.describe('probabilistic runtime smoke', () => {
 
   test('Step 3 loads a stored probabilistic run shell and observed analytics', async ({ page }) => {
     await page.goto(
-      `/simulation/${fixture.simulation_id}/start?mode=probabilistic&ensembleId=${fixture.ensemble.ensemble_id}&runId=${fixture.report.run_id}`
+      `/simulation/${fixture.simulation_id}/start?mode=probabilistic&ensembleId=${fixture.ensemble.ensemble_id}&runId=${fixture.report.run_id}&scope=run`
     )
 
     await expect(page.getByTestId('probabilistic-step3-shell')).toBeVisible()
@@ -157,23 +160,48 @@ test.describe('probabilistic runtime smoke', () => {
         hasText: `Stored run ${fixture.report.run_id}`
       })
     ).toBeVisible()
+    await expect(
+      page
+        .getByTestId('probabilistic-report-scope-panel')
+        .locator('.probabilistic-card-meta.mono')
+        .filter({ hasText: 'RUN' })
+    ).toBeVisible()
   })
 
   test('Step 4 shows the observed empirical report addendum', async ({ page }) => {
     await page.goto(fixture.report.report_route)
 
     await expect(page.getByTestId('probabilistic-report-context')).toBeVisible()
-    await expect(page.getByText('Observed Ensemble Context')).toBeVisible()
+    await expect(page.getByText('Observed Forecast Context')).toBeVisible()
     await expect(page.getByText('Empirical report addendum')).toBeVisible()
+    await expect(page.getByText('Upstream Grounding')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-compare-workspace')).toBeVisible()
+    await page.getByTestId('probabilistic-compare-option').first().click()
+    await expect(page.getByTestId('probabilistic-compare-handoff')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-compare-scope-identity')).toHaveCount(2)
   })
 
-  test('Step 5 keeps probabilistic interaction support explicitly legacy-scoped', async ({ page }) => {
+  test('Step 5 shows scoped probabilistic report-agent support explicitly bounded', async ({ page }) => {
     await page.goto(fixture.report.interaction_route)
 
     await expect(page.getByTestId('probabilistic-step5-banner')).toBeVisible()
     await expect(
-      page.getByText('Saved probabilistic context detected')
+      page.getByText('Scoped probabilistic context available')
     ).toBeVisible()
+    await expect(page.getByTestId('probabilistic-step5-scope-control')).toBeVisible()
+    await expect(
+      page.getByTestId('probabilistic-step5-evidence').getByText(/Grounding/i)
+    ).toBeVisible()
+  })
+
+  test('Step 4 compare handoff opens Step 5 with a selected bounded compare', async ({ page }) => {
+    await page.goto(fixture.report.report_route)
+
+    await page.getByTestId('probabilistic-compare-option').first().click()
+    await page.getByTestId('probabilistic-compare-handoff').click()
+
+    await expect(page).toHaveURL(/compareId=/)
+    await expect(page.getByTestId('probabilistic-step5-compare')).toBeVisible()
   })
 
   test('history can reopen Step 3 from a saved probabilistic report', async ({ page }) => {
@@ -204,12 +232,19 @@ test.describe('probabilistic runtime smoke', () => {
     await expect(page).toHaveURL(new RegExp(`/simulation/${fixture.simulation_id}/start`))
     await expect(page).toHaveURL(/mode=probabilistic/)
     await expect(page).toHaveURL(new RegExp(`ensembleId=${fixture.ensemble.ensemble_id}`))
+    await expect(page).toHaveURL(/scope=run/)
     await expect(page).toHaveURL(new RegExp(`runId=${fixture.report.run_id}`))
     await expect(page.getByTestId('probabilistic-step3-shell')).toBeVisible()
     await expect(
       page.locator('.probabilistic-status-panel').filter({
         hasText: `Stored run ${fixture.report.run_id}`
       })
+    ).toBeVisible()
+    await expect(
+      page
+        .getByTestId('probabilistic-report-scope-panel')
+        .locator('.probabilistic-card-meta.mono')
+        .filter({ hasText: 'RUN' })
     ).toBeVisible()
   })
 

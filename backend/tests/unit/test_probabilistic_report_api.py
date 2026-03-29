@@ -36,6 +36,84 @@ def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _configure_project_grounding_dir(monkeypatch, project_root: Path):
+    project_module = importlib.import_module("app.models.project")
+    monkeypatch.setattr(
+        project_module.ProjectManager,
+        "PROJECTS_DIR",
+        str(project_root),
+        raising=False,
+    )
+    return project_module
+
+
+def _write_project_grounding_artifacts(
+    monkeypatch,
+    project_root: Path,
+    *,
+    project_id: str,
+    graph_id: str = "graph-1",
+):
+    _configure_project_grounding_dir(monkeypatch, project_root)
+    project_dir = project_root / project_id
+    _write_json(
+        project_dir / "source_manifest.json",
+        {
+            "artifact_type": "source_manifest",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "created_at": "2026-03-29T09:00:00",
+            "simulation_requirement": "Forecast discussion spread",
+            "boundary_note": "Uploaded project sources only; this artifact does not claim live-web coverage.",
+            "source_count": 1,
+            "sources": [
+                {
+                    "source_id": "src-1",
+                    "original_filename": "memo.md",
+                    "saved_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "size_bytes": 10,
+                    "sha256": "abc123",
+                    "content_kind": "document",
+                    "extraction_status": "succeeded",
+                    "extracted_text_length": 42,
+                    "combined_text_start": 0,
+                    "combined_text_end": 42,
+                    "parser_warnings": [],
+                    "excerpt": "Workers mention slowdown risk and policy response.",
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_build_summary.json",
+        {
+            "artifact_type": "graph_build_summary",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "generated_at": "2026-03-29T09:05:00",
+            "source_artifacts": {"source_manifest": "source_manifest.json"},
+            "ontology_summary": {
+                "analysis_summary": "Uploaded evidence emphasizes labor-policy timing.",
+                "entity_type_count": 1,
+                "edge_type_count": 1,
+            },
+            "chunk_size": 300,
+            "chunk_overlap": 40,
+            "chunk_count": 2,
+            "graph_counts": {
+                "node_count": 7,
+                "edge_count": 9,
+                "entity_types": ["Person"],
+            },
+            "warnings": [],
+        },
+    )
+
+
 def _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module=None):
     config_module = importlib.import_module("app.config")
     monkeypatch.setattr(
@@ -491,6 +569,750 @@ def test_report_generate_and_get_persist_probabilistic_scope(
     )
 
 
+def test_report_generate_builds_probabilistic_context_before_agent_execution(
+    simulation_data_dir, tmp_path, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_agent_module = _load_report_agent_module()
+    report_module = _load_report_api_module()
+
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(report_module.ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(report_module.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_REPORT_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    event_log = []
+    expected_context = {
+        "artifact_type": "probabilistic_report_context",
+        "ensemble_id": created["ensemble_id"],
+        "cluster_id": "cluster_0001",
+        "run_id": "0001",
+        "quality_summary": {"warnings": ["thin_sample"]},
+    }
+
+    class _FakeContextBuilder:
+        def build_context(
+            self,
+            simulation_id,
+            ensemble_id,
+            cluster_id=None,
+            run_id=None,
+        ):
+            event_log.append(
+                ("context", simulation_id, ensemble_id, cluster_id, run_id)
+            )
+            return expected_context
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            probabilistic_context=None,
+            **kwargs,
+        ):
+            event_log.append(("agent_init", probabilistic_context))
+            self.graph_id = graph_id
+            self.simulation_id = simulation_id
+            self.simulation_requirement = simulation_requirement
+            self.probabilistic_context = probabilistic_context
+
+        def generate_report(self, progress_callback=None, report_id=None):
+            event_log.append(("generate", self.probabilistic_context))
+            return report_agent_module.Report(
+                report_id=report_id,
+                simulation_id=self.simulation_id,
+                graph_id=self.graph_id,
+                simulation_requirement=self.simulation_requirement,
+                status=report_agent_module.ReportStatus.COMPLETED,
+                probabilistic_context=self.probabilistic_context,
+                outline=report_agent_module.ReportOutline(
+                    title="Forecast report",
+                    summary="Probabilistic-native report body",
+                    sections=[],
+                ),
+                markdown_content="# Forecast report\n",
+                created_at="2026-03-09T10:30:00",
+                completed_at="2026-03-09T10:31:00",
+            )
+
+    monkeypatch.setattr(
+        report_module,
+        "ProbabilisticReportContextBuilder",
+        _FakeContextBuilder,
+    )
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/generate",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "cluster_id": "cluster_0001",
+            "run_id": "0001",
+            "force_regenerate": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert event_log[0] == (
+        "context",
+        state.simulation_id,
+        created["ensemble_id"],
+        "cluster_0001",
+        "0001",
+    )
+    assert event_log[1] == ("agent_init", expected_context)
+    assert event_log[2] == ("generate", expected_context)
+
+
+def test_report_generate_and_get_exposes_ready_calibration_summary(
+    simulation_data_dir, tmp_path, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_agent_module = _load_report_agent_module()
+    report_module = _load_report_api_module()
+
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(report_module.ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(report_module.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_REPORT_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.Config,
+        "CALIBRATED_PROBABILITY_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    run_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+        / "runs"
+        / "run_0001"
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    resolved_config_path = run_dir / "resolved_config.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    resolved_payload = json.loads(resolved_config_path.read_text(encoding="utf-8"))
+    manifest_payload["base_graph_id"] = "graph-1"
+    manifest_payload["runtime_graph_id"] = "runtime-graph-1"
+    manifest_payload["graph_id"] = "graph-1"
+    resolved_payload["base_graph_id"] = "graph-1"
+    resolved_payload["runtime_graph_id"] = "runtime-graph-1"
+    resolved_payload["graph_id"] = "graph-1"
+    manifest_path.write_text(
+        json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    resolved_config_path.write_text(
+        json.dumps(resolved_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.prepare.v1",
+            "generator_version": "probabilistic.prepare.generator.v1",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "metric_calibrations": {
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "value_kind": "binary",
+                    "case_count": 10,
+                    "supported_scoring_rules": ["brier_score", "log_score"],
+                    "scores": {"brier_score": 0.12, "log_score": 0.41},
+                    "reliability_bins": [],
+                    "readiness": {
+                        "ready": True,
+                        "minimum_case_count": 10,
+                        "actual_case_count": 10,
+                        "non_empty_bin_count": 2,
+                        "gating_reasons": [],
+                        "confidence_label": "limited",
+                    },
+                    "warnings": [],
+                }
+            },
+            "quality_summary": {
+                "status": "complete",
+                "ready_metric_ids": ["simulation.completed"],
+                "not_ready_metric_ids": [],
+                "warnings": [],
+            },
+        },
+    )
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            probabilistic_context=None,
+            **kwargs,
+        ):
+            self.graph_id = graph_id
+            self.simulation_id = simulation_id
+            self.simulation_requirement = simulation_requirement
+            self.probabilistic_context = probabilistic_context
+            self.base_graph_id = kwargs.get("base_graph_id")
+            self.runtime_graph_id = kwargs.get("runtime_graph_id")
+            self.graph_ids = kwargs.get("graph_ids")
+
+        def generate_report(self, progress_callback=None, report_id=None):
+            return report_agent_module.Report(
+                report_id=report_id,
+                simulation_id=self.simulation_id,
+                graph_id=self.graph_id,
+                base_graph_id=self.base_graph_id,
+                runtime_graph_id=self.runtime_graph_id,
+                graph_ids=self.graph_ids or [],
+                simulation_requirement=self.simulation_requirement,
+                status=report_agent_module.ReportStatus.COMPLETED,
+                probabilistic_context=self.probabilistic_context,
+                outline=report_agent_module.ReportOutline(
+                    title="Forecast report",
+                    summary="Probabilistic report body with calibration context",
+                    sections=[],
+                ),
+                markdown_content="# Forecast report\n",
+                created_at="2026-03-09T10:30:00",
+                completed_at="2026-03-09T10:31:00",
+            )
+
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/generate",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "force_regenerate": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    report_id = payload["report_id"]
+
+    report_response = client.get(f"/api/report/{report_id}")
+    assert report_response.status_code == 200
+    report_payload = report_response.get_json()["data"]
+    assert report_payload["probabilistic_context"]["confidence_status"]["status"] == "ready"
+    assert report_payload["probabilistic_context"]["calibrated_summary"]["metrics"][0]["metric_id"] == (
+        "simulation.completed"
+    )
+
+
+def test_report_generate_and_get_exposes_not_ready_confidence_without_calibrated_summary(
+    simulation_data_dir, tmp_path, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_agent_module = _load_report_agent_module()
+    report_module = _load_report_api_module()
+
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(report_module.ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(report_module.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_REPORT_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.Config,
+        "CALIBRATED_PROBABILITY_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.calibration.v2",
+            "generator_version": "probabilistic.calibration.generator.v2",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "metric_calibrations": {
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "value_kind": "binary",
+                    "case_count": 10,
+                    "supported_scoring_rules": ["brier_score", "log_score"],
+                    "scores": {"brier_score": 0.12, "log_score": 0.41},
+                    "diagnostics": {
+                        "expected_calibration_error": 0.18,
+                        "max_calibration_gap": 0.25,
+                    },
+                    "reliability_bins": [],
+                    "readiness": {
+                        "ready": False,
+                        "minimum_case_count": 10,
+                        "actual_case_count": 10,
+                        "minimum_positive_case_count": 3,
+                        "actual_positive_case_count": 10,
+                        "minimum_negative_case_count": 3,
+                        "actual_negative_case_count": 0,
+                        "non_empty_bin_count": 2,
+                        "supported_bin_count": 2,
+                        "minimum_supported_bin_count": 2,
+                        "gating_reasons": ["insufficient_negative_case_count"],
+                        "confidence_label": "insufficient",
+                    },
+                    "warnings": ["degenerate_base_rate_baseline"],
+                }
+            },
+            "quality_summary": {
+                "status": "partial",
+                "ready_metric_ids": [],
+                "not_ready_metric_ids": ["simulation.completed"],
+                "warnings": ["not_ready_metrics_present"],
+            },
+        },
+    )
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            probabilistic_context=None,
+            **kwargs,
+        ):
+            self.graph_id = graph_id
+            self.simulation_id = simulation_id
+            self.simulation_requirement = simulation_requirement
+            self.probabilistic_context = probabilistic_context
+
+        def generate_report(self, progress_callback=None, report_id=None):
+            return report_agent_module.Report(
+                report_id=report_id,
+                simulation_id=self.simulation_id,
+                graph_id=self.graph_id,
+                simulation_requirement=self.simulation_requirement,
+                status=report_agent_module.ReportStatus.COMPLETED,
+                probabilistic_context=self.probabilistic_context,
+                outline=report_agent_module.ReportOutline(
+                    title="Forecast report",
+                    summary="Probabilistic report body with bounded confidence context",
+                    sections=[],
+                ),
+                markdown_content="# Forecast report\n",
+                created_at="2026-03-09T10:30:00",
+                completed_at="2026-03-09T10:31:00",
+            )
+
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/generate",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "force_regenerate": True,
+        },
+    )
+
+    assert response.status_code == 200
+    report_id = response.get_json()["data"]["report_id"]
+
+    report_response = client.get(f"/api/report/{report_id}")
+    assert report_response.status_code == 200
+    report_payload = report_response.get_json()["data"]
+    assert report_payload["probabilistic_context"]["confidence_status"] == {
+        "status": "not_ready",
+        "supported_metric_ids": ["simulation.completed"],
+        "ready_metric_ids": [],
+        "not_ready_metric_ids": ["simulation.completed"],
+        "gating_reasons": ["insufficient_negative_case_count"],
+        "warnings": ["not_ready_metrics_present", "degenerate_base_rate_baseline"],
+        "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+    }
+    assert "calibrated_summary" not in report_payload["probabilistic_context"]
+
+
+def test_report_generate_and_get_preserve_probabilistic_provenance_fields(
+    simulation_data_dir, tmp_path, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_agent_module = _load_report_agent_module()
+    report_module = _load_report_api_module()
+
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(report_module.ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(report_module.threading, "Thread", _FakeThread)
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_REPORT_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.Config,
+        "CALIBRATED_PROBABILITY_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    run_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+        / "runs"
+        / "run_0001"
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["base_graph_id"] = "graph-1"
+    manifest_payload["runtime_graph_id"] = "runtime-graph-1"
+    manifest_payload["graph_id"] = "graph-1"
+    manifest_payload["assumption_ledger"] = {
+        "applied_templates": ["baseline-watch"],
+        "notes": ["Applied template baseline-watch"],
+    }
+    manifest_path.write_text(
+        json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    resolved_config_path = run_dir / "resolved_config.json"
+    resolved_payload = json.loads(resolved_config_path.read_text(encoding="utf-8"))
+    resolved_payload["base_graph_id"] = "graph-1"
+    resolved_payload["runtime_graph_id"] = "runtime-graph-1"
+    resolved_payload["graph_id"] = "graph-1"
+    resolved_config_path.write_text(
+        json.dumps(resolved_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.prepare.v1",
+            "generator_version": "probabilistic.prepare.generator.v1",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "metric_calibrations": {
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "value_kind": "binary",
+                    "case_count": 10,
+                    "supported_scoring_rules": ["brier_score", "log_score"],
+                    "scores": {"brier_score": 0.12, "log_score": 0.41},
+                    "reliability_bins": [],
+                    "readiness": {
+                        "ready": True,
+                        "minimum_case_count": 10,
+                        "actual_case_count": 10,
+                        "non_empty_bin_count": 2,
+                        "gating_reasons": [],
+                        "confidence_label": "limited",
+                    },
+                    "warnings": [],
+                }
+            },
+            "quality_summary": {
+                "status": "complete",
+                "ready_metric_ids": ["simulation.completed"],
+                "not_ready_metric_ids": [],
+                "warnings": [],
+            },
+        },
+    )
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            probabilistic_context=None,
+            **kwargs,
+        ):
+            self.graph_id = graph_id
+            self.simulation_id = simulation_id
+            self.simulation_requirement = simulation_requirement
+            self.probabilistic_context = probabilistic_context
+            self.base_graph_id = kwargs.get("base_graph_id")
+            self.runtime_graph_id = kwargs.get("runtime_graph_id")
+            self.graph_ids = kwargs.get("graph_ids")
+
+        def generate_report(self, progress_callback=None, report_id=None):
+            return report_agent_module.Report(
+                report_id=report_id,
+                simulation_id=self.simulation_id,
+                graph_id=self.graph_id,
+                base_graph_id=self.base_graph_id,
+                runtime_graph_id=self.runtime_graph_id,
+                graph_ids=self.graph_ids or [],
+                simulation_requirement=self.simulation_requirement,
+                status=report_agent_module.ReportStatus.COMPLETED,
+                probabilistic_context=self.probabilistic_context,
+                outline=report_agent_module.ReportOutline(
+                    title="Forecast report",
+                    summary="Probabilistic report body with persisted provenance",
+                    sections=[],
+                ),
+                markdown_content="# Forecast report\n",
+                created_at="2026-03-09T10:30:00",
+                completed_at="2026-03-09T10:31:00",
+            )
+
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/generate",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "force_regenerate": True,
+        },
+    )
+
+    assert response.status_code == 200
+    report_id = response.get_json()["data"]["report_id"]
+
+    report_response = client.get(f"/api/report/{report_id}")
+    assert report_response.status_code == 200
+    report_payload = report_response.get_json()["data"]
+    assert report_payload["probabilistic_context"]["confidence_status"]["status"] == "ready"
+    assert report_payload["probabilistic_context"]["calibration_provenance"] == {
+        "mode": "calibrated",
+        "artifact_type": "calibration_summary",
+        "ready_metric_ids": ["simulation.completed"],
+        "quality_status": "complete",
+        "warnings": [],
+    }
+    assert report_payload["probabilistic_context"]["selected_run"]["assumption_ledger"] == {
+        "applied_templates": ["baseline-watch"],
+        "notes": ["Applied template baseline-watch"],
+    }
+
+
+def test_report_chat_passes_grounding_context_from_saved_bundle(
+    simulation_data_dir, monkeypatch, tmp_path
+):
+    _write_project_grounding_artifacts(
+        monkeypatch,
+        tmp_path / "projects",
+        project_id="proj-1",
+        graph_id="graph-1",
+    )
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_module = _load_report_api_module()
+    captures = {}
+
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_INTERACTION_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            report_id=None,
+            probabilistic_context=None,
+            **kwargs,
+        ):
+            captures["probabilistic_context"] = probabilistic_context
+
+        def chat(self, message, chat_history=None):
+            return {
+                "response": "Scoped probabilistic chat reply",
+                "tool_calls": [],
+                "sources": [],
+            }
+
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/chat",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "message": "What upstream evidence grounds this report?",
+            "chat_history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captures["probabilistic_context"]["grounding_context"]["status"] == "ready"
+    assert captures["probabilistic_context"]["grounding_context"]["citation_counts"] == {
+        "source": 1,
+        "graph": 1,
+        "code": 0,
+    }
+    assert captures["probabilistic_context"]["grounding_context"]["evidence_items"][0][
+        "citation_id"
+    ] == "[S1]"
+
+
 def test_probabilistic_report_generation_requires_report_flag(
     simulation_data_dir, monkeypatch
 ):
@@ -759,6 +1581,72 @@ def test_report_agent_chat_prefers_explicit_report_id_and_saved_probabilistic_co
     assert '"summary": "empirical"' in system_prompt
 
 
+def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
+    tmp_path, monkeypatch
+):
+    report_agent_module = _load_report_agent_module()
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+
+    probabilistic_report = report_agent_module.Report(
+        report_id="report-probabilistic-confidence",
+        simulation_id="sim-chat",
+        graph_id="graph-1",
+        simulation_requirement="Forecast discussion spread",
+        status=report_agent_module.ReportStatus.COMPLETED,
+        markdown_content="# Probabilistic report body\n\nObserved ensemble summary.\n",
+        created_at="2026-03-09T10:02:00",
+        completed_at="2026-03-09T10:03:00",
+        ensemble_id="0001",
+        probabilistic_context={
+            "artifact_type": "probabilistic_report_context",
+            "ensemble_id": "0001",
+            "confidence_status": {
+                "status": "not_ready",
+                "supported_metric_ids": [],
+                "ready_metric_ids": [],
+                "not_ready_metric_ids": [],
+                "gating_reasons": ["no_supported_binary_metrics"],
+                "warnings": ["unsupported_confidence_contract"],
+                "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+            },
+        },
+    )
+    report_agent_module.ReportManager.save_report(probabilistic_report)
+
+    class _FakeLLM:
+        def __init__(self):
+            self.messages = None
+
+        def chat(self, messages, temperature=0.5):
+            self.messages = messages
+            return "Scoped answer"
+
+    fake_llm = _FakeLLM()
+    agent = report_agent_module.ReportAgent(
+        graph_id="graph-1",
+        simulation_id="sim-chat",
+        simulation_requirement="Forecast discussion spread",
+        llm_client=fake_llm,
+        zep_tools=object(),
+        report_id="report-probabilistic-confidence",
+        probabilistic_context=probabilistic_report.probabilistic_context,
+    )
+
+    response = agent.chat("Can I call this calibrated?")
+
+    assert response["response"] == "Scoped answer"
+    system_prompt = fake_llm.messages[0]["content"]
+    assert '"confidence_status"' in system_prompt
+    assert '"status": "not_ready"' in system_prompt
+    assert '"no_supported_binary_metrics"' in system_prompt
+
+
 def test_report_chat_endpoint_passes_explicit_report_scope_to_agent(
     simulation_data_dir, tmp_path, monkeypatch
 ):
@@ -812,10 +1700,12 @@ def test_report_chat_endpoint_passes_explicit_report_scope_to_agent(
         created_at="2026-03-09T10:10:00",
         completed_at="2026-03-09T10:11:00",
         ensemble_id=created["ensemble_id"],
+        cluster_id="cluster_0001",
         run_id="0001",
         probabilistic_context={
             "artifact_type": "probabilistic_report_context",
             "ensemble_id": created["ensemble_id"],
+            "cluster_id": "cluster_0001",
             "run_id": "0001",
         },
     )
@@ -871,11 +1761,209 @@ def test_report_chat_endpoint_passes_explicit_report_scope_to_agent(
     assert payload["response"] == "Scoped reply"
     assert captures["report_id"] == scoped_report.report_id
     assert captures["probabilistic_context"]["ensemble_id"] == created["ensemble_id"]
+    assert captures["probabilistic_context"]["cluster_id"] == "cluster_0001"
     assert captures["base_graph_id"] == "graph-1"
     assert captures["runtime_graph_id"] == "runtime-graph-1"
     assert captures["graph_ids"] == ["graph-1", "runtime-graph-1"]
     assert captures["message"] == "What does the ensemble show?"
     assert captures["chat_history"] == [{"role": "user", "content": "Earlier question"}]
+
+
+def test_report_chat_endpoint_can_override_saved_run_scope_and_apply_compare_selection(
+    simulation_data_dir, tmp_path, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_agent_module = _load_report_agent_module()
+    report_module = _load_report_api_module()
+
+    reports_dir = tmp_path / "uploads" / "reports"
+    monkeypatch.setattr(report_module.ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_INTERACTION_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    scoped_report = report_agent_module.Report(
+        report_id="report-chat-scope-override",
+        simulation_id=state.simulation_id,
+        graph_id="graph-1",
+        base_graph_id="graph-1",
+        runtime_graph_id="runtime-graph-1",
+        graph_ids=["graph-1", "runtime-graph-1"],
+        simulation_requirement="Forecast discussion spread",
+        status=report_agent_module.ReportStatus.COMPLETED,
+        markdown_content="# Probabilistic report body\n\nObserved ensemble summary.\n",
+        created_at="2026-03-09T10:10:00",
+        completed_at="2026-03-09T10:11:00",
+        ensemble_id=created["ensemble_id"],
+        cluster_id="cluster_0001",
+        run_id="0001",
+        probabilistic_context={
+            "artifact_type": "probabilistic_report_context",
+            "ensemble_id": created["ensemble_id"],
+            "cluster_id": "cluster_0001",
+            "run_id": "0001",
+            "scope": {
+                "level": "run",
+                "ensemble_id": created["ensemble_id"],
+                "cluster_id": "cluster_0001",
+                "run_id": "0001",
+            },
+        },
+    )
+    report_agent_module.ReportManager.save_report(scoped_report)
+
+    captures = {}
+
+    class _FakeContextBuilder:
+        def build_context(self, simulation_id, ensemble_id, cluster_id=None, run_id=None):
+            captures["rebuilt_scope"] = (
+                simulation_id,
+                ensemble_id,
+                cluster_id,
+                run_id,
+            )
+            return {
+                "artifact_type": "probabilistic_report_context",
+                "ensemble_id": ensemble_id,
+                "cluster_id": cluster_id,
+                "run_id": run_id,
+                "scope": {
+                    "level": "ensemble",
+                    "ensemble_id": ensemble_id,
+                    "cluster_id": None,
+                    "run_id": None,
+                },
+                "compare_catalog": {
+                    "boundary_note": "Compare only scopes inside one saved report context and one ensemble.",
+                    "options": [
+                        {
+                            "compare_id": f"run-0001__ensemble-{ensemble_id}",
+                            "label": "Run 0001 vs ensemble",
+                            "left_scope": {
+                                "level": "run",
+                                "ensemble_id": ensemble_id,
+                                "cluster_id": "cluster_0001",
+                                "run_id": "0001",
+                            },
+                            "right_scope": {
+                                "level": "ensemble",
+                                "ensemble_id": ensemble_id,
+                                "cluster_id": None,
+                                "run_id": None,
+                            },
+                            "left_snapshot": {
+                                "scope": {
+                                    "level": "run",
+                                    "ensemble_id": ensemble_id,
+                                    "cluster_id": "cluster_0001",
+                                    "run_id": "0001",
+                                },
+                                "headline": "Run 0001",
+                            },
+                            "right_snapshot": {
+                                "scope": {
+                                    "level": "ensemble",
+                                    "ensemble_id": ensemble_id,
+                                    "cluster_id": None,
+                                    "run_id": None,
+                                },
+                                "headline": f"Ensemble {ensemble_id}",
+                            },
+                            "comparison_summary": {
+                                "what_differs": ["Observed run versus empirical ensemble"],
+                                "weak_support": [],
+                                "boundary_note": "Do not treat this comparison as causal.",
+                            },
+                            "warnings": [],
+                            "prompt": "Explain how run 0001 differs from the ensemble.",
+                        }
+                    ],
+                },
+            }
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            report_id,
+            probabilistic_context,
+            **kwargs,
+        ):
+            captures["probabilistic_context"] = probabilistic_context
+            captures["report_id"] = report_id
+
+        def chat(self, message, chat_history=None):
+            captures["message"] = message
+            return {
+                "response": "Scoped override reply",
+                "tool_calls": [],
+                "sources": [],
+            }
+
+    monkeypatch.setattr(
+        report_module,
+        "ProbabilisticReportContextBuilder",
+        _FakeContextBuilder,
+    )
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/chat",
+        json={
+            "simulation_id": state.simulation_id,
+            "report_id": scoped_report.report_id,
+            "ensemble_id": created["ensemble_id"],
+            "scope_level": "ensemble",
+            "compare_id": f"run-0001__ensemble-{created['ensemble_id']}",
+            "message": "Compare the saved run against the ensemble.",
+            "chat_history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captures["rebuilt_scope"] == (
+        state.simulation_id,
+        created["ensemble_id"],
+        None,
+        None,
+    )
+    assert captures["probabilistic_context"]["scope"]["level"] == "ensemble"
+    assert captures["probabilistic_context"]["run_id"] is None
+    assert (
+        captures["probabilistic_context"]["selected_compare"]["compare_id"]
+        == f"run-0001__ensemble-{created['ensemble_id']}"
+    )
+    assert captures["message"] == "Compare the saved run against the ensemble."
 
 
 def test_probabilistic_report_chat_requires_interaction_flag(
@@ -963,6 +2051,107 @@ def test_probabilistic_report_chat_requires_interaction_flag(
 
     assert response.status_code == 409
     assert "Probabilistic report interaction is disabled" in response.get_json()["error"]
+
+
+def test_probabilistic_report_chat_builds_scoped_context_without_saved_report(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    report_module = _load_report_api_module()
+
+    monkeypatch.setattr(
+        report_module.Config,
+        "PROBABILISTIC_INTERACTION_ENABLED",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.SimulationManager,
+        "get_simulation",
+        lambda _self, _simulation_id: type(
+            "State",
+            (),
+            {
+                "simulation_id": state.simulation_id,
+                "project_id": "proj-1",
+                "graph_id": "graph-1",
+            },
+        )(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        report_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type(
+            "Project",
+            (),
+            {
+                "graph_id": "graph-1",
+                "simulation_requirement": "Forecast discussion spread",
+            },
+        )(),
+        raising=False,
+    )
+
+    expected_context = {
+        "artifact_type": "probabilistic_report_context",
+        "ensemble_id": created["ensemble_id"],
+        "run_id": "0001",
+        "scope": {"level": "run"},
+    }
+    captures = {}
+
+    class _FakeContextBuilder:
+        def build_context(self, simulation_id, ensemble_id, run_id=None):
+            captures["context_scope"] = (simulation_id, ensemble_id, run_id)
+            return expected_context
+
+    class _FakeReportAgent:
+        def __init__(
+            self,
+            graph_id,
+            simulation_id,
+            simulation_requirement,
+            report_id,
+            probabilistic_context,
+            **kwargs,
+        ):
+            captures["probabilistic_context"] = probabilistic_context
+
+        def chat(self, message, chat_history=None):
+            return {
+                "response": "Scoped probabilistic chat reply",
+                "tool_calls": [],
+                "sources": [],
+            }
+
+    monkeypatch.setattr(
+        report_module,
+        "ProbabilisticReportContextBuilder",
+        _FakeContextBuilder,
+    )
+    monkeypatch.setattr(report_module, "ReportAgent", _FakeReportAgent)
+    client = _build_test_client(report_module)
+
+    response = client.post(
+        "/api/report/chat",
+        json={
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "message": "Compare the selected run to the representative runs.",
+            "chat_history": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captures["context_scope"] == (state.simulation_id, created["ensemble_id"], "0001")
+    assert captures["probabilistic_context"] == expected_context
 
 
 def test_probabilistic_report_generation_reuses_existing_exact_scope_not_latest_report(

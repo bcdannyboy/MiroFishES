@@ -54,7 +54,9 @@
           :simulationId="simulationId"
           :runtimeMode="runtimeMode"
           :ensembleId="ensembleId"
+          :clusterId="clusterId"
           :runId="runId"
+          :compareId="compareId"
           :probabilisticContext="currentReport?.probabilistic_context || null"
           :systemLogs="systemLogs"
           @add-log="addLog"
@@ -94,7 +96,9 @@ const initialReportRouteState = deriveProbabilisticReportRouteState({
 const simulationId = ref(null)
 const runtimeMode = ref(initialReportRouteState.runtimeMode)
 const ensembleId = ref(initialReportRouteState.ensembleId)
+const clusterId = ref(initialReportRouteState.clusterId)
 const runId = ref(initialReportRouteState.runId)
+const compareId = ref(initialReportRouteState.compareId)
 const currentReport = ref(null)
 const projectData = ref(null)
 const graphData = ref(null)
@@ -146,7 +150,9 @@ const applyProbabilisticReportState = (reportRecord = currentReport.value) => {
   })
   runtimeMode.value = derivedState.runtimeMode
   ensembleId.value = derivedState.ensembleId
+  clusterId.value = derivedState.clusterId
   runId.value = derivedState.runId
+  compareId.value = derivedState.compareId
 }
 
 // --- Layout Methods ---

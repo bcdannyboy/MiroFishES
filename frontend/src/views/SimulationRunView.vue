@@ -54,7 +54,9 @@
           :maxRounds="maxRounds"
           :runtimeMode="runtimeMode"
           :ensembleId="ensembleId"
+          :clusterId="clusterId"
           :runId="runId"
+          :reportScopeLevel="reportScopeLevel"
           :minutesPerRound="minutesPerRound"
           :projectData="projectData"
           :graphData="graphData"
@@ -108,7 +110,9 @@ const initialRouteQuery = normalizeSimulationRunRouteQuery(route.query)
 const maxRounds = ref(initialRouteQuery.maxRounds)
 const runtimeMode = ref(initialRouteQuery.runtimeMode)
 const ensembleId = ref(initialRouteQuery.ensembleId)
+const clusterId = ref(initialRouteQuery.clusterId)
 const runId = ref(initialRouteQuery.runId)
+const reportScopeLevel = ref(initialRouteQuery.scopeLevel)
 const minutesPerRound = ref(30) // Default to 30 minutes per round
 const projectData = ref(null)
 const graphData = ref(null)
@@ -232,7 +236,9 @@ watch(
     maxRounds.value = normalized.maxRounds
     runtimeMode.value = normalized.runtimeMode
     ensembleId.value = normalized.ensembleId
+    clusterId.value = normalized.clusterId
     runId.value = normalized.runId
+    reportScopeLevel.value = normalized.scopeLevel
   }
 )
 

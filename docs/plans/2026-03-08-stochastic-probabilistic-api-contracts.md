@@ -179,20 +179,45 @@ Current request fields:
 
 Current note:
 
-- report generation still uses `simulation_id` as the canonical parent identity, but it now accepts optional `ensemble_id` and `run_id`, persists bounded probabilistic scope on the report record, and keeps legacy report generation working when those fields are absent
+- report generation still uses `simulation_id` as the canonical parent identity, but it now accepts optional `ensemble_id` and `run_id`, builds scoped probabilistic report context before agent execution when that scope is present, persists bounded probabilistic scope on the report record, and keeps legacy report generation working when those fields are absent
 
 Live today:
 
 `GET /api/report/<report_id>`
 
-- optional `ensemble_id`
-- optional `run_id`
+- persisted `ensemble_id`
+- persisted `run_id`
 - optional `probabilistic_context`
 
-Deferred until fuller report/runtime integration exists:
+Current note:
 
-- probabilistic artifact summary
-- report provenance status
+- persisted `probabilistic_context` can include `scope`, `quality_summary`, `selected_run`, `representative_runs`, `aggregate_summary`, `scenario_clusters`, `sensitivity`, and valid `calibration_provenance` plus `calibrated_summary` when ready calibration artifacts exist
+
+Live today:
+
+`POST /api/report/chat`
+
+Current request fields:
+
+- `simulation_id`
+- optional `report_id`
+- optional `ensemble_id`
+- optional `run_id`
+- `message`
+- optional `chat_history`
+
+Current notes:
+
+- report-agent chat remains the only probabilistic-context-aware Step 5 lane
+- when `report_id` resolves to a saved report with persisted `probabilistic_context`, that saved context is reused
+- when no saved report context exists but explicit `ensemble_id` is provided, the backend builds scoped probabilistic report context on demand before agent execution
+- probabilistic chat scope returns `409` when `probabilistic_interaction_enabled` is off
+
+Still deferred:
+
+- dedicated compare endpoints or compare workspace state
+- manual Step 5 scope switching beyond the current bounded prompt-driven lane
+- any route that would imply calibrated forecasting beyond explicit backtested provenance artifacts
 
 ## 4. Error semantics
 

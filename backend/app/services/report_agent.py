@@ -452,6 +452,7 @@ class Report:
     completed_at: str = ""
     error: Optional[str] = None
     ensemble_id: Optional[str] = None
+    cluster_id: Optional[str] = None
     run_id: Optional[str] = None
     probabilistic_context: Optional[Dict[str, Any]] = None
     base_graph_id: Optional[str] = None
@@ -486,6 +487,7 @@ class Report:
             "completed_at": self.completed_at,
             "error": self.error,
             "ensemble_id": self.ensemble_id,
+            "cluster_id": self.cluster_id,
             "run_id": self.run_id,
             "probabilistic_context": self.probabilistic_context,
         }
@@ -859,7 +861,7 @@ Forecast condition: {simulation_requirement}
 Generated analysis report:
 {report_content}
 
-Saved probabilistic report context for this exact report:
+Scoped probabilistic report context for this exact report or report request:
 {probabilistic_context}
 
 Rules:
@@ -1001,13 +1003,84 @@ class ReportAgent:
             return "(No saved probabilistic context for this report.)"
 
         context_text = json.dumps(
-            probabilistic_context,
+            ReportAgent._build_prompt_safe_probabilistic_context(
+                probabilistic_context
+            ),
             ensure_ascii=False,
             indent=2,
         )
         if len(context_text) > 4000:
             context_text = context_text[:4000] + "\n... [Probabilistic context truncated] ..."
         return context_text
+
+    @staticmethod
+    def _build_prompt_safe_grounding_context(
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Keep upstream grounding explicit and bounded for prompts."""
+        if not probabilistic_context:
+            return None
+
+        grounding_context = probabilistic_context.get("grounding_context")
+        if not isinstance(grounding_context, dict):
+            return None
+
+        evidence_items = grounding_context.get("evidence_items")
+        if not isinstance(evidence_items, list):
+            evidence_items = []
+
+        return {
+            "status": grounding_context.get("status", "unavailable"),
+            "boundary_note": grounding_context.get("boundary_note"),
+            "citation_counts": grounding_context.get("citation_counts", {}),
+            "warnings": grounding_context.get("warnings", []),
+            "evidence_items": [
+                {
+                    "citation_id": item.get("citation_id"),
+                    "kind": item.get("kind"),
+                    "title": item.get("title"),
+                    "summary": item.get("summary"),
+                    "locator": item.get("locator"),
+                }
+                for item in evidence_items[:4]
+                if isinstance(item, dict)
+            ],
+        }
+
+    @classmethod
+    def _build_prompt_safe_probabilistic_context(
+        cls,
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Format scoped probabilistic evidence without dumping entire artifacts."""
+        if not probabilistic_context:
+            return {}
+
+        context = probabilistic_context
+        return {
+            "ensemble_id": context.get("ensemble_id"),
+            "cluster_id": context.get("cluster_id"),
+            "run_id": context.get("run_id"),
+            "scope": context.get("scope"),
+            "grounding_context": cls._build_prompt_safe_grounding_context(context),
+            "probability_semantics": context.get("probability_semantics"),
+            "confidence_status": context.get("confidence_status"),
+            "calibration_provenance": context.get("calibration_provenance"),
+            "quality_summary": context.get("quality_summary"),
+            "top_outcomes": (context.get("top_outcomes") or [])[:3],
+            "scenario_families": (context.get("scenario_families") or [])[:2],
+            "selected_cluster": context.get("selected_cluster"),
+            "representative_runs": (context.get("representative_runs") or [])[:3],
+            "selected_run": context.get("selected_run"),
+            "sensitivity_overview": context.get("sensitivity_overview"),
+            "driver_analysis": context.get("driver_analysis"),
+            "compare_options": (context.get("compare_options") or [])[:3],
+            "compare_catalog": {
+                "boundary_note": ((context.get("compare_catalog") or {}).get("boundary_note")),
+                "options": (((context.get("compare_catalog") or {}).get("options")) or [])[:3],
+            } if context.get("compare_catalog") else None,
+            "selected_compare": context.get("selected_compare"),
+        }
     
     def _define_tools(self) -> Dict[str, Dict[str, Any]]:
         """Define the available tools."""
@@ -1234,6 +1307,23 @@ class ReportAgent:
             if params_desc:
                 desc_parts.append(f"  Parameters: {params_desc}")
         return "\n".join(desc_parts)
+
+    def _build_probabilistic_prompt_context(
+        self,
+        *,
+        max_chars: int = 5000,
+    ) -> str:
+        """Format scoped probabilistic evidence for prompt consumption."""
+        if not self.probabilistic_context:
+            return "(No scoped probabilistic report context available.)"
+
+        prompt_payload = self._build_prompt_safe_probabilistic_context(
+            self.probabilistic_context
+        )
+        context_text = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+        if len(context_text) > max_chars:
+            context_text = context_text[:max_chars] + "\n... [Probabilistic context truncated] ..."
+        return context_text
     
     def plan_outline(
         self, 
@@ -1272,6 +1362,10 @@ class ReportAgent:
             entity_types=list(context.get('graph_statistics', {}).get('entity_types', {}).keys()),
             total_entities=context.get('total_entities', 0),
             related_facts_json=json.dumps(context.get('related_facts', [])[:10], ensure_ascii=False, indent=2),
+        )
+        user_prompt += (
+            "\n\nScoped probabilistic evidence for this exact report request:\n"
+            f"{self._build_probabilistic_prompt_context(max_chars=5000)}"
         )
 
         try:
@@ -1375,6 +1469,10 @@ class ReportAgent:
         user_prompt = SECTION_USER_PROMPT_TEMPLATE.format(
             previous_content=previous_content,
             section_title=section.title,
+        )
+        user_prompt += (
+            "\n\nScoped probabilistic evidence for this exact report request:\n"
+            f"{self._build_probabilistic_prompt_context(max_chars=5000)}"
         )
 
         messages = [
@@ -2604,6 +2702,7 @@ class ReportManager:
             completed_at=data.get('completed_at', ''),
             error=data.get('error'),
             ensemble_id=data.get('ensemble_id'),
+            cluster_id=data.get('cluster_id'),
             run_id=data.get('run_id'),
             probabilistic_context=data.get('probabilistic_context'),
         )
@@ -2620,6 +2719,7 @@ class ReportManager:
         simulation_id: str,
         *,
         ensemble_id: Optional[str] = None,
+        cluster_id: Optional[str] = None,
         run_id: Optional[str] = None,
         legacy_only: bool = False,
     ) -> Optional[Report]:
@@ -2629,14 +2729,18 @@ class ReportManager:
         if legacy_only:
             reports = [
                 report for report in reports
-                if not report.ensemble_id and not report.run_id
+                if not report.ensemble_id and not report.cluster_id and not report.run_id
             ]
             return reports[0] if reports else None
 
         if ensemble_id is not None:
             reports = [
                 report for report in reports
-                if report.ensemble_id == ensemble_id and report.run_id == run_id
+                if (
+                    report.ensemble_id == ensemble_id
+                    and report.cluster_id == cluster_id
+                    and report.run_id == run_id
+                )
             ]
             return reports[0] if reports else None
 

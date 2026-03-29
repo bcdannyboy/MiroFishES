@@ -15,20 +15,26 @@ from enum import Enum
 from ..config import Config
 from ..models.probabilistic import (
     DEFAULT_OUTCOME_METRICS,
+    ExperimentDesignSpec,
+    ForecastBrief,
     OutcomeMetricDefinition,
     PROBABILISTIC_GENERATOR_VERSION,
     PROBABILISTIC_SCHEMA_VERSION,
     RandomVariableSpec,
+    ScenarioTemplateSpec,
     SeedPolicy,
     UncertaintySpec,
+    VariableGroupSpec,
     build_supported_outcome_metric,
     normalize_uncertainty_profile,
+    normalize_forecast_brief,
     validate_outcome_metric_id,
 )
 from ..utils.logger import get_logger
 from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
+from .grounding_bundle_builder import GroundingBundleBuilder
 
 logger = get_logger('mirofish.simulation')
 
@@ -155,12 +161,15 @@ class SimulationManager:
     PREPARE_ARTIFACT_FILENAMES = {
         "legacy_config": "simulation_config.json",
         "base_config": "simulation_config.base.json",
+        "forecast_brief": "forecast_brief.json",
+        "grounding_bundle": "grounding_bundle.json",
         "uncertainty_spec": "uncertainty_spec.json",
         "outcome_spec": "outcome_spec.json",
         "prepared_snapshot": "prepared_snapshot.json",
     }
     REQUIRED_PROBABILISTIC_ARTIFACT_KEYS = (
         "base_config",
+        "grounding_bundle",
         "uncertainty_spec",
         "outcome_spec",
         "prepared_snapshot",
@@ -224,6 +233,8 @@ class SimulationManager:
         """Remove sidecar artifacts when preparing a legacy-only snapshot."""
         for artifact_name in (
             "base_config",
+            "forecast_brief",
+            "grounding_bundle",
             "uncertainty_spec",
             "outcome_spec",
             "prepared_snapshot",
@@ -314,6 +325,7 @@ class SimulationManager:
         self,
         uncertainty_profile: Optional[str],
         config_payload: Dict[str, Any],
+        forecast_brief: Optional[ForecastBrief] = None,
     ) -> UncertaintySpec:
         """
         Build the initial uncertainty contract from the generated config payload.
@@ -328,13 +340,23 @@ class SimulationManager:
             config_payload,
             normalized_profile,
         )
+        variable_groups = self._build_variable_groups(random_variables)
+        scenario_templates = self._build_scenario_templates(forecast_brief)
+        experiment_design = self._build_experiment_design_spec(
+            random_variables=random_variables,
+            scenario_templates=scenario_templates,
+        )
         return UncertaintySpec(
             profile=normalized_profile,
             random_variables=random_variables,
+            variable_groups=variable_groups,
+            scenario_templates=scenario_templates,
+            experiment_design=experiment_design,
             seed_policy=SeedPolicy(),
             notes=[
                 "Preparation persists one explicit catalog of run-varying config fields.",
                 "Persona text, graph-derived identity, and scheduled events remain fixed in this slice.",
+                "Structured experiment design metadata is explicit so ensemble coverage can be inspected later.",
                 (
                     "The deterministic-baseline profile keeps those fields fixed so seeded resolution remains explicit without adding extra config variance."
                     if normalized_profile == "deterministic-baseline"
@@ -511,6 +533,100 @@ class SimulationManager:
             description=description,
         )
 
+    def _build_variable_groups(
+        self,
+        random_variables: List[RandomVariableSpec],
+    ) -> List[VariableGroupSpec]:
+        """Create conservative shared-rank groups for related numeric fields."""
+        grouped_field_paths: Dict[str, List[str]] = {}
+
+        for variable in random_variables:
+            if variable.distribution == "fixed":
+                continue
+            field_path = variable.field_path
+            if field_path.startswith("agent_configs[") and "." in field_path:
+                prefix, suffix = field_path.split("].", 1)
+                if suffix in {
+                    "activity_level",
+                    "posts_per_hour",
+                    "comments_per_hour",
+                    "influence_weight",
+                }:
+                    grouped_field_paths.setdefault(
+                        f"{prefix.removeprefix('agent_configs[')}-engagement",
+                        [],
+                    ).append(field_path)
+                    continue
+            if field_path in {
+                "twitter_config.echo_chamber_strength",
+                "reddit_config.echo_chamber_strength",
+            }:
+                grouped_field_paths.setdefault("cross-platform-echo-chamber", []).append(
+                    field_path
+                )
+
+        variable_groups: List[VariableGroupSpec] = []
+        for group_key, field_paths in sorted(grouped_field_paths.items()):
+            unique_field_paths = sorted(dict.fromkeys(field_paths))
+            if len(unique_field_paths) < 2:
+                continue
+            variable_groups.append(
+                VariableGroupSpec(
+                    group_id=group_key,
+                    field_paths=unique_field_paths,
+                    notes=[
+                        "Grouped variables share one structured design rank in this preparation slice."
+                    ],
+                )
+            )
+        return variable_groups
+
+    def _build_scenario_templates(
+        self,
+        forecast_brief: Optional[ForecastBrief],
+    ) -> List[ScenarioTemplateSpec]:
+        """Carry declared forecast scenario templates into the uncertainty contract."""
+        if forecast_brief is None:
+            return []
+
+        scenario_templates: List[ScenarioTemplateSpec] = []
+        for template_id in forecast_brief.scenario_templates:
+            scenario_templates.append(
+                ScenarioTemplateSpec(
+                    template_id=template_id,
+                    label=template_id.replace("_", " ").title(),
+                    field_overrides={},
+                    notes=[
+                        "Preparation records the scenario name now; later waves may attach richer parameter overrides."
+                    ],
+                )
+            )
+        return scenario_templates
+
+    def _build_experiment_design_spec(
+        self,
+        *,
+        random_variables: List[RandomVariableSpec],
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> ExperimentDesignSpec:
+        """Build the explicit structured design contract used by ensemble planning."""
+        return ExperimentDesignSpec(
+            method="latin-hypercube",
+            numeric_dimensions=[
+                variable.field_path
+                for variable in random_variables
+                if variable.distribution == "uniform"
+            ],
+            scenario_template_ids=[
+                template.template_id for template in scenario_templates
+            ],
+            scenario_assignment="cyclic",
+            notes=[
+                "Numeric uniform variables use deterministic Latin-hypercube coverage.",
+                "Scenario templates are assigned cyclically when declared.",
+            ],
+        )
+
     def _build_uncertainty_feature_metadata(
         self,
         uncertainty_spec: UncertaintySpec,
@@ -531,6 +647,15 @@ class SimulationManager:
             "non_fixed_random_variable_count": non_fixed_count,
             "random_variable_preview": variable_paths[:5],
             "sampling_enabled": non_fixed_count > 0,
+            "structured_design_enabled": uncertainty_spec.experiment_design is not None,
+            "experiment_design_method": (
+                uncertainty_spec.experiment_design.method
+                if uncertainty_spec.experiment_design is not None
+                else None
+            ),
+            "variable_group_count": len(uncertainty_spec.variable_groups),
+            "conditional_variable_count": len(uncertainty_spec.conditional_variables),
+            "scenario_template_count": len(uncertainty_spec.scenario_templates),
         }
 
     def _build_lineage_context(
@@ -582,10 +707,21 @@ class SimulationManager:
             ],
         }
 
+    def _build_forecast_brief_feature_metadata(
+        self,
+        forecast_brief: Optional[ForecastBrief],
+    ) -> Dict[str, Any]:
+        """Expose whether one explicit forecast brief is attached to the prepared scope."""
+        return {
+            "forecast_brief_attached": forecast_brief is not None,
+        }
+
     def _build_prepared_snapshot(
         self,
         state: SimulationState,
         config_payload: Dict[str, Any],
+        forecast_brief: Optional[ForecastBrief],
+        grounding_summary: Dict[str, Any],
         uncertainty_spec: UncertaintySpec,
         outcome_spec: Dict[str, Any],
         sim_dir: str,
@@ -594,6 +730,8 @@ class SimulationManager:
         artifacts = {
             "legacy_config": self._describe_artifact(sim_dir, "legacy_config"),
             "base_config": self._describe_artifact(sim_dir, "base_config"),
+            "forecast_brief": self._describe_artifact(sim_dir, "forecast_brief"),
+            "grounding_bundle": self._describe_artifact(sim_dir, "grounding_bundle"),
             "uncertainty_spec": self._describe_artifact(sim_dir, "uncertainty_spec"),
             "outcome_spec": self._describe_artifact(sim_dir, "outcome_spec"),
             "prepared_snapshot": {
@@ -610,12 +748,17 @@ class SimulationManager:
             "prepared_at": datetime.now().isoformat(),
             "mode": "probabilistic",
             "lineage": self._build_lineage_context(state, config_payload),
+            "forecast_brief": (
+                forecast_brief.to_dict() if forecast_brief is not None else None
+            ),
+            "grounding_summary": grounding_summary,
             "feature_metadata": {
                 "probabilistic_mode": True,
                 "legacy_config_compatible": True,
                 "outcome_metrics": [
                     metric["metric_id"] for metric in outcome_spec.get("metrics", [])
                 ],
+                **self._build_forecast_brief_feature_metadata(forecast_brief),
                 **self._build_uncertainty_feature_metadata(uncertainty_spec),
             },
             "artifacts": artifacts,
@@ -721,6 +864,7 @@ class SimulationManager:
         probabilistic_mode: bool = False,
         uncertainty_profile: Optional[str] = None,
         outcome_metrics: Optional[List[Any]] = None,
+        forecast_brief: Optional[Any] = None,
     ) -> SimulationState:
         """
         Prepare the simulation environment end to end.
@@ -743,6 +887,7 @@ class SimulationManager:
             probabilistic_mode: Whether to persist probabilistic sidecar artifacts
             uncertainty_profile: Minimal uncertainty contract identifier for the sidecar
             outcome_metrics: Minimal prepared outcome metrics for the sidecar
+            forecast_brief: Optional forecast-centric control-plane artifact payload
             
         Returns:
             SimulationState
@@ -753,14 +898,22 @@ class SimulationManager:
 
         normalized_outcome_metrics: List[OutcomeMetricDefinition] = []
         normalized_uncertainty_profile: Optional[str] = None
+        normalized_forecast_brief: Optional[ForecastBrief] = None
         if probabilistic_mode:
             normalized_outcome_metrics = self._normalize_outcome_metrics(outcome_metrics)
             normalized_uncertainty_profile = normalize_uncertainty_profile(
                 uncertainty_profile
             )
-        elif uncertainty_profile is not None or outcome_metrics:
+            normalized_forecast_brief = normalize_forecast_brief(
+                forecast_brief,
+                uncertainty_profile=normalized_uncertainty_profile,
+                outcome_metric_ids=[
+                    metric.metric_id for metric in normalized_outcome_metrics
+                ],
+            )
+        elif uncertainty_profile is not None or outcome_metrics or forecast_brief is not None:
             raise ValueError(
-                "uncertainty_profile and outcome_metrics require probabilistic_mode=True"
+                "uncertainty_profile, outcome_metrics, and forecast_brief require probabilistic_mode=True"
             )
         
         try:
@@ -931,12 +1084,28 @@ class SimulationManager:
             self._clear_probabilistic_artifacts(sim_dir)
 
             if probabilistic_mode:
+                grounding_builder = GroundingBundleBuilder(
+                    simulation_data_dir=self.SIMULATION_DATA_DIR
+                )
+                grounding_bundle = grounding_builder.build_bundle(
+                    simulation_id=simulation_id,
+                    project_id=state.project_id,
+                    graph_id=state.graph_id,
+                )
+                grounding_summary = grounding_builder.build_summary(grounding_bundle)
                 uncertainty_spec = self._build_uncertainty_spec(
                     normalized_uncertainty_profile,
                     config_payload,
+                    normalized_forecast_brief,
                 )
                 base_config_path = os.path.join(
                     sim_dir, self.PREPARE_ARTIFACT_FILENAMES["base_config"]
+                )
+                forecast_brief_path = os.path.join(
+                    sim_dir, self.PREPARE_ARTIFACT_FILENAMES["forecast_brief"]
+                )
+                grounding_bundle_path = os.path.join(
+                    sim_dir, self.PREPARE_ARTIFACT_FILENAMES["grounding_bundle"]
                 )
                 uncertainty_path = os.path.join(
                     sim_dir, self.PREPARE_ARTIFACT_FILENAMES["uncertainty_spec"]
@@ -954,6 +1123,13 @@ class SimulationManager:
                     base_config_path,
                     self._build_base_config_artifact(state, config_payload),
                 )
+                self._write_json(grounding_bundle_path, grounding_bundle)
+                if normalized_forecast_brief is not None:
+                    normalized_forecast_brief.grounding_summary = grounding_summary
+                    self._write_json(
+                        forecast_brief_path,
+                        normalized_forecast_brief.to_dict(),
+                    )
                 self._write_json(uncertainty_path, uncertainty_spec.to_dict())
                 self._write_json(outcome_path, outcome_spec)
                 self._write_json(
@@ -961,6 +1137,8 @@ class SimulationManager:
                     self._build_prepared_snapshot(
                         state=state,
                         config_payload=config_payload,
+                        forecast_brief=normalized_forecast_brief,
+                        grounding_summary=grounding_summary,
                         uncertainty_spec=uncertainty_spec,
                         outcome_spec=outcome_spec,
                         sim_dir=sim_dir,
@@ -1059,11 +1237,16 @@ class SimulationManager:
                 "probabilistic_mode": False,
                 "uncertainty_profile": None,
                 "outcome_metrics": [],
+                "forecast_brief": None,
+                "grounding_summary": GroundingBundleBuilder(
+                    simulation_data_dir=self.SIMULATION_DATA_DIR
+                ).build_summary(None),
                 "lineage": {},
                 "feature_metadata": {
                     "probabilistic_mode": False,
                     "legacy_config_compatible": False,
                     "sampling_enabled": False,
+                    "forecast_brief_attached": False,
                 },
                 "artifacts": {
                     name: self._describe_artifact(sim_dir, name)
@@ -1106,6 +1289,12 @@ class SimulationManager:
         prepared_snapshot = self._read_json_if_exists(
             os.path.join(sim_dir, self.PREPARE_ARTIFACT_FILENAMES["prepared_snapshot"])
         )
+        grounding_bundle = self._read_json_if_exists(
+            os.path.join(sim_dir, self.PREPARE_ARTIFACT_FILENAMES["grounding_bundle"])
+        )
+        grounding_summary = GroundingBundleBuilder(
+            simulation_data_dir=self.SIMULATION_DATA_DIR
+        ).build_summary(grounding_bundle)
         feature_metadata = {
             "probabilistic_mode": probabilistic_mode,
             "probabilistic_artifacts_complete": probabilistic_mode,
@@ -1113,7 +1302,17 @@ class SimulationManager:
             "missing_probabilistic_artifacts": missing_probabilistic_artifacts,
             "legacy_config_compatible": artifacts["legacy_config"]["exists"],
             "sampling_enabled": False,
+            "forecast_brief_attached": False,
         }
+        forecast_brief_payload = self._read_json_if_exists(
+            os.path.join(sim_dir, self.PREPARE_ARTIFACT_FILENAMES["forecast_brief"])
+        )
+        if forecast_brief_payload:
+            feature_metadata.update(
+                self._build_forecast_brief_feature_metadata(
+                    ForecastBrief.from_dict(forecast_brief_payload)
+                )
+            )
         if uncertainty_spec:
             feature_metadata.update(
                 self._build_uncertainty_feature_metadata(
@@ -1133,6 +1332,12 @@ class SimulationManager:
             "probabilistic_mode": probabilistic_mode,
             "uncertainty_profile": uncertainty_profile,
             "outcome_metrics": outcome_metric_ids,
+            "forecast_brief": forecast_brief_payload,
+            "grounding_summary": (
+                prepared_snapshot.get("grounding_summary", grounding_summary)
+                if prepared_snapshot
+                else grounding_summary
+            ),
             "lineage": lineage,
             "feature_metadata": feature_metadata,
             "missing_probabilistic_artifacts": missing_probabilistic_artifacts,

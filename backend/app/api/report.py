@@ -3,6 +3,7 @@ Report API routes.
 Provides endpoints for simulation report generation, retrieval, and chat.
 """
 
+import copy
 import os
 import traceback
 import threading
@@ -21,9 +22,9 @@ from ..utils.logger import get_logger
 logger = get_logger('mirofish.api.report')
 
 
-def _is_probabilistic_report_scope(ensemble_id, run_id) -> bool:
+def _is_probabilistic_report_scope(ensemble_id, cluster_id, run_id) -> bool:
     """Treat ensemble-scoped report operations as the probabilistic surface."""
-    return bool(ensemble_id or run_id)
+    return bool(ensemble_id or cluster_id or run_id)
 
 
 def _probabilistic_report_disabled_response():
@@ -46,12 +47,64 @@ def _probabilistic_interaction_disabled_response():
     }), 409
 
 
-def _get_existing_report_for_request(simulation_id, ensemble_id=None, run_id=None):
+def _build_probabilistic_report_context(
+    simulation_id,
+    ensemble_id,
+    *,
+    cluster_id=None,
+    run_id=None,
+):
+    """Build one scoped probabilistic report context on demand."""
+    kwargs = {
+        "simulation_id": simulation_id,
+        "ensemble_id": ensemble_id,
+    }
+    if cluster_id is not None:
+        kwargs["cluster_id"] = cluster_id
+    if run_id is not None:
+        kwargs["run_id"] = run_id
+    return ProbabilisticReportContextBuilder().build_context(**kwargs)
+
+
+def _apply_compare_selection(probabilistic_context, compare_id):
+    """Attach one bounded compare selection without mutating saved report state."""
+    if not probabilistic_context or not compare_id:
+        return probabilistic_context
+
+    compare_catalog = probabilistic_context.get("compare_catalog")
+    options = []
+    if isinstance(compare_catalog, dict):
+        options = compare_catalog.get("options") or []
+
+    selected_compare = next(
+        (
+            option
+            for option in options
+            if isinstance(option, dict) and option.get("compare_id") == compare_id
+        ),
+        None,
+    )
+
+    if selected_compare is None:
+        return probabilistic_context
+
+    context_copy = copy.deepcopy(probabilistic_context)
+    context_copy["selected_compare"] = selected_compare
+    return context_copy
+
+
+def _get_existing_report_for_request(
+    simulation_id,
+    ensemble_id=None,
+    cluster_id=None,
+    run_id=None,
+):
     """Preserve legacy latest-report lookup unless the request is explicitly scoped."""
-    if _is_probabilistic_report_scope(ensemble_id, run_id):
+    if _is_probabilistic_report_scope(ensemble_id, cluster_id, run_id):
         return ReportManager.get_report_for_scope(
             simulation_id,
             ensemble_id=ensemble_id,
+            cluster_id=cluster_id,
             run_id=run_id,
         )
     return ReportManager.get_report_by_simulation(simulation_id)
@@ -184,6 +237,7 @@ def generate_report():
         
         force_regenerate = data.get('force_regenerate', False)
         ensemble_id = data.get('ensemble_id')
+        cluster_id = data.get('cluster_id')
         run_id = data.get('run_id')
         if run_id and not ensemble_id:
             return jsonify({
@@ -191,7 +245,13 @@ def generate_report():
                 "error": "run_id requires ensemble_id"
             }), 400
 
-        if _is_probabilistic_report_scope(ensemble_id, run_id):
+        if cluster_id and not ensemble_id:
+            return jsonify({
+                "success": False,
+                "error": "cluster_id requires ensemble_id"
+            }), 400
+
+        if _is_probabilistic_report_scope(ensemble_id, cluster_id, run_id):
             if not Config.PROBABILISTIC_REPORT_ENABLED:
                 return _probabilistic_report_disabled_response()
         
@@ -210,6 +270,7 @@ def generate_report():
             existing_report = _get_existing_report_for_request(
                 simulation_id,
                 ensemble_id=ensemble_id,
+                cluster_id=cluster_id,
                 run_id=run_id,
             )
             if (
@@ -271,6 +332,7 @@ def generate_report():
                 "graph_ids": graph_scope["graph_ids"],
                 "report_id": report_id,
                 "ensemble_id": ensemble_id,
+                "cluster_id": cluster_id,
                 "run_id": run_id,
             }
         )
@@ -285,6 +347,15 @@ def generate_report():
                     message="Initializing Report Agent..."
                 )
 
+                probabilistic_context = None
+                if ensemble_id:
+                    probabilistic_context = _build_probabilistic_report_context(
+                        simulation_id,
+                        ensemble_id,
+                        cluster_id=cluster_id,
+                        run_id=run_id,
+                    )
+
                 # Create the Report Agent.
                 agent = ReportAgent(
                     graph_id=graph_scope["graph_id"],
@@ -292,7 +363,8 @@ def generate_report():
                     runtime_graph_id=graph_scope["runtime_graph_id"],
                     graph_ids=graph_scope["graph_ids"],
                     simulation_id=simulation_id,
-                    simulation_requirement=simulation_requirement
+                    simulation_requirement=simulation_requirement,
+                    probabilistic_context=probabilistic_context,
                 )
                 
                 # Progress callback.
@@ -314,12 +386,8 @@ def generate_report():
                 report.graph_ids = graph_scope["graph_ids"]
 
                 if ensemble_id:
-                    probabilistic_context = ProbabilisticReportContextBuilder().build_context(
-                        simulation_id=simulation_id,
-                        ensemble_id=ensemble_id,
-                        run_id=run_id,
-                    )
                     report.ensemble_id = ensemble_id
+                    report.cluster_id = cluster_id
                     report.run_id = run_id
                     report.probabilistic_context = probabilistic_context
                 
@@ -395,14 +463,16 @@ def get_generate_status():
         task_id = data.get('task_id')
         simulation_id = data.get('simulation_id')
         ensemble_id = data.get('ensemble_id')
+        cluster_id = data.get('cluster_id')
         run_id = data.get('run_id')
         
         # If simulation_id is provided, first check for an existing completed report.
         if simulation_id:
-            if _is_probabilistic_report_scope(ensemble_id, run_id):
+            if _is_probabilistic_report_scope(ensemble_id, cluster_id, run_id):
                 existing_report = ReportManager.get_report_for_scope(
                     simulation_id,
                     ensemble_id=ensemble_id,
+                    cluster_id=cluster_id,
                     run_id=run_id,
                 )
             else:
@@ -680,9 +750,15 @@ def chat_with_report_agent():
         simulation_id = data.get('simulation_id')
         report_id = data.get('report_id')
         ensemble_id = data.get('ensemble_id')
+        cluster_id = data.get('cluster_id')
         run_id = data.get('run_id')
+        scope_level = data.get('scope_level')
+        compare_id = data.get('compare_id')
         message = data.get('message')
         chat_history = data.get('chat_history', [])
+        explicit_scope_request = any(
+            key in data for key in ('ensemble_id', 'cluster_id', 'run_id', 'scope_level')
+        )
         
         if not simulation_id:
             return jsonify({
@@ -700,6 +776,12 @@ def chat_with_report_agent():
             return jsonify({
                 "success": False,
                 "error": "run_id requires ensemble_id"
+            }), 400
+
+        if cluster_id and not ensemble_id:
+            return jsonify({
+                "success": False,
+                "error": "cluster_id requires ensemble_id"
             }), 400
 
         report_record = None
@@ -736,8 +818,21 @@ def chat_with_report_agent():
             }), 404
 
         if report_record is not None:
-            ensemble_id = ensemble_id or report_record.ensemble_id
-            run_id = run_id or report_record.run_id
+            if explicit_scope_request:
+                ensemble_id = ensemble_id or report_record.ensemble_id
+                if scope_level == 'ensemble':
+                    cluster_id = None
+                    run_id = None
+                elif scope_level == 'cluster':
+                    run_id = None
+            else:
+                ensemble_id = ensemble_id or report_record.ensemble_id
+                cluster_id = cluster_id or getattr(report_record, "cluster_id", None)
+                run_id = run_id or report_record.run_id
+
+        if _is_probabilistic_report_scope(ensemble_id, cluster_id, run_id):
+            if not Config.PROBABILISTIC_INTERACTION_ENABLED:
+                return _probabilistic_interaction_disabled_response()
 
         try:
             graph_scope = _resolve_report_graph_scope(
@@ -754,6 +849,27 @@ def chat_with_report_agent():
             }), (404 if run_id else 400)
         
         simulation_requirement = project.simulation_requirement or ""
+        probabilistic_context = (
+            report_record.probabilistic_context if report_record else None
+        )
+        if explicit_scope_request and ensemble_id:
+            probabilistic_context = _build_probabilistic_report_context(
+                simulation_id,
+                ensemble_id,
+                cluster_id=cluster_id,
+                run_id=run_id,
+            )
+        elif probabilistic_context is None and ensemble_id:
+            probabilistic_context = _build_probabilistic_report_context(
+                simulation_id,
+                ensemble_id,
+                cluster_id=cluster_id,
+                run_id=run_id,
+            )
+        probabilistic_context = _apply_compare_selection(
+            probabilistic_context,
+            compare_id,
+        )
         
         # Create the agent and start the chat.
         agent = ReportAgent(
@@ -764,9 +880,7 @@ def chat_with_report_agent():
             simulation_id=simulation_id,
             simulation_requirement=simulation_requirement,
             report_id=report_id,
-            probabilistic_context=(
-                report_record.probabilistic_context if report_record else None
-            ),
+            probabilistic_context=probabilistic_context,
         )
         
         result = agent.chat(message=message, chat_history=chat_history)

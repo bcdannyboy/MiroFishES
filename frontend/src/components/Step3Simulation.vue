@@ -156,15 +156,15 @@
         </button>
         <button
           class="action-btn primary"
-          :disabled="phase !== 2 || isGeneratingReport || !step3ReportState.enabled"
+          :disabled="phase !== 2 || isGeneratingReport || !step3ReportState.enabled || !reportScopeReady"
           @click="handleNextStep"
         >
           <span v-if="isGeneratingReport" class="loading-spinner-small"></span>
           {{ isGeneratingReport ? 'Starting...' : step3ReportState.buttonLabel }}
           <span v-if="step3ReportState.enabled && !isGeneratingReport" class="arrow-icon">-></span>
         </button>
-        <span v-if="!step3ReportState.enabled" class="runtime-note">
-          {{ step3ReportState.helperText }}
+        <span v-if="step3ReportHelperText" class="runtime-note">
+          {{ step3ReportHelperText }}
         </span>
       </div>
     </div>
@@ -307,6 +307,63 @@
                   {{ warning }}
                 </span>
               </div>
+            </div>
+          </div>
+          <div
+            v-if="step3ReportState.enabled"
+            class="probabilistic-scope-panel"
+            data-testid="probabilistic-report-scope-panel"
+          >
+            <div class="probabilistic-timeline-header">
+              <span class="metric-label">Step 4 Forecast Scope</span>
+              <span class="probabilistic-card-meta mono">{{ reportScopeState.level.toUpperCase() }}</span>
+            </div>
+            <p class="probabilistic-copy">
+              Forecast mode can now generate Step 4 from ensemble, scenario-family, or run scope. All scopes stay empirical or observational unless stronger artifacts exist.
+            </p>
+            <div class="probabilistic-scope-toggle">
+              <button
+                class="probabilistic-scope-btn"
+                :class="{ active: selectedReportScopeLevel === 'ensemble' }"
+                @click="selectReportScopeLevel('ensemble')"
+              >
+                Ensemble
+              </button>
+              <button
+                class="probabilistic-scope-btn"
+                :class="{ active: selectedReportScopeLevel === 'cluster' }"
+                :disabled="scenarioFamilyOptions.length === 0"
+                @click="selectReportScopeLevel('cluster')"
+              >
+                Scenario Family
+              </button>
+              <button
+                class="probabilistic-scope-btn"
+                :class="{ active: selectedReportScopeLevel === 'run' }"
+                :disabled="!selectedRunId"
+                @click="selectReportScopeLevel('run')"
+              >
+                Selected Run
+              </button>
+            </div>
+            <div
+              v-if="selectedReportScopeLevel === 'cluster' && scenarioFamilyOptions.length > 0"
+              class="probabilistic-scope-list"
+            >
+              <button
+                v-for="cluster in scenarioFamilyOptions"
+                :key="cluster.clusterId"
+                class="probabilistic-scope-cluster"
+                :class="{ active: cluster.clusterId === activeReportClusterId }"
+                @click="selectReportCluster(cluster.clusterId)"
+              >
+                <span>{{ cluster.familyLabel }}</span>
+                <span class="mono">{{ cluster.clusterId }}</span>
+              </button>
+            </div>
+            <div class="probabilistic-status-panel tone-neutral">
+              <span class="metric-label">Selected Step 4 Scope</span>
+              <p class="probabilistic-status-copy">{{ reportScopeState.summary }}</p>
             </div>
           </div>
         </div>
@@ -528,9 +585,17 @@ const props = defineProps({
     type: String,
     default: null
   },
+  clusterId: {
+    type: String,
+    default: null
+  },
   runId: {
     type: String,
     default: null
+  },
+  reportScopeLevel: {
+    type: String,
+    default: 'ensemble'
   },
   minutesPerRound: {
     type: Number,
@@ -560,6 +625,8 @@ const logContent = ref(null)
 
 const ensembleId = ref('')
 const selectedRunId = ref('')
+const selectedReportScopeLevel = ref('ensemble')
+const selectedReportClusterId = ref('')
 const selectedRunDetail = ref(null)
 const probabilisticEnsembleStatus = ref(null)
 const probabilisticRunSummaries = ref([])
@@ -765,6 +832,179 @@ const probabilisticActionRoundsMeta = computed(() => {
   })
 })
 
+const normalizeOptionalId = (value) => {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const trimmed = value.trim()
+  return trimmed.length ? trimmed : ''
+}
+
+const scenarioFamilyOptions = computed(() => {
+  const clusters = Array.isArray(probabilisticClustersArtifact.value?.clusters)
+    ? probabilisticClustersArtifact.value.clusters
+    : []
+
+  return clusters
+    .filter((cluster) => cluster && typeof cluster === 'object')
+    .map((cluster) => {
+      const runCount = Number(cluster.run_count || cluster.support_count || 0)
+      const preparedRunCount = Number(
+        cluster.prepared_run_count
+        || probabilisticSummaryArtifact.value?.ensemble_facts?.support?.prepared_run_count
+        || probabilisticEnsembleStatus.value?.total_runs
+        || probabilisticRunSummaries.value.length
+        || 0
+      )
+      return {
+        clusterId: normalizeOptionalId(cluster.cluster_id),
+        familyLabel: cluster.family_label || cluster.cluster_id || 'Scenario family',
+        familySummary: cluster.family_summary || '',
+        supportLabel: preparedRunCount > 0
+          ? `Observed in ${runCount} of ${preparedRunCount} runs`
+          : `Observed in ${runCount} runs`,
+        prototypeRunId: normalizeOptionalId(cluster.prototype_run_id),
+        memberRunIds: Array.isArray(cluster.member_run_ids) ? cluster.member_run_ids : [],
+        comparisonHints: Array.isArray(cluster.comparison_hints) ? cluster.comparison_hints : []
+      }
+    })
+    .filter((cluster) => cluster.clusterId)
+})
+
+const selectedRunClusterId = computed(() => {
+  if (!selectedRunId.value) {
+    return ''
+  }
+
+  return scenarioFamilyOptions.value.find((cluster) => (
+    Array.isArray(cluster.memberRunIds)
+      && cluster.memberRunIds.includes(selectedRunId.value)
+  ))?.clusterId || ''
+})
+
+const activeReportClusterId = computed(() => {
+  if (selectedReportScopeLevel.value === 'cluster') {
+    return (
+      normalizeOptionalId(selectedReportClusterId.value)
+      || normalizeOptionalId(props.clusterId)
+      || selectedRunClusterId.value
+    )
+  }
+
+  if (selectedReportScopeLevel.value === 'run') {
+    return (
+      selectedRunClusterId.value
+      || normalizeOptionalId(selectedReportClusterId.value)
+      || normalizeOptionalId(props.clusterId)
+    )
+  }
+
+  return ''
+})
+
+const selectedReportCluster = computed(() => (
+  scenarioFamilyOptions.value.find((cluster) => cluster.clusterId === activeReportClusterId.value) || null
+))
+
+const reportScopeState = computed(() => {
+  if (!showProbabilisticShell.value) {
+    return {
+      level: 'legacy',
+      ensembleId: null,
+      clusterId: null,
+      runId: null,
+      label: 'Legacy report scope',
+      summary: 'Step 4 will stay on the legacy single-run report path for this simulation.'
+    }
+  }
+
+  if (selectedReportScopeLevel.value === 'cluster') {
+    const clusterId = activeReportClusterId.value
+    const cluster = selectedReportCluster.value
+    return {
+      level: 'cluster',
+      ensembleId: ensembleId.value || null,
+      clusterId: clusterId || null,
+      runId: null,
+      label: cluster?.familyLabel || (clusterId ? `Scenario family ${clusterId}` : 'Scenario family'),
+      summary: cluster
+        ? `${cluster.familyLabel} stays at scenario-family scope. ${cluster.supportLabel}. Representative run ${cluster.prototypeRunId || '-'} remains descriptive only.`
+        : (clusterId
+          ? `Scenario family ${clusterId} is selected for Step 4. Family metadata will populate once the cluster artifact is available.`
+          : 'Select a scenario family before generating a cluster-scoped report.')
+    }
+  }
+
+  if (selectedReportScopeLevel.value === 'run') {
+    return {
+      level: 'run',
+      ensembleId: ensembleId.value || null,
+      clusterId: activeReportClusterId.value || null,
+      runId: selectedRunId.value || null,
+      label: selectedRunId.value ? `Run ${selectedRunId.value}` : 'Selected run',
+      summary: selectedRunId.value
+        ? `Run ${selectedRunId.value} remains the Step 4 focus. ${activeReportClusterId.value ? `Cluster membership ${activeReportClusterId.value} will travel with the report scope.` : 'No cluster membership is attached yet.'}`
+        : 'Select a stored run before generating a run-scoped report.'
+    }
+  }
+
+  return {
+    level: 'ensemble',
+    ensembleId: ensembleId.value || null,
+    clusterId: null,
+    runId: null,
+    label: ensembleId.value ? `Ensemble ${ensembleId.value}` : 'Ensemble scope',
+    summary: ensembleId.value
+      ? `Step 4 will use ensemble scope for ensemble ${ensembleId.value}. Scenario-family clustering and sensitivity stay available as empirical and observational context.`
+      : 'Probabilistic Step 4 requires an ensemble identifier from Step 2.'
+  }
+})
+
+const reportScopeReady = computed(() => {
+  if (!showProbabilisticShell.value) {
+    return true
+  }
+
+  if (!ensembleId.value) {
+    return false
+  }
+
+  if (selectedReportScopeLevel.value === 'cluster') {
+    return Boolean(activeReportClusterId.value)
+  }
+
+  if (selectedReportScopeLevel.value === 'run') {
+    return Boolean(selectedRunId.value)
+  }
+
+  return true
+})
+
+const step3ReportHelperText = computed(() => {
+  if (!step3ReportState.value.enabled) {
+    return step3ReportState.value.helperText
+  }
+
+  if (!showProbabilisticShell.value) {
+    return ''
+  }
+
+  if (!ensembleId.value) {
+    return 'Probabilistic Step 4 requires an ensemble identifier from Step 2.'
+  }
+
+  if (selectedReportScopeLevel.value === 'cluster' && !activeReportClusterId.value) {
+    return 'Select a scenario family before generating a cluster-scoped report.'
+  }
+
+  if (selectedReportScopeLevel.value === 'run' && !selectedRunId.value) {
+    return 'Select a stored run before generating a run-scoped report.'
+  }
+
+  return ''
+})
+
 const probabilisticPlatformSkewNotice = computed(() => {
   const skewCopy = deriveProbabilisticPlatformSkewCopy({
     runStatus: runStatus.value
@@ -960,6 +1200,21 @@ const syncProbabilisticIdsFromProps = () => {
   selectedRunId.value = typeof props.runId === 'string' ? props.runId.trim() : ''
 }
 
+const resetReportScopeSelection = () => {
+  selectedReportScopeLevel.value = (
+    props.reportScopeLevel === 'run'
+    || props.reportScopeLevel === 'cluster'
+    || props.reportScopeLevel === 'ensemble'
+  )
+    ? props.reportScopeLevel
+    : (selectedRunId.value
+      ? 'run'
+      : (normalizeOptionalId(props.clusterId)
+        ? 'cluster'
+        : 'ensemble'))
+  selectedReportClusterId.value = normalizeOptionalId(props.clusterId)
+}
+
 const resetRunViewState = () => {
   runStatus.value = {}
   allActions.value = []
@@ -998,6 +1253,7 @@ const resetAllState = () => {
   probabilisticRuntimeIssue.value = ''
   resetRunViewState()
   syncProbabilisticIdsFromProps()
+  resetReportScopeSelection()
   stopPolling()
 }
 
@@ -1005,8 +1261,32 @@ const buildProbabilisticRouteQuery = (runId) => buildSimulationRunRouteQuery({
   maxRounds: props.maxRounds,
   runtimeMode: props.runtimeMode,
   ensembleId: ensembleId.value,
-  runId
+  clusterId: selectedReportScopeLevel.value === 'ensemble'
+    ? null
+    : (activeReportClusterId.value || null),
+  runId,
+  scopeLevel: selectedReportScopeLevel.value
 })
+
+const selectReportScopeLevel = (level) => {
+  selectedReportScopeLevel.value = level
+
+  if (level === 'cluster' && !selectedReportClusterId.value) {
+    selectedReportClusterId.value = (
+      normalizeOptionalId(props.clusterId)
+      || selectedRunClusterId.value
+      || scenarioFamilyOptions.value[0]?.clusterId
+      || ''
+    )
+  }
+}
+
+const selectReportCluster = (clusterId) => {
+  selectedReportClusterId.value = normalizeOptionalId(clusterId)
+  if (selectedReportClusterId.value) {
+    selectedReportScopeLevel.value = 'cluster'
+  }
+}
 
 const updateSelectedProbabilisticRun = async (
   runId,
@@ -1819,23 +2099,25 @@ const handleNextStep = async () => {
   addLog('Starting report generation...')
 
   try {
-    if (
-      props.runtimeMode === 'probabilistic'
-      && (!ensembleId.value || !selectedRunId.value)
-    ) {
-      addLog(
-        probabilisticRuntimeState.value.runtimeError
-        || 'Probabilistic Step 4 requires explicit ensemble and run identifiers from Step 3.'
-      )
+    if (showProbabilisticShell.value && !reportScopeReady.value) {
+      addLog(step3ReportHelperText.value || 'Probabilistic Step 4 scope is incomplete.')
       isGeneratingReport.value = false
       return
     }
 
+    const reportScope = reportScopeState.value
+    addLog(
+      showProbabilisticShell.value
+        ? `Generating a ${reportScope.level}-scoped forecast report from ensemble ${reportScope.ensembleId || '-'}.`
+        : 'Generating the legacy simulation report.'
+    )
+
     const res = await generateReport(buildReportGenerationRequest({
       simulationId: props.simulationId,
       runtimeMode: props.runtimeMode,
-      ensembleId: ensembleId.value,
-      runId: selectedRunId.value,
+      ensembleId: reportScope.ensembleId,
+      clusterId: reportScope.clusterId,
+      runId: reportScope.runId,
       forceRegenerate: true
     }))
 
@@ -1848,8 +2130,10 @@ const handleNextStep = async () => {
       }
       const probabilisticQuery = buildSimulationRunRouteQuery({
         runtimeMode: props.runtimeMode,
-        ensembleId: ensembleId.value,
-        runId: selectedRunId.value
+        ensembleId: reportScope.ensembleId,
+        clusterId: reportScope.clusterId,
+        runId: reportScope.runId,
+        scopeLevel: reportScope.level
       })
       if (Object.keys(probabilisticQuery).length > 0) {
         reportRoute.query = probabilisticQuery
@@ -1953,11 +2237,34 @@ watch(() => props.systemLogs?.length, () => {
 })
 
 watch(
+  () => [props.clusterId, selectedRunClusterId.value, scenarioFamilyOptions.value.length, showProbabilisticShell.value],
+  () => {
+    if (!showProbabilisticShell.value) {
+      return
+    }
+
+    const preferredClusterId = (
+      normalizeOptionalId(props.clusterId)
+      || selectedRunClusterId.value
+      || scenarioFamilyOptions.value[0]?.clusterId
+      || ''
+    )
+
+    if (!selectedReportClusterId.value || !scenarioFamilyOptions.value.some((cluster) => cluster.clusterId === selectedReportClusterId.value)) {
+      selectedReportClusterId.value = preferredClusterId
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   () => [
     props.simulationId,
     props.runtimeMode,
     props.ensembleId,
+    props.clusterId,
     props.runId,
+    props.reportScopeLevel,
     props.maxRounds
   ],
   () => {
@@ -2519,6 +2826,69 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
+}
+
+.probabilistic-scope-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.probabilistic-scope-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.probabilistic-scope-btn,
+.probabilistic-scope-cluster {
+  border: 1px solid #D1D5DB;
+  border-radius: 999px;
+  background: #FFF;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.probabilistic-scope-btn {
+  padding: 8px 12px;
+}
+
+.probabilistic-scope-cluster {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  text-align: left;
+}
+
+.probabilistic-scope-btn:hover:not(:disabled),
+.probabilistic-scope-cluster:hover:not(:disabled) {
+  border-color: #94A3B8;
+  background: #F8FAFC;
+}
+
+.probabilistic-scope-btn.active,
+.probabilistic-scope-cluster.active {
+  border-color: #111827;
+  background: #F3F4F6;
+}
+
+.probabilistic-scope-btn:disabled,
+.probabilistic-scope-cluster:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.probabilistic-scope-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .probabilistic-analytics-section {

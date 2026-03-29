@@ -219,3 +219,90 @@ def test_malformed_specs_fail_clearly():
             uncertainty_spec=uncertainty_spec,
             resolution_seed=10,
         )
+
+
+def test_resolver_consumes_design_rows_and_records_assumption_ledger():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["event_config"] = {"narrative_direction": "neutral"}
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        random_variables=[
+            models.RandomVariableSpec(
+                field_path="agent_configs[0].activity_level",
+                distribution="uniform",
+                parameters={"low": 0.1, "high": 0.9},
+            ),
+            models.RandomVariableSpec(
+                field_path="platform.weights.recency",
+                distribution="uniform",
+                parameters={"low": 0.2, "high": 0.8},
+            ),
+        ],
+        conditional_variables=[
+            models.ConditionalVariableSpec(
+                variable=models.RandomVariableSpec(
+                    field_path="platform.weights.recency",
+                    distribution="fixed",
+                    parameters={"value": 0.9},
+                ),
+                condition_field_path="event_config.narrative_direction",
+                operator="eq",
+                condition_value="crisis",
+            )
+        ],
+        scenario_templates=[
+            models.ScenarioTemplateSpec(
+                template_id="crisis_case",
+                label="Crisis Case",
+                field_overrides={"event_config.narrative_direction": "crisis"},
+            )
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            numeric_dimensions=[
+                "agent_configs[0].activity_level",
+                "platform.weights.recency",
+            ],
+            scenario_template_ids=["crisis_case"],
+        ),
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-001",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=77,
+        experiment_design_row={
+            "row_index": 0,
+            "normalized_coordinates": {
+                "agent_configs[0].activity_level": 0.25,
+                "platform.weights.recency": 0.25,
+            },
+            "stratum_indices": {
+                "agent_configs[0].activity_level": 0,
+                "platform.weights.recency": 0,
+            },
+            "scenario_template_ids": ["crisis_case"],
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["agent_configs"][0]["activity_level"] == pytest.approx(0.3)
+    assert resolved["event_config"]["narrative_direction"] == "crisis"
+    assert resolved["platform"]["weights"]["recency"] == 0.9
+    assert manifest.assumption_ledger["design_method"] == "latin-hypercube"
+    assert manifest.assumption_ledger["scenario_template_ids"] == ["crisis_case"]
+    assert manifest.assumption_ledger["activated_conditions"] == [
+        "platform.weights.recency"
+    ]
+    assert manifest.assumption_ledger["design_row"]["normalized_coordinates"][
+        "agent_configs[0].activity_level"
+    ] == pytest.approx(0.25)

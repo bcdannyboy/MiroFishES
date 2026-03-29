@@ -13,6 +13,10 @@ from typing import Dict, Any, List, Optional
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from ..config import Config
+from .grounding import (
+    GROUNDING_GENERATOR_VERSION,
+    GROUNDING_SCHEMA_VERSION,
+)
 
 
 class ProjectStatus(str, Enum):
@@ -129,6 +133,18 @@ class ProjectManager:
     def _get_project_text_path(cls, project_id: str) -> str:
         """Return the extracted text storage path for the project."""
         return os.path.join(cls._get_project_dir(project_id), 'extracted_text.txt')
+
+    @classmethod
+    def _get_source_manifest_path(cls, project_id: str) -> str:
+        """Return the source-manifest artifact path for the project."""
+        return os.path.join(cls._get_project_dir(project_id), 'source_manifest.json')
+
+    @classmethod
+    def _get_graph_build_summary_path(cls, project_id: str) -> str:
+        """Return the graph-build summary artifact path for the project."""
+        return os.path.join(
+            cls._get_project_dir(project_id), 'graph_build_summary.json'
+        )
     
     @classmethod
     def create_project(cls, name: str = "Unnamed Project") -> Project:
@@ -170,9 +186,7 @@ class ProjectManager:
         """Save project metadata."""
         project.updated_at = datetime.now().isoformat()
         meta_path = cls._get_project_meta_path(project.project_id)
-        
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(project.to_dict(), f, ensure_ascii=False, indent=2)
+        cls._write_json(meta_path, project.to_dict())
     
     @classmethod
     def get_project(cls, project_id: str) -> Optional[Project]:
@@ -271,6 +285,108 @@ class ProjectManager:
             "path": file_path,
             "size": file_size
         }
+
+    @classmethod
+    def _write_json(cls, path: str, payload: Dict[str, Any]) -> None:
+        """Persist a JSON artifact with stable formatting."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _read_json_if_exists(cls, path: str) -> Optional[Dict[str, Any]]:
+        """Read one JSON artifact if it exists."""
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    @classmethod
+    def save_source_manifest(cls, project_id: str, payload: Dict[str, Any]) -> None:
+        """Persist the uploaded-source provenance artifact."""
+        cls._write_json(cls._get_source_manifest_path(project_id), payload)
+
+    @classmethod
+    def get_source_manifest(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load the uploaded-source provenance artifact when present."""
+        return cls._read_json_if_exists(cls._get_source_manifest_path(project_id))
+
+    @classmethod
+    def save_graph_build_summary(
+        cls, project_id: str, payload: Dict[str, Any]
+    ) -> None:
+        """Persist the graph-build provenance artifact."""
+        cls._write_json(cls._get_graph_build_summary_path(project_id), payload)
+
+    @classmethod
+    def get_graph_build_summary(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load the graph-build provenance artifact when present."""
+        return cls._read_json_if_exists(cls._get_graph_build_summary_path(project_id))
+
+    @classmethod
+    def delete_graph_build_summary(cls, project_id: str) -> None:
+        """Remove a stale graph-build summary artifact when the graph scope resets."""
+        path = cls._get_graph_build_summary_path(project_id)
+        if os.path.exists(path):
+            os.remove(path)
+
+    @classmethod
+    def describe_grounding_artifacts(cls, project_id: str) -> Dict[str, Dict[str, Any]]:
+        """Return compact artifact metadata without inlining full grounding payloads."""
+        project_dir = cls._get_project_dir(project_id)
+        return {
+            "source_manifest": cls._describe_json_artifact(
+                cls._get_source_manifest_path(project_id),
+                project_dir=project_dir,
+                artifact_name="source_manifest",
+            ),
+            "graph_build_summary": cls._describe_json_artifact(
+                cls._get_graph_build_summary_path(project_id),
+                project_dir=project_dir,
+                artifact_name="graph_build_summary",
+            ),
+        }
+
+    @classmethod
+    def _describe_json_artifact(
+        cls,
+        path: str,
+        *,
+        project_dir: str,
+        artifact_name: str,
+    ) -> Dict[str, Any]:
+        """Describe one project artifact with stable filename and version metadata."""
+        exists = os.path.exists(path)
+        description = {
+            "artifact_type": artifact_name,
+            "filename": os.path.basename(path),
+            "path": path,
+            "relative_path": os.path.relpath(path, project_dir),
+            "exists": exists,
+        }
+        if not exists:
+            description["schema_version"] = GROUNDING_SCHEMA_VERSION
+            description["generator_version"] = GROUNDING_GENERATOR_VERSION
+            return description
+
+        description["size_bytes"] = os.path.getsize(path)
+        payload = cls._read_json_if_exists(path)
+        if payload:
+            for field_name in (
+                "artifact_type",
+                "schema_version",
+                "generator_version",
+                "created_at",
+                "generated_at",
+                "status",
+                "project_id",
+                "graph_id",
+                "source_count",
+                "chunk_count",
+            ):
+                if field_name in payload:
+                    description[field_name] = payload[field_name]
+        return description
     
     @classmethod
     def save_extracted_text(cls, project_id: str, text: str) -> None:

@@ -213,7 +213,7 @@ def test_extract_run_metrics_computes_first_pass_catalog_from_run_logs(
     assert payload["timeline_summaries"]["last_round_num"] == 2
     assert payload["top_agents"][0]["agent_name"] == "alpha"
     assert payload["top_agents"][0]["total_actions"] == 2
-    assert payload["top_topics"][0] == {"topic": "seed", "mentions": 3}
+    assert payload["top_topics"][0] == {"topic": "seed", "mentions": 3, "count": 3}
     assert payload["quality_checks"]["status"] == "complete"
     assert payload["quality_checks"]["missing_artifacts"] == []
     assert payload["quality_checks"]["timeline_matches_total_actions"] is True
@@ -341,8 +341,8 @@ def test_extract_run_metrics_computes_grounded_binary_timing_mix_and_topic_metri
     assert metric_values["content.top_topic_share"]["value"] == pytest.approx(3 / 5)
     assert metric_values["content.dominant_topic"]["value"] == "seed"
     assert payload["top_topics"][:2] == [
-        {"topic": "seed", "mentions": 3},
-        {"topic": "markets", "mentions": 2},
+        {"topic": "seed", "mentions": 3, "count": 3},
+        {"topic": "markets", "mentions": 2, "count": 2},
     ]
 
 
@@ -524,6 +524,237 @@ def test_extract_run_metrics_computes_richer_grounded_metrics(
     assert metric_values["content.unique_topics_mentioned"]["value"] == 2
     assert metric_values["content.top_topic_share"]["value"] == pytest.approx(0.5)
     assert metric_values["content.dominant_topic"]["value"] == "seed"
+
+
+def test_extract_run_metrics_computes_richer_event_reach_band_and_tail_metrics(
+    simulation_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    extractor_module = _load_outcome_extractor_module()
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-metrics-outcome-wave",
+        metric_ids=[
+            "simulation.time_to_first_action_seconds",
+            "simulation.active_round_share",
+            "simulation.actions_per_active_round_cv",
+            "simulation.top_agent_action_share",
+            "simulation.top_2_agent_action_share",
+            "simulation.max_round_action_share",
+            "simulation.top_agent_action_share_ge_0_5",
+            "platform.twitter.time_to_first_action_seconds",
+            "platform.reddit.time_to_first_action_seconds",
+            "platform.action_balance_gap_ge_0_5",
+            "platform.action_balance_band",
+            "cross_platform.completion_lag_seconds",
+            "cross_platform.topic_transfer_observed",
+            "cross_platform.topic_transfer_lag_seconds",
+            "content.top_topic_share_ge_0_5",
+            "content.dominant_topic_agent_reach",
+            "content.dominant_topic_platform_reach",
+            "content.dominant_topic_round_reach",
+            "content.topic_concentration_hhi",
+            "content.topic_concentration_band",
+        ],
+        hot_topics=["launch", "seed"],
+    )
+
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "launch launch seed",
+                    "topic": {"label": "launch"},
+                    "topics": [{"name": "launch"}],
+                },
+                "success": True,
+            },
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:04:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "QUOTE_POST",
+                "action_args": {
+                    "quote_content": "launch update",
+                    "topics": [{"topic": "launch"}],
+                },
+                "success": True,
+            },
+            {
+                "round": 5,
+                "timestamp": "2026-03-08T12:20:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "seed launch spike",
+                    "topics": ["launch"],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:29:00",
+                "platform": "twitter",
+                "total_rounds": 5,
+                "total_actions": 3,
+            },
+        ],
+    )
+    _write_jsonl(
+        run_dir / "reddit" / "actions.jsonl",
+        [
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:08:00",
+                "platform": "reddit",
+                "agent_id": 2,
+                "agent_name": "beta",
+                "action_type": "CREATE_COMMENT",
+                "action_args": {
+                    "content": "launch thread",
+                    "topic": {"name": "launch"},
+                },
+                "success": True,
+            },
+            {
+                "round": 3,
+                "timestamp": "2026-03-08T12:12:00",
+                "platform": "reddit",
+                "agent_id": 3,
+                "agent_name": "gamma",
+                "action_type": "CREATE_COMMENT",
+                "action_args": {
+                    "content": "seed follow-up",
+                    "topics": [{"label": "seed"}],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:31:00",
+                "platform": "reddit",
+                "total_rounds": 3,
+                "total_actions": 2,
+            },
+        ],
+    )
+
+    extractor = extractor_module.OutcomeExtractor(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    payload = extractor.extract_run_metrics(
+        simulation_id="sim-metrics-outcome-wave",
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    metric_values = payload["metric_values"]
+
+    assert metric_values["simulation.time_to_first_action_seconds"]["value"] == 300.0
+    assert metric_values["simulation.active_round_share"]["value"] == pytest.approx(4 / 12)
+    assert metric_values["simulation.actions_per_active_round_cv"]["value"] == pytest.approx(
+        0.3464101615
+    )
+    assert metric_values["simulation.top_agent_action_share"]["value"] == pytest.approx(3 / 5)
+    assert metric_values["simulation.top_2_agent_action_share"]["value"] == pytest.approx(4 / 5)
+    assert metric_values["simulation.max_round_action_share"]["value"] == pytest.approx(2 / 5)
+    assert metric_values["simulation.top_agent_action_share_ge_0_5"]["value"] is True
+
+    assert metric_values["platform.twitter.time_to_first_action_seconds"]["value"] == 300.0
+    assert metric_values["platform.reddit.time_to_first_action_seconds"]["value"] == 780.0
+    assert metric_values["platform.action_balance_gap_ge_0_5"]["value"] is False
+    assert metric_values["platform.action_balance_band"]["value"] == "tilted"
+
+    assert metric_values["cross_platform.completion_lag_seconds"]["value"] == 120.0
+    assert metric_values["cross_platform.topic_transfer_observed"]["value"] is True
+    assert metric_values["cross_platform.topic_transfer_lag_seconds"]["value"] == 480.0
+
+    assert metric_values["content.top_topic_share_ge_0_5"]["value"] is True
+    assert metric_values["content.dominant_topic_agent_reach"]["value"] == 2
+    assert metric_values["content.dominant_topic_platform_reach"]["value"] == 2
+    assert metric_values["content.dominant_topic_round_reach"]["value"] == 3
+    assert metric_values["content.topic_concentration_hhi"]["value"] == pytest.approx(97 / 169)
+    assert metric_values["content.topic_concentration_band"]["value"] == "focused"
+    assert payload["top_topics"][:2] == [
+        {"topic": "launch", "mentions": 9, "count": 9},
+        {"topic": "seed", "mentions": 4, "count": 4},
+    ]
+
+
+def test_extract_run_metrics_emits_warning_when_requested_cross_platform_metrics_are_undefined(
+    simulation_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    extractor_module = _load_outcome_extractor_module()
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-metrics-outcome-wave-partial",
+        metric_ids=[
+            "platform.reddit.time_to_first_action_seconds",
+            "cross_platform.completion_lag_seconds",
+            "cross_platform.topic_transfer_observed",
+            "cross_platform.topic_transfer_lag_seconds",
+        ],
+        run_status="failed",
+    )
+
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {"content": "launch alert", "topic": "launch"},
+                "success": True,
+            }
+        ],
+    )
+
+    extractor = extractor_module.OutcomeExtractor(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    payload = extractor.extract_run_metrics(
+        simulation_id="sim-metrics-outcome-wave-partial",
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    metric_values = payload["metric_values"]
+
+    assert metric_values["platform.reddit.time_to_first_action_seconds"]["value"] is None
+    assert "insufficient_platform_time_to_first_action_evidence" in metric_values[
+        "platform.reddit.time_to_first_action_seconds"
+    ]["warnings"]
+
+    assert metric_values["cross_platform.completion_lag_seconds"]["value"] is None
+    assert "insufficient_cross_platform_completion_evidence" in metric_values[
+        "cross_platform.completion_lag_seconds"
+    ]["warnings"]
+
+    assert metric_values["cross_platform.topic_transfer_observed"]["value"] is None
+    assert "insufficient_cross_platform_topic_transfer_evidence" in metric_values[
+        "cross_platform.topic_transfer_observed"
+    ]["warnings"]
+
+    assert metric_values["cross_platform.topic_transfer_lag_seconds"]["value"] is None
+    assert "insufficient_cross_platform_topic_transfer_evidence" in metric_values[
+        "cross_platform.topic_transfer_lag_seconds"
+    ]["warnings"]
 
 
 def test_extract_run_metrics_respects_single_platform_run_state_for_completeness(

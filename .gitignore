@@ -45,10 +45,14 @@ test-results/
 # Playwright local scratch output
 .playwright-cli/
 output/playwright/report/
+output/playwright/live-operator/operator-pass-*.json
+.worktrees/
 
 # Cursor
 .cursor/
 .claude/
+.claude-flow/
+.swarm/
 
 # Documents and test programs
 mydoc/

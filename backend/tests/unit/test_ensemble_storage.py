@@ -339,6 +339,68 @@ def test_create_ensemble_resolves_distinct_run_configs_for_balanced_profile(
     assert run_two["resolved_config"]["sampled_values"] == run_two["run_manifest"]["resolved_values"]
 
 
+def test_create_ensemble_persists_experiment_design_and_assumption_ledgers(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    probabilistic_module = _load_probabilistic_module()
+
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 4, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": ["base_case", "viral_spike"],
+        },
+    )
+
+    ensemble_module = _load_ensemble_module()
+    ensemble_manager = ensemble_module.EnsembleManager(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+
+    created = ensemble_manager.create_ensemble(
+        simulation_id=state.simulation_id,
+        ensemble_spec=probabilistic_module.EnsembleSpec(
+            run_count=4,
+            max_concurrency=1,
+            root_seed=11,
+        ),
+    )
+
+    ensemble_dir = Path(created["path"])
+    experiment_design = json.loads(
+        (ensemble_dir / "experiment_design.json").read_text(encoding="utf-8")
+    )
+    run_one = ensemble_manager.load_run(state.simulation_id, created["ensemble_id"], "0001")
+    run_two = ensemble_manager.load_run(state.simulation_id, created["ensemble_id"], "0002")
+
+    assert experiment_design["artifact_type"] == "experiment_design"
+    assert experiment_design["method"] == "latin-hypercube"
+    assert experiment_design["rows"][0]["run_id"] == "0001"
+    assert created["state"]["source_artifacts"]["experiment_design"] == "experiment_design.json"
+    assert run_one["run_manifest"]["assumption_ledger"]["design_method"] == "latin-hypercube"
+    assert run_one["run_manifest"]["assumption_ledger"]["design_row"]["row_index"] == 0
+    assert run_one["resolved_config"]["assumption_ledger"] == run_one["run_manifest"]["assumption_ledger"]
+    assert run_one["run_manifest"]["assumption_ledger"]["scenario_template_ids"] == ["base_case"]
+    assert run_two["run_manifest"]["assumption_ledger"]["scenario_template_ids"] == ["viral_spike"]
+
+
 def test_load_helpers_normalize_prefixed_public_ids(
     simulation_data_dir, monkeypatch
 ):

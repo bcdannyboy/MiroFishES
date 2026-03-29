@@ -81,6 +81,7 @@ def _write_ensemble_root(
                 "artifact_paths": {"resolved_config": "resolved_config.json"},
                 "generated_at": payload.get("generated_at", f"2026-03-08T00:00:0{run_id[-1]}"),
                 "status": payload.get("run_status", "completed"),
+                "assumption_ledger": payload.get("assumption_ledger", {}),
             },
         )
         _write_json(
@@ -122,6 +123,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
                 "run_id": "0001",
                 "root_seed": 11,
                 "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                },
                 "metrics_payload": {
                     "extracted_at": "2026-03-08T10:00:01",
                     "quality_checks": {"status": "complete", "run_status": "completed"},
@@ -140,6 +144,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
                 "run_id": "0002",
                 "root_seed": 12,
                 "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                },
                 "metrics_payload": {
                     "extracted_at": "2026-03-08T10:00:02",
                     "quality_checks": {"status": "complete", "run_status": "completed"},
@@ -158,6 +165,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
                 "run_id": "0003",
                 "root_seed": 13,
                 "resolved_values": {"twitter_config.echo_chamber_strength": 0.8},
+                "assumption_ledger": {
+                    "applied_templates": ["viral-spike"],
+                },
                 "metrics_payload": {
                     "extracted_at": "2026-03-08T10:00:03",
                     "quality_checks": {"status": "complete", "run_status": "completed"},
@@ -176,6 +186,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
                 "run_id": "0004",
                 "root_seed": 14,
                 "resolved_values": {"twitter_config.echo_chamber_strength": 0.85},
+                "assumption_ledger": {
+                    "applied_templates": ["viral-spike"],
+                },
                 "metrics_payload": {
                     "extracted_at": "2026-03-08T10:00:04",
                     "quality_checks": {"status": "complete", "run_status": "completed"},
@@ -204,6 +217,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
     assert first["cluster_count"] == 2
     assert first["quality_summary"]["status"] == "complete"
     assert "thin_sample" in first["quality_summary"]["warnings"]
+    assert first["feature_vector_schema"]["cluster_method"] == "medoid_radius"
+    assert first["sample_policy"]["analysis_mode"] == "scenario"
+    assert first["sample_policy"]["eligible_run_count"] == 4
     assert first["feature_vector_schema"]["metric_ids"] == [
         "platform.twitter.total_actions",
         "simulation.total_actions",
@@ -217,6 +233,29 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
     } == {("0001", "0002"), ("0003", "0004")}
     assert {cluster["probability_mass"] for cluster in first["clusters"]} == {0.5}
     assert all(cluster["prototype_resolved_values"] for cluster in first["clusters"])
+    assert all(cluster["support_count"] == 2 for cluster in first["clusters"])
+    assert all(cluster["minimum_support_count"] == 2 for cluster in first["clusters"])
+    assert all(cluster["minimum_support_met"] is True for cluster in first["clusters"])
+    assert all(cluster["family_label"] for cluster in first["clusters"])
+    assert all("Observed 2 of 4 runs" in cluster["family_summary"] for cluster in first["clusters"])
+    assert all(cluster["family_signature"]["semantics"] == "empirical" for cluster in first["clusters"])
+    assert {
+        tuple(cluster["representative_run_ids"])
+        for cluster in first["clusters"]
+    } == {("0001", "0002"), ("0003", "0004")}
+    assert {
+        tuple(sorted(cluster["assumption_template_counts"].items()))
+        for cluster in first["clusters"]
+    } == {
+        (("baseline-watch", 2),),
+        (("viral-spike", 2),),
+    }
+    assert {
+        hint["scope"]["cluster_id"]
+        for cluster in first["clusters"]
+        for hint in cluster["comparison_hints"]
+        if hint["scope"]["level"] == "cluster"
+    } == {"cluster_0001", "cluster_0002"}
 
 
 def test_get_scenario_clusters_surfaces_missing_metrics_and_low_confidence(
@@ -292,6 +331,71 @@ def test_get_scenario_clusters_surfaces_missing_metrics_and_low_confidence(
     assert "low_confidence" in artifact["quality_summary"]["warnings"]
     assert artifact["clusters"][0]["probability_mass"] == 2 / 3
     assert artifact["clusters"][0]["warnings"] == ["low_metric_variance"]
+
+
+def test_get_scenario_clusters_marks_singleton_support_warnings(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-singleton"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 2),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 1),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 3),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 1),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.95},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 30),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 24),
+                    },
+                },
+            },
+        ],
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    assert any(cluster["support_count"] == 1 for cluster in artifact["clusters"])
+    singleton = next(cluster for cluster in artifact["clusters"] if cluster["support_count"] == 1)
+    assert singleton["minimum_support_met"] is False
+    assert "minimum_support_not_met" in singleton["warnings"]
 
 
 def test_get_scenario_clusters_excludes_partial_metrics_from_cluster_membership(

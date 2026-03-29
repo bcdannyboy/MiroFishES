@@ -1,23 +1,53 @@
 # MiroFishES
 
-MiroFishES is a multi-agent simulation and forecasting system. It takes seed material such as reports, news, policy drafts, or fictional scenarios, builds a graph-backed environment, simulates agent interactions over time, and produces both a report and an interactive interface for exploring the result.
+MiroFishES is a fork-evolved version of MiroFish that pushes the project toward an artifact-first forecasting system rather than only a single-run simulation app. The repo still supports the legacy graph-build -> simulation -> report -> interaction flow, but it now also contains a bounded forecasting control plane with durable grounding, structured uncertainty, ensemble analytics, scoped report context, and bounded compare flows.
 
-## Overview
+## What This Repo Adds Beyond Fork-Era MiroFish
 
-The project is organized around a pipeline that turns unstructured input into a simulated world:
+Relative to the original fork-era baseline, this repo now adds:
 
-1. **Graph building**: extract entities, relationships, and memory from the source material.
-2. **Environment setup**: generate personas, world state, and simulation parameters.
-3. **Simulation run**: execute the multi-agent simulation and update temporal memory over time.
-4. **Report generation**: synthesize a prediction or scenario report from the final state.
-5. **Interactive exploration**: inspect the generated world and interact with the reporting agent.
+1. a forecast-first Step 2 path that produces durable control artifacts instead of only transient setup state
+2. explicit upstream grounding artifacts for uploaded sources and graph-build provenance
+3. ensemble, cluster, and run scope as first-class downstream report and interaction concepts
+4. scenario-family clustering and observational sensitivity analysis as inspectable artifacts
+5. a narrow confidence lane with observed truth, backtests, and binary-only calibration provenance
+6. a bounded compare workspace and scope-aware report-agent chat lane
 
-The current probabilistic rollout is additive to that legacy path. The single-run flow remains the production default, while probabilistic prepare, stored-run Step 3 replay, bounded Step 4 report context, and bounded Step 5 report-agent grounding are local-development surfaces that must be treated with explicit empirical or observed language.
+What it does **not** honestly add yet:
+
+1. comprehensive research or code-analysis grounding in the literal sense
+2. broad calibrated forecasting across metric families
+3. causal driver analysis
+4. release-grade live operator proof
+
+## Current Truth
+
+The current forecasting stack is deliberately conservative.
+
+- Upstream grounding is bounded to uploaded project sources, persisted graph-build outputs, and repo-local code-analysis artifacts only when they actually exist.
+- `grounding_bundle.json` can be `ready`, `partial`, or `unavailable`.
+- Aggregate summaries and scenario families are empirical.
+- Selected runs are observed.
+- Sensitivity is observational, not causal.
+- Calibration is artifact-gated and binary-only.
+- The report body is still legacy-shaped; the probabilistic layer is an evidence surface around it.
+- Interviews and surveys remain legacy-scoped even when report-agent chat is scope-aware.
+
+## Docs Map
+
+Start with these documents:
+
+- [Docs index](docs/README.md): fastest path to the right document by audience and task
+- [What MiroFishES adds](docs/what-mirofishes-adds.md): canonical fork-delta and positioning note
+- [Local probabilistic operator runbook](docs/local-probabilistic-operator-runbook.md): how to run the bounded Step 1 through Step 5 operator path locally
+- [Forecasting integration hardening wave](docs/plans/2026-03-29-forecasting-integration-hardening-wave.md): authoritative current artifact, scope, and verification contract
+- [North-star forecast upgrades](docs/plans/2026-03-28-mirofish-high-impact-forecasting-upgrades.md): intended higher-level direction and still-open ambition
 
 ## Repository Layout
 
-- `frontend/`: Vite/Vue frontend application
-- `backend/`: Flask backend, simulation services, and API endpoints
+- `frontend/`: Vite/Vue UI and browser tests
+- `backend/`: Flask APIs, simulation services, artifacts, and pytest suites
+- `docs/`: operator docs, current-state notes, and implementation plans
 - `static/`: static assets used by the application
 
 ## Quick Start
@@ -38,50 +68,27 @@ cp .env.example .env
 
 Fill in the values you need in `.env`.
 
-Required keys:
+Required keys for the bounded forecast path:
 
 ```env
-# Compatible with OpenAI-style LLM APIs.
-# The defaults point at Qwen via DashScope.
 LLM_API_KEY=your_api_key_here
-LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_MODEL_NAME=qwen-plus
-
-# Zep memory graph configuration.
 ZEP_API_KEY=your_zep_api_key_here
 
-# Probabilistic rollout flags.
-# These are all false by default in backend/app/config.py.
-# Enable them together for the bounded local probabilistic Step 2 through Step 5 path.
 PROBABILISTIC_PREPARE_ENABLED=true
 PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
 PROBABILISTIC_REPORT_ENABLED=true
 PROBABILISTIC_INTERACTION_ENABLED=true
 
-# Keep calibrated language off unless calibrated artifacts exist.
 CALIBRATED_PROBABILITY_ENABLED=false
-
-# Optional accelerated LLM configuration.
-LLM_BOOST_API_KEY=your_api_key_here
-LLM_BOOST_BASE_URL=your_base_url_here
-LLM_BOOST_MODEL_NAME=your_model_name_here
 ```
 
-If those probabilistic flags stay unset or remain `false`, the local probabilistic Step 2 through Step 5 path is intentionally unavailable even when the rest of the stack starts correctly.
+The backend reads the repo-root `.env` automatically from `backend/app/config.py`. If those probabilistic flags are unset or `false`, the bounded Step 2 through Step 5 forecast flow is intentionally unavailable even when the stack boots.
 
 ### 2. Install dependencies
 
-Install everything:
-
 ```bash
 npm run setup:all
-```
-
-Or install by layer:
-
-```bash
-npm run setup
-npm run setup:backend
+npx playwright install chromium
 ```
 
 ### 3. Start the development stack
@@ -95,78 +102,89 @@ Default local endpoints:
 - Frontend: `http://localhost:5173`
 - Backend API: `http://localhost:5001`
 
-You can also start each side independently:
+### 4. Confirm forecast capabilities
+
+Before trusting the probabilistic path, confirm the backend capability surface:
 
 ```bash
-npm run backend
-npm run frontend
+curl http://localhost:5001/api/simulation/prepare/capabilities
 ```
 
-### 4. Build the frontend
+For the bounded forecast path, these booleans should be `true`:
+
+- `probabilistic_prepare_enabled`
+- `probabilistic_ensemble_storage_enabled`
+- `probabilistic_report_enabled`
+- `probabilistic_interaction_enabled`
+
+## Fresh Forecast Run
+
+If you want to start from a truly fresh local run:
+
+1. create a new project in the UI
+2. upload source material
+3. complete Step 1 graph build
+4. enter simulation setup, which creates a real `simulation_id`
+5. stay in `Forecast` mode in Step 2 when probabilistic prepare is available
+6. run forecast prepare so the repo can emit artifacts such as `prepared_snapshot.json`, `grounding_bundle.json`, `uncertainty_spec.json`, and `outcome_spec.json`
+7. continue into Step 3, Step 4, and Step 5 using the generated simulation family
+
+Important boundaries:
+
+- A manual fresh start does **not** need `PLAYWRIGHT_LIVE_SIMULATION_ID`; that variable is only for the live Playwright operator harness.
+- A meaningful run still requires upstream source material. The repo does not support “blank simulation with no uploaded inputs” as a truthful forecast workflow.
+- Step 2 may still truthfully block the forecast handoff if required sidecar artifacts are missing.
+
+## Verification Ladder
+
+Use these commands in order when you want evidence instead of intuition:
 
 ```bash
-npm run build
-```
-
-## Local Probabilistic Operator Path
-
-The local probabilistic workflow is intentionally bounded. Before treating it as usable, verify the repo-owned evidence ladder in order:
-
-```bash
-npx playwright install chromium
 npm run verify
 npm run verify:smoke
 PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local
 ```
 
-What those commands prove:
+What each command proves:
 
-- `npm run verify`: frontend unit/runtime tests, frontend build, and backend pytest all pass in the current worktree.
-- `npm run verify:smoke`: fixture-backed browser checks cover the bounded Step 2 through Step 5 probabilistic shell, including Step 3 history replay from a saved probabilistic record.
-- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`: one mutating local-only non-fixture operator pass runs against a real simulation family and refreshes `output/playwright/live-operator/latest.json`.
+- `npm run verify`: frontend tests, frontend build, and backend pytest pass in the current worktree
+- `npm run verify:smoke`: the bounded Step 2 through Step 5 browser shell still renders and routes correctly against deterministic fixtures
+- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`: one mutating local operator pass attempts to run against a real simulation family and records fresh evidence or the exact blocker
 
-Recommended zero-context local operator setup:
+Current live-proof boundary:
 
-```bash
-cp .env.example .env
-# edit .env and enable the four probabilistic rollout flags plus LLM/Zep keys
-npm run setup:all
-npm run dev
-curl http://localhost:5001/api/simulation/prepare/capabilities
-```
+- the default live family `sim_7a6661c37719` is not forecast-ready enough for a full pass because `grounding_bundle.json` is missing
+- until you supply a forecast-ready `simulation_id`, fresh live evidence is currently a truthful readiness block, not a successful end-to-end Step 2 through Step 5 proof
 
-Expected capability truth for the bounded local probabilistic path:
-
-- `probabilistic_prepare_enabled=true`
-- `probabilistic_ensemble_storage_enabled=true`
-- `probabilistic_report_enabled=true`
-- `probabilistic_interaction_enabled=true`
-
-Important boundaries:
-
-- Live probabilistic Step 2 still depends on configured `LLM_API_KEY` and `ZEP_API_KEY`.
-- The deterministic smoke fixture is QA evidence, not proof that the live prepare path is self-contained.
-- Step 3 now supports saved-record re-entry, but compare remains out of scope.
-- Step 5 remains probabilistic only in the saved-report report-agent lane; interviews and surveys are still legacy-scoped.
-
-Live operator pass notes:
-
-- The test defaults to `sim_7a6661c37719` if `PLAYWRIGHT_LIVE_SIMULATION_ID` is not set.
-- In a fresh workspace, prefer an explicit simulation family:
+If you already have a prepared simulation family and want the live harness to use it:
 
 ```bash
 PLAYWRIGHT_LIVE_ALLOW_MUTATION=true \
-PLAYWRIGHT_LIVE_SIMULATION_ID=<your_simulation_id> \
+PLAYWRIGHT_LIVE_SIMULATION_ID=<simulation_id> \
 npm run verify:operator:local
 ```
 
-- Operator artifacts live under `backend/uploads/simulations/<simulation_id>/ensemble/ensemble_<ensemble_id>/runs/run_<run_id>/`.
-- Durable artifacts: `run_manifest.json`, `resolved_config.json`.
-- Volatile runtime artifacts that cleanup may remove: `simulation.log`, `twitter/actions.jsonl`, `reddit/actions.jsonl`.
+For the confidence-specific lane, use:
 
-Use the operator runbook for the supported recovery path, prerequisite checklist, and known limitations:
+```bash
+npm run verify:confidence
+```
 
-- [Local probabilistic operator runbook](docs/local-probabilistic-operator-runbook.md)
+## Current Forecasting Architecture
+
+The current forecasting stack is organized around an explicit artifact ladder:
+
+1. Step 1 persists `source_manifest.json` and `graph_build_summary.json`.
+2. Step 2 emits `forecast_brief.json`, `uncertainty_spec.json`, `outcome_spec.json`, `prepared_snapshot.json`, and `grounding_bundle.json`.
+3. Ensemble creation and Step 3 replay persist `ensemble_spec.json`, `ensemble_state.json`, `run_manifest.json`, and `resolved_config.json`.
+4. Observed run truth is extracted into `metrics.json`.
+5. Ensemble analytics persist `aggregate_summary.json`, `scenario_clusters.json`, and `sensitivity.json`.
+6. Historical scoring persists `backtest_summary.json`, and binary-only calibration persists `calibration_summary.json`.
+7. Step 4 and Step 5 consume `probabilistic_report_context.json`, which always includes `confidence_status` and only includes `calibrated_summary` when a named metric is actually ready.
+
+The authoritative current-state note for those contracts is:
+
+- [Forecasting integration hardening wave](docs/plans/2026-03-29-forecasting-integration-hardening-wave.md)
 
 ## Docker Compose
 

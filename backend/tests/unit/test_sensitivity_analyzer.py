@@ -211,6 +211,9 @@ def test_get_sensitivity_analysis_persists_ranked_driver_effects(
     assert (ensemble_dir / "sensitivity.json").exists()
     assert first["artifact_type"] == "sensitivity"
     assert first["methodology"]["analysis_mode"] == "observational_resolved_values"
+    assert first["methodology"]["grouping_policy"] == "support_aware_driver_bands"
+    assert first["methodology"]["ranking_basis"] == "support_aware_standardized_effect_sum"
+    assert first["sample_policy"]["analysis_mode"] == "sensitivity"
     assert first["quality_summary"]["status"] == "complete"
     assert "observational_only" in first["quality_summary"]["warnings"]
     assert "thin_sample" in first["quality_summary"]["warnings"]
@@ -226,14 +229,24 @@ def test_get_sensitivity_analysis_persists_ranked_driver_effects(
     assert top_driver["driver_kind"] == "numeric"
     assert top_driver["sample_count"] == 4
     assert top_driver["distinct_value_count"] == 2
+    assert top_driver["driver_summary"]["semantics"] == "observational"
+    assert top_driver["driver_summary"]["top_metric_id"] == (
+        "platform.twitter.total_actions"
+    )
+    assert top_driver["driver_summary"]["ranking_basis"] == (
+        "support_aware_standardized_effect_sum"
+    )
     impact = next(
         item
         for item in top_driver["metric_impacts"]
         if item["metric_id"] == "simulation.total_actions"
     )
     assert impact["effect_size"] == 9.0
+    assert impact["standardized_effect"] > 0
     assert [group["value_label"] for group in impact["group_summaries"]] == ["0.2", "0.8"]
     assert [group["mean"] for group in impact["group_summaries"]] == [6.0, 15.0]
+    assert all(group["support_count"] == 2 for group in impact["group_summaries"])
+    assert all(group["minimum_support_met"] is True for group in impact["group_summaries"])
 
 
 def test_get_sensitivity_analysis_surfaces_missing_metrics_and_non_varying_drivers(
@@ -301,3 +314,68 @@ def test_get_sensitivity_analysis_surfaces_missing_metrics_and_non_varying_drive
     assert "no_varying_drivers" in artifact["quality_summary"]["warnings"]
     assert "thin_sample" in artifact["quality_summary"]["warnings"]
     assert artifact["driver_rankings"] == []
+
+
+def test_get_sensitivity_analysis_bands_continuous_drivers_instead_of_exact_identity(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-bands"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"agent_configs[0].activity_level": 0.10},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 2)}},
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"agent_configs[0].activity_level": 0.20},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 3)}},
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"agent_configs[0].activity_level": 0.30},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 4)}},
+            },
+            {
+                "run_id": "0004",
+                "resolved_values": {"agent_configs[0].activity_level": 0.70},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 10)}},
+            },
+            {
+                "run_id": "0005",
+                "resolved_values": {"agent_configs[0].activity_level": 0.80},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 12)}},
+            },
+            {
+                "run_id": "0006",
+                "resolved_values": {"agent_configs[0].activity_level": 0.90},
+                "metrics_payload": {"quality_checks": {"status": "complete", "run_status": "completed"}, "metric_values": {"simulation.total_actions": _metric_entry("simulation.total_actions", 14)}},
+            },
+        ],
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    driver = artifact["driver_rankings"][0]
+    impact = next(
+        item for item in driver["metric_impacts"] if item["metric_id"] == "simulation.total_actions"
+    )
+    assert driver["distinct_value_count"] == 6
+    assert len(impact["group_summaries"]) == 3
+    assert [group["support_count"] for group in impact["group_summaries"]] == [2, 2, 2]

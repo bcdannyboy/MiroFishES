@@ -2,7 +2,7 @@ import service, { requestWithRetry } from './index'
 
 /**
  * Start report generation.
- * @param {Object} data - { simulation_id, force_regenerate? }
+ * @param {Object} data - { simulation_id, ensemble_id?, run_id?, force_regenerate? }
  */
 export const generateReport = (data) => {
   return requestWithRetry(() => service.post('/api/report/generate', data), 3, 1000)
@@ -44,7 +44,7 @@ export const getReport = (reportId) => {
 
 /**
  * Chat with the Report Agent.
- * @param {Object} data - { simulation_id, message, chat_history? }
+ * @param {Object} data - { simulation_id, report_id?, ensemble_id?, cluster_id?, run_id?, scope_level?, compare_id?, message, chat_history? }
  */
 export const chatWithReport = (data) => {
   return requestWithRetry(() => service.post('/api/report/chat', data), 3, 1000)

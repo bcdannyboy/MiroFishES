@@ -12,6 +12,7 @@ import {
   deriveStep3GraphRequest,
   mergeGraphDataPayloads,
   isStep2PrepareInFlight,
+  getStep2PrepareBootstrapState,
   shouldPromoteStep2ReadyState,
   sortSimulationHistory,
   getHistoryCardZIndex,
@@ -33,6 +34,7 @@ import {
   deriveProbabilisticPlatformSkewCopy,
   deriveProbabilisticCapabilityState,
   deriveProbabilisticAnalyticsCards,
+  deriveProbabilisticEvidenceSummary,
   deriveProbabilisticReportContextState,
   resolveProbabilisticRunSelection
 } from '../../src/utils/probabilisticRuntime.js'
@@ -43,13 +45,18 @@ test('buildSimulationRunRouteQuery omits empty fields and stringifies supported 
       maxRounds: 24,
       runtimeMode: 'probabilistic',
       ensembleId: '0001',
-      runId: '0002'
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      compareId: 'cluster-cluster_0002__ensemble-0001'
     }),
     {
       maxRounds: '24',
       mode: 'probabilistic',
       ensembleId: '0001',
-      runId: '0002'
+      scope: 'run',
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      compareId: 'cluster-cluster_0002__ensemble-0001'
     }
   )
 
@@ -64,19 +71,42 @@ test('buildSimulationRunRouteQuery omits empty fields and stringifies supported 
   )
 })
 
+test('buildSimulationRunRouteQuery preserves explicit ensemble scope even when a stored run is present', () => {
+  assert.deepEqual(
+    buildSimulationRunRouteQuery({
+      runtimeMode: 'probabilistic',
+      ensembleId: '0001',
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      scopeLevel: 'ensemble'
+    }),
+    {
+      mode: 'probabilistic',
+      ensembleId: '0001',
+      scope: 'ensemble',
+      clusterId: 'cluster_0002',
+      runId: '0002'
+    }
+  )
+})
+
 test('normalizeSimulationRunRouteQuery normalizes maxRounds and runtime mode', () => {
   assert.deepEqual(
     normalizeSimulationRunRouteQuery({
       maxRounds: '18',
       mode: 'probabilistic',
       ensembleId: '0007',
-      runId: '0003'
+      clusterId: 'cluster_0001',
+      compareId: 'cluster-cluster_0001__ensemble-0007'
     }),
     {
       maxRounds: 18,
       runtimeMode: 'probabilistic',
       ensembleId: '0007',
-      runId: '0003',
+      clusterId: 'cluster_0001',
+      runId: null,
+      compareId: 'cluster-cluster_0001__ensemble-0007',
+      scopeLevel: 'cluster',
       probabilisticRuntimeActive: true
     }
   )
@@ -91,8 +121,33 @@ test('normalizeSimulationRunRouteQuery normalizes maxRounds and runtime mode', (
       maxRounds: null,
       runtimeMode: 'legacy',
       ensembleId: '0007',
+      clusterId: null,
       runId: null,
+      compareId: null,
+      scopeLevel: 'ensemble',
       probabilisticRuntimeActive: false
+    }
+  )
+})
+
+test('normalizeSimulationRunRouteQuery preserves explicit scope over inferred ids', () => {
+  assert.deepEqual(
+    normalizeSimulationRunRouteQuery({
+      mode: 'probabilistic',
+      ensembleId: '0007',
+      clusterId: 'cluster_0001',
+      runId: '0003',
+      scope: 'ensemble'
+    }),
+    {
+      maxRounds: null,
+      runtimeMode: 'probabilistic',
+      ensembleId: '0007',
+      clusterId: 'cluster_0001',
+      runId: '0003',
+      compareId: null,
+      scopeLevel: 'ensemble',
+      probabilisticRuntimeActive: true
     }
   )
 })
@@ -116,6 +171,23 @@ test('buildReportGenerationRequest carries probabilistic scope only when the run
       simulationId: 'sim-1',
       runtimeMode: 'probabilistic',
       ensembleId: '0001',
+      clusterId: 'cluster_0002',
+      forceRegenerate: false
+    }),
+    {
+      simulation_id: 'sim-1',
+      force_regenerate: false,
+      ensemble_id: '0001',
+      cluster_id: 'cluster_0002'
+    }
+  )
+
+  assert.deepEqual(
+    buildReportGenerationRequest({
+      simulationId: 'sim-1',
+      runtimeMode: 'probabilistic',
+      ensembleId: '0001',
+      clusterId: 'cluster_0002',
       runId: '0002',
       forceRegenerate: false
     }),
@@ -123,6 +195,7 @@ test('buildReportGenerationRequest carries probabilistic scope only when the run
       simulation_id: 'sim-1',
       force_regenerate: false,
       ensemble_id: '0001',
+      cluster_id: 'cluster_0002',
       run_id: '0002'
     }
   )
@@ -134,16 +207,24 @@ test('deriveProbabilisticReportRouteState rebuilds Step 4 scope from saved repor
       routeQuery: {},
       reportRecord: {
         ensemble_id: '0004',
+        cluster_id: 'cluster_0002',
         run_id: '0002',
         probabilistic_context: {
-          artifact_type: 'probabilistic_report_context'
+          artifact_type: 'probabilistic_report_context',
+          scope: {
+            level: 'run',
+            cluster_id: 'cluster_0002'
+          }
         }
       }
     }),
     {
       runtimeMode: 'probabilistic',
       ensembleId: '0004',
+      clusterId: 'cluster_0002',
       runId: '0002',
+      compareId: null,
+      scopeLevel: 'run',
       probabilisticReportActive: true
     }
   )
@@ -153,17 +234,23 @@ test('deriveProbabilisticReportRouteState rebuilds Step 4 scope from saved repor
       routeQuery: {
         mode: 'probabilistic',
         ensembleId: '0099',
-        runId: '0098'
+        clusterId: 'cluster_0005',
+        runId: '0098',
+        compareId: 'cluster-cluster_0005__ensemble-0099'
       },
       reportRecord: {
         ensemble_id: '0004',
+        cluster_id: 'cluster_0002',
         run_id: '0002'
       }
     }),
     {
       runtimeMode: 'probabilistic',
       ensembleId: '0004',
+      clusterId: 'cluster_0002',
       runId: '0002',
+      compareId: 'cluster-cluster_0005__ensemble-0099',
+      scopeLevel: 'run',
       probabilisticReportActive: true
     }
   )
@@ -175,6 +262,7 @@ test('deriveProbabilisticReportRouteState treats route query as bootstrap-only a
       routeQuery: {
         mode: 'probabilistic',
         ensembleId: '0099',
+        clusterId: 'cluster_0005',
         runId: '0098'
       },
       reportRecord: null
@@ -182,7 +270,32 @@ test('deriveProbabilisticReportRouteState treats route query as bootstrap-only a
     {
       runtimeMode: 'probabilistic',
       ensembleId: '0099',
+      clusterId: 'cluster_0005',
       runId: '0098',
+      compareId: null,
+      scopeLevel: 'run',
+      probabilisticReportActive: true
+    }
+  )
+
+  assert.deepEqual(
+    deriveProbabilisticReportRouteState({
+      routeQuery: {
+        mode: 'probabilistic',
+        ensembleId: '0099',
+        clusterId: 'cluster_0005',
+        runId: '0098',
+        scope: 'ensemble'
+      },
+      reportRecord: null
+    }),
+    {
+      runtimeMode: 'probabilistic',
+      ensembleId: '0099',
+      clusterId: 'cluster_0005',
+      runId: '0098',
+      compareId: null,
+      scopeLevel: 'ensemble',
       probabilisticReportActive: true
     }
   )
@@ -201,8 +314,85 @@ test('deriveProbabilisticReportRouteState treats route query as bootstrap-only a
     {
       runtimeMode: 'legacy',
       ensembleId: null,
+      clusterId: null,
       runId: null,
+      compareId: null,
+      scopeLevel: 'ensemble',
       probabilisticReportActive: false
+    }
+  )
+})
+
+test('deriveProbabilisticReportRouteState preserves session-local compare selection while report scope comes from saved metadata', () => {
+  assert.deepEqual(
+    deriveProbabilisticReportRouteState({
+      routeQuery: {
+        mode: 'probabilistic',
+        ensembleId: '0099',
+        clusterId: 'cluster_0005',
+        runId: '0098',
+        compareId: 'run-0098__ensemble-0099'
+      },
+      reportRecord: {
+        ensemble_id: '0004',
+        cluster_id: 'cluster_0002',
+        run_id: '0002',
+        probabilistic_context: {
+          artifact_type: 'probabilistic_report_context',
+          scope: {
+            level: 'run',
+            cluster_id: 'cluster_0002'
+          }
+        }
+      }
+    }),
+    {
+      runtimeMode: 'probabilistic',
+      ensembleId: '0004',
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      compareId: 'run-0098__ensemble-0099',
+      scopeLevel: 'run',
+      probabilisticReportActive: true
+    }
+  )
+})
+
+test('getStep2PrepareBootstrapState makes forecast prepare primary when available', () => {
+  assert.deepEqual(
+    getStep2PrepareBootstrapState({
+      probabilisticPrepareEnabled: true,
+      preparedArtifactSummary: null
+    }),
+    {
+      selectedPrepareMode: 'probabilistic',
+      autoStartMode: null
+    }
+  )
+
+  assert.deepEqual(
+    getStep2PrepareBootstrapState({
+      probabilisticPrepareEnabled: false,
+      preparedArtifactSummary: {
+        probabilistic_mode: true
+      }
+    }),
+    {
+      selectedPrepareMode: 'probabilistic',
+      autoStartMode: null
+    }
+  )
+
+  assert.deepEqual(
+    getStep2PrepareBootstrapState({
+      probabilisticPrepareEnabled: false,
+      preparedArtifactSummary: {
+        mode: 'legacy'
+      }
+    }),
+    {
+      selectedPrepareMode: 'legacy',
+      autoStartMode: 'legacy'
     }
   )
 })
@@ -329,6 +519,7 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
       enabled: true,
       simulationId: 'sim_1234',
       ensembleId: '0007',
+      clusterId: null,
       runId: '0003',
       routeTarget: {
         name: 'SimulationRun',
@@ -338,6 +529,7 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
         query: {
           mode: 'probabilistic',
           ensembleId: '0007',
+          scope: 'run',
           runId: '0003'
         }
       },
@@ -358,6 +550,7 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
       enabled: true,
       simulationId: 'sim_storage',
       ensembleId: '0008',
+      clusterId: null,
       runId: '0004',
       routeTarget: {
         name: 'SimulationRun',
@@ -367,6 +560,7 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
         query: {
           mode: 'probabilistic',
           ensembleId: '0008',
+          scope: 'run',
           runId: '0004'
         }
       },
@@ -385,6 +579,7 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
       enabled: false,
       simulationId: 'sim_legacy',
       ensembleId: null,
+      clusterId: null,
       runId: null,
       routeTarget: null,
       helperText: 'Step 3 replay is available only when history includes probabilistic runtime scope for one ensemble and run.'
@@ -1011,17 +1206,75 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
   assert.deepEqual(getStep5InteractionState('probabilistic'), {
     showNotice: true,
     title: 'Probabilistic interaction context unavailable',
-    body: 'Step 5 still uses the legacy report and simulation context. Ensemble, run, and scenario-family grounding are not yet wired into chat or survey flows.'
+    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. Interviews and surveys still use the legacy interaction path.'
   })
 
   assert.deepEqual(
     getStep5InteractionState('probabilistic', {
-      hasSavedProbabilisticContext: true
+      ensembleId: '0004',
+      clusterId: 'cluster_0002'
     }),
     {
       showNotice: true,
-      title: 'Saved probabilistic context detected',
-      body: 'Report Agent chat can use this saved ensemble and run context from the current report. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: 'Cluster-scoped probabilistic context available',
+      body: 'Report Agent chat can request ensemble and scenario-family evidence directly for this probabilistic scope. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+    }
+  )
+
+  assert.deepEqual(
+    getStep5InteractionState('probabilistic', {
+      ensembleId: '0004',
+      runId: '0002'
+    }),
+    {
+      showNotice: true,
+      title: 'Run-scoped probabilistic context available',
+      body: 'Report Agent chat can request ensemble, scenario-family, and run evidence directly for this probabilistic scope. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+    }
+  )
+
+  assert.deepEqual(
+    getStep5InteractionState('probabilistic', {
+      hasSavedProbabilisticContext: true,
+      reportContext: {
+        scope: {
+          level: 'ensemble',
+          ensemble_id: '0004'
+        },
+        calibration_provenance: {
+          mode: 'calibrated',
+          ready_metric_ids: ['simulation.completed']
+        }
+      }
+    }),
+    {
+      showNotice: true,
+      title: 'Ensemble-scoped probabilistic context available',
+      body: 'Report Agent chat can request ensemble evidence directly for this probabilistic scope. Backtested calibration artifacts are available for simulation.completed. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+    }
+  )
+
+  assert.deepEqual(
+    getStep5InteractionState('probabilistic', {
+      hasSavedProbabilisticContext: true,
+      reportContext: {
+        scope: {
+          level: 'ensemble',
+          ensemble_id: '0004'
+        },
+        confidence_status: {
+          status: 'not_ready',
+          supported_metric_ids: ['simulation.completed'],
+          ready_metric_ids: [],
+          not_ready_metric_ids: ['simulation.completed'],
+          gating_reasons: ['insufficient_negative_case_count']
+        }
+      }
+    }),
+    {
+      showNotice: true,
+      title: 'Ensemble-scoped probabilistic context available',
+      body: 'Report Agent chat can request ensemble evidence directly for this probabilistic scope. Calibration artifacts are present but not ready for calibrated language yet. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
     }
   )
 })
@@ -1031,6 +1284,12 @@ test('buildReportAgentChatRequest prefers explicit report scope while preserving
     buildReportAgentChatRequest({
       simulationId: 'sim-123',
       reportId: 'report-456',
+      runtimeMode: 'probabilistic',
+      ensembleId: '0004',
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      scopeLevel: 'run',
+      compareId: 'run-0002__ensemble-0004',
       message: 'What does the ensemble show?',
       chatHistory: [
         { role: 'user', content: 'Earlier question' }
@@ -1039,10 +1298,53 @@ test('buildReportAgentChatRequest prefers explicit report scope while preserving
     {
       simulation_id: 'sim-123',
       report_id: 'report-456',
+      ensemble_id: '0004',
+      cluster_id: 'cluster_0002',
+      run_id: '0002',
+      scope_level: 'run',
+      compare_id: 'run-0002__ensemble-0004',
       message: 'What does the ensemble show?',
       chat_history: [
         { role: 'user', content: 'Earlier question' }
       ]
+    }
+  )
+
+  assert.deepEqual(
+    buildReportAgentChatRequest({
+      simulationId: 'sim-context',
+      reportId: 'report-context',
+      runtimeMode: 'probabilistic',
+      ensembleId: '0011',
+      scopeLevel: 'ensemble',
+      compareId: 'run-0007__ensemble-0011',
+      reportContext: {
+        ensemble_id: '0011',
+        cluster_id: 'cluster_0003',
+        scope: {
+          level: 'run',
+          cluster_id: 'cluster_0003',
+          run_id: '0007'
+        },
+        compare_catalog: {
+          options: [
+            {
+              compare_id: 'run-0007__ensemble-0011',
+              label: 'Run 0007 vs ensemble'
+            }
+          ]
+        }
+      },
+      message: 'Use saved context'
+    }),
+    {
+      simulation_id: 'sim-context',
+      report_id: 'report-context',
+      ensemble_id: '0011',
+      scope_level: 'ensemble',
+      compare_id: 'run-0007__ensemble-0011',
+      message: 'Use saved context',
+      chat_history: []
     }
   )
 
@@ -1057,6 +1359,293 @@ test('buildReportAgentChatRequest prefers explicit report scope while preserving
       chat_history: []
     }
   )
+})
+
+test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibration, and compare catalog', () => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    runId: '0001',
+    compareId: 'run-0001__ensemble-0004',
+    reportContext: {
+      ensemble_id: '0004',
+      run_id: '0001',
+      scope: {
+        level: 'run',
+        ensemble_id: '0004',
+        cluster_id: 'cluster_1',
+        run_id: '0001'
+      },
+      quality_summary: {
+        warnings: ['thin_sample']
+      },
+      ensemble_facts: {
+        support: {
+          prepared_run_count: 8,
+          runs_with_metrics: 6,
+          complete_runs: 5,
+          partial_runs: 1
+        }
+      },
+      representative_runs: [
+        { run_id: '0001' },
+        { run_id: '0002' }
+      ],
+      selected_cluster: {
+        cluster_id: 'cluster_1',
+        family_label: 'Higher completed family'
+      },
+      selected_run: {
+        run_id: '0001',
+        quality_status: 'complete',
+        key_metrics: [
+          {
+            metric_id: 'simulation.total_actions'
+          }
+        ],
+        support: {
+          key_metric_count: 1
+        },
+        assumption_ledger: {
+          applied_templates: ['baseline-watch'],
+          notes: ['Applied template baseline-watch']
+        }
+      },
+      confidence_status: {
+        status: 'ready',
+        supported_metric_ids: ['simulation.completed'],
+        ready_metric_ids: ['simulation.completed'],
+        not_ready_metric_ids: [],
+        gating_reasons: [],
+        warnings: [],
+        boundary_note: 'Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.'
+      },
+      calibration_provenance: {
+        mode: 'calibrated',
+        ready_metric_ids: ['simulation.completed'],
+        quality_status: 'complete',
+        warnings: []
+      },
+      grounding_context: {
+        status: 'ready',
+        boundary_note: 'Uploaded project sources only; this artifact does not claim live-web coverage.',
+        citation_counts: {
+          source: 1,
+          graph: 1,
+          code: 0
+        },
+        warnings: [],
+        evidence_items: [
+          {
+            citation_id: '[S1]',
+            evidence_kind: 'source',
+            title: 'memo.md'
+          },
+          {
+            citation_id: '[G1]',
+            evidence_kind: 'graph',
+            title: 'graph-1'
+          }
+        ]
+      },
+      calibrated_summary: {
+        metrics: [
+          {
+            metric_id: 'simulation.completed',
+            case_count: 10,
+            supported_scoring_rules: ['brier_score', 'log_score'],
+            reliability_bins: [
+              { case_count: 2 },
+              { case_count: 0 },
+              { case_count: 2 }
+            ],
+            readiness: {
+              ready: true,
+              actual_case_count: 10,
+              non_empty_bin_count: 2,
+              confidence_label: 'limited'
+            }
+          }
+        ]
+      },
+      scenario_families: [
+        {
+          cluster_id: 'cluster_1',
+          prototype_run_id: '0001',
+          probability_mass: 0.6,
+          support: {
+            run_count: 4,
+            prepared_run_count: 8
+          },
+          warnings: []
+        },
+        {
+          cluster_id: 'cluster_2',
+          prototype_run_id: '0002',
+          probability_mass: 0.4,
+          support: {
+            run_count: 3,
+            prepared_run_count: 8
+          },
+          warnings: ['thin_sample']
+        }
+      ],
+      top_outcomes: [
+        {
+          metric_id: 'simulation.completed',
+          label: 'Simulation Completed'
+        }
+      ],
+      compare_options: [
+        {
+          compare_id: 'cluster-cluster_1__cluster-cluster_2',
+          label: 'Cluster 1 vs Cluster 2',
+          left: {
+            level: 'cluster',
+            cluster_id: 'cluster_1'
+          },
+          right: {
+            level: 'cluster',
+            cluster_id: 'cluster_2'
+          },
+          prompt: 'Compare scenario family cluster_1 against cluster_2.'
+        }
+      ],
+      compare_catalog: {
+        boundary_note: 'Compare only within one saved report context and one ensemble.',
+        options: [
+          {
+            compare_id: 'run-0001__ensemble-0004',
+            label: 'Run 0001 vs ensemble',
+            reason: 'Selected run against ensemble baseline',
+            left_scope: {
+              level: 'run',
+              ensemble_id: '0004',
+              cluster_id: 'cluster_1',
+              run_id: '0001'
+            },
+            right_scope: {
+              level: 'ensemble',
+              ensemble_id: '0004',
+              cluster_id: null,
+              run_id: null
+            },
+            left_snapshot: {
+              scope: {
+                level: 'run',
+                ensemble_id: '0004',
+                cluster_id: 'cluster_1',
+                run_id: '0001'
+              },
+              headline: 'Run 0001',
+              support_label: 'Observed run metrics available',
+              semantics: 'observed',
+              representative_run_ids: ['0001'],
+              warnings: ['Thin run metrics'],
+              evidence_highlights: ['simulation.total_actions'],
+              confidence_status: 'ready',
+              grounding_status: 'ready'
+            },
+            right_snapshot: {
+              scope: {
+                level: 'ensemble',
+                ensemble_id: '0004',
+                cluster_id: null,
+                run_id: null
+              },
+              headline: 'Ensemble 0004',
+              support_label: '6 of 8 runs with metrics',
+              semantics: 'empirical',
+              representative_run_ids: ['0001', '0002'],
+              warnings: [],
+              evidence_highlights: ['simulation.completed'],
+              confidence_status: 'ready',
+              grounding_status: 'ready'
+            },
+            comparison_summary: {
+              what_differs: ['Run 0001 sits inside cluster_1 while the ensemble aggregates cluster_1 and cluster_2.'],
+              weak_support: ['Run-level differences are observed only and may reflect one stored run.'],
+              boundary_note: 'Do not treat this comparison as causal or globally calibrated.'
+            },
+            warnings: ['observed_vs_empirical'],
+            prompt: 'Explain how run 0001 differs from ensemble 0004.'
+          }
+        ]
+      }
+    }
+  })
+
+  assert.equal(summary.available, true)
+  assert.equal(summary.scope.level, 'run')
+  assert.equal(summary.scope.clusterId, 'cluster_1')
+  assert.equal(summary.scope.supportLabel, '6 of 8 runs with metrics')
+  assert.deepEqual(summary.scope.representativeRunIds, ['0001', '0002'])
+  assert.deepEqual(summary.scope.warnings, ['Thin sample'])
+  assert.equal(summary.selectedCluster.clusterId, 'cluster_1')
+  assert.deepEqual(summary.selectedRun.assumptionTemplates, ['baseline-watch'])
+  assert.match(summary.selectedRun.assumptionSummary, /baseline-watch/i)
+  assert.equal(summary.grounding.status, 'ready')
+  assert.equal(summary.grounding.citationCounts.source, 1)
+  assert.equal(summary.grounding.citationCounts.graph, 1)
+  assert.equal(summary.grounding.evidenceItems[0].citationId, '[S1]')
+  assert.equal(summary.confidenceStatus.status, 'ready')
+  assert.deepEqual(summary.confidenceStatus.readyMetricIds, ['simulation.completed'])
+  assert.deepEqual(summary.calibration.readyMetricIds, ['simulation.completed'])
+  assert.match(summary.calibration.summary, /Brier score/i)
+  assert.match(summary.calibration.summary, /10 resolved cases/i)
+  assert.deepEqual(summary.compareOptions[0].left.clusterId, 'cluster_1')
+  assert.equal(summary.compareCatalog.boundaryNote, 'Compare only within one saved report context and one ensemble.')
+  assert.equal(summary.compareCatalog.options[0].compareId, 'run-0001__ensemble-0004')
+  assert.equal(summary.selectedCompare.compareId, 'run-0001__ensemble-0004')
+  assert.equal(summary.selectedCompare.leftSnapshot.semantics, 'observed')
+  assert.match(summary.selectedCompare.comparisonSummary.boundaryNote, /causal/i)
+  assert.ok(summary.comparePrompts.length >= 2)
+  assert.match(summary.comparePrompts[0].prompt, /run 0001 differs from ensemble 0004/i)
+})
+
+test('deriveProbabilisticEvidenceSummary can intentionally downscope chat evidence from a saved run context', () => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    scopeLevel: 'ensemble',
+    reportContext: {
+      ensemble_id: '0004',
+      cluster_id: 'cluster_1',
+      run_id: '0001',
+      scope: {
+        level: 'run',
+        ensemble_id: '0004',
+        cluster_id: 'cluster_1',
+        run_id: '0001'
+      },
+      scope_catalog: {
+        ensemble: {
+          level: 'ensemble',
+          ensemble_id: '0004'
+        },
+        clusters: [
+          {
+            level: 'cluster',
+            ensemble_id: '0004',
+            cluster_id: 'cluster_1'
+          }
+        ],
+        runs: [
+          {
+            level: 'run',
+            ensemble_id: '0004',
+            cluster_id: 'cluster_1',
+            run_id: '0001'
+          }
+        ]
+      }
+    }
+  })
+
+  assert.equal(summary.scope.level, 'ensemble')
+  assert.equal(summary.scope.ensembleId, '0004')
+  assert.equal(summary.scope.clusterId, null)
+  assert.equal(summary.scope.runId, null)
 })
 
 test('deriveProbabilisticStep3Runtime reports a hard error when probabilistic ids are missing', () => {
@@ -1356,6 +1945,7 @@ test('deriveProbabilisticCapabilityState normalizes downstream rollout flags', (
       reportEnabled: false,
       interactionEnabled: false,
       calibratedEnabled: false,
+      calibrationSurfaceMode: 'empirical-only',
       reportModeLabel: 'legacy-only',
       interactionModeLabel: 'legacy-only',
       calibrationModeLabel: 'empirical-only'
@@ -1375,9 +1965,10 @@ test('deriveProbabilisticCapabilityState falls back to legacy aliases and disabl
       reportEnabled: false,
       interactionEnabled: false,
       calibratedEnabled: true,
+      calibrationSurfaceMode: 'artifact-gated',
       reportModeLabel: 'legacy-only',
       interactionModeLabel: 'legacy-only',
-      calibrationModeLabel: 'calibrated'
+      calibrationModeLabel: 'artifact-gated'
     }
   )
 })
@@ -1420,7 +2011,7 @@ test('deriveProbabilisticReportContextState fetches only missing saved-report ar
       simulationId: 'sim-1',
       runtimeMode: 'probabilistic',
       ensembleId: '0001',
-      runId: '0002',
+      clusterId: 'cluster_0002',
       reportContext: {
         aggregate_summary: {
           artifact_type: 'aggregate_summary'
@@ -1438,6 +2029,31 @@ test('deriveProbabilisticReportContextState fetches only missing saved-report ar
       historicalNotice: '',
       fetchPlan: {
         summary: false,
+        clusters: true,
+        sensitivity: true
+      }
+    }
+  )
+})
+
+test('deriveProbabilisticReportContextState treats ensemble scope as sufficient for live report fetches', () => {
+  assert.deepEqual(
+    deriveProbabilisticReportContextState({
+      simulationId: 'sim-1',
+      runtimeMode: 'probabilistic',
+      ensembleId: '0001',
+      capabilitiesKnown: true,
+      capabilities: {
+        probabilistic_report_enabled: true
+      }
+    }),
+    {
+      shouldRender: true,
+      hasEmbeddedArtifacts: false,
+      isFlaggedOff: false,
+      historicalNotice: '',
+      fetchPlan: {
+        summary: true,
         clusters: true,
         sensitivity: true
       }

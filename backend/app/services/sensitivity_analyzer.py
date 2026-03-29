@@ -2,28 +2,30 @@
 Deterministic sensitivity ranking for stored probabilistic ensemble runs.
 
 This slice is intentionally conservative:
-- it analyzes only stored runs with complete metrics and readable manifests,
+- it analyzes only stored runs with inspectable metrics and resolved values,
 - it treats resolved-value variation as observational evidence rather than
   controlled perturbation proof,
-- it ranks drivers by observed outcome deltas without claiming calibration or
-  causality.
+- it groups numeric drivers into explicit support-aware bands instead of exact
+  value identity when enough evidence exists.
 
-The artifact is still useful for operator triage and future report consumers,
-but every payload keeps the weak-evidence caveats explicit.
+The artifact stays useful for operator triage and report consumers without
+claiming calibration or causality.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional
 
 from ..config import Config
+from .analytics_policy import AnalyticsPolicy
 
 
-SENSITIVITY_SCHEMA_VERSION = "probabilistic.sensitivity.v1"
-SENSITIVITY_GENERATOR_VERSION = "probabilistic.sensitivity.generator.v1"
+SENSITIVITY_SCHEMA_VERSION = "probabilistic.sensitivity.v2"
+SENSITIVITY_GENERATOR_VERSION = "probabilistic.sensitivity.generator.v2"
 
 
 class SensitivityAnalyzer:
@@ -44,6 +46,7 @@ class SensitivityAnalyzer:
 
     def __init__(self, simulation_data_dir: Optional[str] = None) -> None:
         self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self.analytics_policy = AnalyticsPolicy()
 
     def get_sensitivity_analysis(
         self,
@@ -70,9 +73,41 @@ class SensitivityAnalyzer:
             missing_resolved_value_runs,
         ) = self._load_run_payloads(ensemble_dir)
         metric_ids = self._determine_metric_ids(run_payloads)
-        driver_rankings = self._build_driver_rankings(run_payloads, metric_ids)
+
+        eligible_run_payloads = []
+        excluded_runs = []
+        for payload in run_payloads:
+            eligibility = self.analytics_policy.assess_run(
+                mode="sensitivity",
+                run_payload={
+                    "run_id": payload["run_id"],
+                    "metrics_payload": payload.get("metrics"),
+                    "manifest_valid": payload.get("manifest_valid", True),
+                    "resolved_values": payload.get("resolved_values"),
+                    "available_numeric_metric_ids": payload.get(
+                        "available_numeric_metric_ids",
+                        [],
+                    ),
+                },
+                required_metric_ids=metric_ids,
+            )
+            if eligibility["eligible"]:
+                eligible_run_payloads.append(payload)
+            else:
+                excluded_runs.append(
+                    {"run_id": payload["run_id"], "reasons": eligibility["reasons"]}
+                )
+
+        metric_stats = self._compute_metric_stats(eligible_run_payloads, metric_ids)
+        cluster_membership = self._load_cluster_membership(simulation_id, normalized_ensemble_id)
+        driver_rankings = self._build_driver_rankings(
+            eligible_run_payloads,
+            metric_ids,
+            metric_stats,
+            cluster_membership,
+        )
         warnings = self._build_quality_warnings(
-            analyzed_runs=len(run_payloads),
+            analyzed_runs=len(eligible_run_payloads),
             missing_metrics_runs=missing_metrics_runs,
             invalid_metrics_runs=invalid_metrics_runs,
             degraded_metrics_runs=degraded_metrics_runs,
@@ -97,10 +132,18 @@ class SensitivityAnalyzer:
                     "fallback when available"
                 ),
                 "outcome_source": "metrics.json numeric metric_values",
-                "grouping_policy": "observed identical resolved values",
+                "grouping_policy": "support_aware_driver_bands",
+                "ranking_basis": "support_aware_standardized_effect_sum",
                 "effect_size_definition": "max_group_mean_minus_min_group_mean",
+                "minimum_support_count": self.analytics_policy.MINIMUM_SUPPORT_COUNT,
                 "causal_interpretation": "not_supported",
             },
+            "sample_policy": self.analytics_policy.build_sample_policy(
+                mode="sensitivity",
+                total_runs=total_runs,
+                eligible_run_ids=[payload["run_id"] for payload in eligible_run_payloads],
+                excluded_runs=excluded_runs,
+            ),
             "quality_summary": {
                 "status": "partial"
                 if (
@@ -113,7 +156,8 @@ class SensitivityAnalyzer:
                 )
                 else "complete",
                 "total_runs": total_runs,
-                "analyzed_runs": len(run_payloads),
+                "analyzed_runs": len(eligible_run_payloads),
+                "eligible_run_count": len(eligible_run_payloads),
                 "missing_metrics_runs": missing_metrics_runs,
                 "invalid_metrics_runs": invalid_metrics_runs,
                 "degraded_metrics_runs": degraded_metrics_runs,
@@ -123,10 +167,14 @@ class SensitivityAnalyzer:
             },
             "source_artifacts": {
                 "metrics_files": [
-                    payload["metrics_relpath"] for payload in run_payloads
+                    payload["metrics_relpath"]
+                    for payload in run_payloads
+                    if payload["metrics_relpath"]
                 ],
                 "run_manifest_files": [
-                    payload["manifest_relpath"] for payload in run_payloads
+                    payload["manifest_relpath"]
+                    for payload in run_payloads
+                    if payload["manifest_relpath"]
                 ],
                 "resolved_config_files": [
                     payload["resolved_config_relpath"]
@@ -198,38 +246,40 @@ class SensitivityAnalyzer:
             total_runs += 1
             run_dir = os.path.join(runs_dir, entry)
             metrics_path = os.path.join(run_dir, self.METRICS_FILENAME)
-            if not os.path.exists(metrics_path):
-                missing_metrics_runs.append(run_id)
-                continue
-
             manifest_path = os.path.join(run_dir, self.RUN_MANIFEST_FILENAME)
             resolved_config_path = os.path.join(run_dir, self.RESOLVED_CONFIG_FILENAME)
 
-            try:
-                metrics_payload = self._read_json(metrics_path)
-            except (json.JSONDecodeError, OSError):
-                invalid_metrics_runs.append(run_id)
-                continue
-            if not isinstance(metrics_payload, dict):
-                invalid_metrics_runs.append(run_id)
-                continue
+            metrics_payload: Dict[str, Any] | None = None
+            if not os.path.exists(metrics_path):
+                missing_metrics_runs.append(run_id)
+            else:
+                try:
+                    raw_metrics = self._read_json(metrics_path)
+                except (json.JSONDecodeError, OSError):
+                    invalid_metrics_runs.append(run_id)
+                    raw_metrics = None
+                if isinstance(raw_metrics, dict):
+                    metrics_payload = raw_metrics
+                elif raw_metrics is not None:
+                    invalid_metrics_runs.append(run_id)
 
-            if (
-                metrics_payload.get("quality_checks", {}).get("status") != "complete"
-                or metrics_payload.get("quality_checks", {}).get("run_status")
-                != "completed"
-            ):
-                degraded_metrics_runs.append(run_id)
-                continue
-
-            try:
-                manifest_payload = self._read_json(manifest_path)
-            except (json.JSONDecodeError, OSError):
+            manifest_payload: Dict[str, Any] = {}
+            manifest_valid = True
+            if os.path.exists(manifest_path):
+                try:
+                    raw_manifest = self._read_json(manifest_path)
+                except (json.JSONDecodeError, OSError):
+                    invalid_manifest_runs.append(run_id)
+                    raw_manifest = None
+                if isinstance(raw_manifest, dict):
+                    manifest_payload = raw_manifest
+                else:
+                    manifest_valid = False
+                    if raw_manifest is not None:
+                        invalid_manifest_runs.append(run_id)
+            elif metrics_payload is not None:
+                manifest_valid = False
                 invalid_manifest_runs.append(run_id)
-                continue
-            if not isinstance(manifest_payload, dict):
-                invalid_manifest_runs.append(run_id)
-                continue
 
             resolved_config_payload: Dict[str, Any] = {}
             if os.path.exists(resolved_config_path):
@@ -240,15 +290,23 @@ class SensitivityAnalyzer:
                 if isinstance(raw_resolved_config, dict):
                     resolved_config_payload = raw_resolved_config
 
-            # Prefer the manifest because that is the runtime-owned artifact. When
-            # older fixtures only persist sampled values in resolved_config, fall
-            # back to that read instead of pretending the run has no driver data.
-            resolved_values = manifest_payload.get("resolved_values", {})
-            if not isinstance(resolved_values, dict) or not resolved_values:
-                resolved_values = resolved_config_payload.get("sampled_values", {})
-            if not isinstance(resolved_values, dict) or not resolved_values:
-                missing_resolved_value_runs.append(run_id)
-                continue
+            if metrics_payload is not None:
+                quality_checks = metrics_payload.get("quality_checks", {})
+                if (
+                    quality_checks.get("status") != "complete"
+                    or quality_checks.get("run_status") != "completed"
+                ):
+                    degraded_metrics_runs.append(run_id)
+
+            resolved_values: Dict[str, Any] = {}
+            if manifest_valid:
+                raw_resolved_values = manifest_payload.get("resolved_values", {})
+                if not isinstance(raw_resolved_values, dict) or not raw_resolved_values:
+                    raw_resolved_values = resolved_config_payload.get("sampled_values", {})
+                if isinstance(raw_resolved_values, dict) and raw_resolved_values:
+                    resolved_values = raw_resolved_values
+                elif metrics_payload is not None:
+                    missing_resolved_value_runs.append(run_id)
 
             run_payloads.append(
                 {
@@ -256,10 +314,26 @@ class SensitivityAnalyzer:
                     "run_dir": run_dir,
                     "metrics": metrics_payload,
                     "manifest": manifest_payload,
+                    "manifest_valid": manifest_valid,
                     "resolved_config": resolved_config_payload,
                     "resolved_values": resolved_values,
-                    "metrics_relpath": os.path.relpath(metrics_path, ensemble_dir),
-                    "manifest_relpath": os.path.relpath(manifest_path, ensemble_dir),
+                    "available_numeric_metric_ids": (
+                        self.analytics_policy.extract_available_numeric_metric_ids(
+                            metrics_payload
+                        )
+                        if metrics_payload is not None
+                        else []
+                    ),
+                    "metrics_relpath": (
+                        os.path.relpath(metrics_path, ensemble_dir)
+                        if os.path.exists(metrics_path)
+                        else None
+                    ),
+                    "manifest_relpath": (
+                        os.path.relpath(manifest_path, ensemble_dir)
+                        if os.path.exists(manifest_path)
+                        else None
+                    ),
                     "resolved_config_relpath": (
                         os.path.relpath(resolved_config_path, ensemble_dir)
                         if os.path.exists(resolved_config_path)
@@ -281,11 +355,9 @@ class SensitivityAnalyzer:
     def _determine_metric_ids(self, run_payloads: List[Dict[str, Any]]) -> List[str]:
         metric_sets: List[set[str]] = []
         for payload in run_payloads:
-            numeric_ids = {
-                metric_id
-                for metric_id, raw_entry in payload["metrics"].get("metric_values", {}).items()
-                if self._coerce_numeric_value(raw_entry) is not None
-            }
+            if not isinstance(payload.get("metrics"), dict):
+                continue
+            numeric_ids = set(payload.get("available_numeric_metric_ids", []))
             if numeric_ids:
                 metric_sets.append(numeric_ids)
 
@@ -293,10 +365,75 @@ class SensitivityAnalyzer:
             return []
         return sorted(set.intersection(*metric_sets))
 
+    def _compute_metric_stats(
+        self,
+        run_payloads: List[Dict[str, Any]],
+        metric_ids: List[str],
+    ) -> Dict[str, Dict[str, float]]:
+        stats: Dict[str, Dict[str, float]] = {}
+        for metric_id in metric_ids:
+            numeric_values = [
+                value
+                for value in (
+                    self.analytics_policy.coerce_numeric_value(
+                        payload["metrics"].get("metric_values", {}).get(metric_id)
+                    )
+                    for payload in run_payloads
+                    if isinstance(payload.get("metrics"), dict)
+                )
+                if value is not None
+            ]
+            if not numeric_values:
+                continue
+            mean = sum(numeric_values) / len(numeric_values)
+            variance = sum((value - mean) ** 2 for value in numeric_values) / len(
+                numeric_values
+            )
+            stats[metric_id] = {
+                "mean": mean,
+                "stddev": variance ** 0.5,
+            }
+        return stats
+
+    def _load_cluster_membership(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Dict[str, str]]:
+        ensemble_dir = self._get_ensemble_dir(simulation_id, ensemble_id)
+        clusters_path = os.path.join(ensemble_dir, "scenario_clusters.json")
+        if not os.path.exists(clusters_path):
+            return {"run_to_cluster": {}, "cluster_to_runs": {}}
+        try:
+            payload = self._read_json(clusters_path)
+        except (json.JSONDecodeError, OSError):
+            return {"run_to_cluster": {}, "cluster_to_runs": {}}
+
+        run_to_cluster: Dict[str, str] = {}
+        cluster_to_runs: Dict[str, List[str]] = {}
+        for cluster in payload.get("clusters", []):
+            cluster_id = str(cluster.get("cluster_id") or "").strip()
+            member_run_ids = [
+                str(run_id).strip()
+                for run_id in cluster.get("member_run_ids", [])
+                if str(run_id).strip()
+            ]
+            if not cluster_id:
+                continue
+            cluster_to_runs[cluster_id] = member_run_ids
+            for run_id in member_run_ids:
+                run_to_cluster[run_id] = cluster_id
+        return {
+            "run_to_cluster": run_to_cluster,
+            "cluster_to_runs": cluster_to_runs,
+        }
+
     def _build_driver_rankings(
         self,
         run_payloads: List[Dict[str, Any]],
         metric_ids: List[str],
+        metric_stats: Dict[str, Dict[str, float]],
+        cluster_membership: Dict[str, Dict[str, str]],
     ) -> List[Dict[str, Any]]:
         if not run_payloads or not metric_ids:
             return []
@@ -329,31 +466,68 @@ class SensitivityAnalyzer:
             if len(distinct_values) < 2:
                 continue
 
-            group_payloads = self._group_runs_by_driver_value(values_by_run)
-            metric_impacts = self._build_metric_impacts(group_payloads, metric_ids)
+            driver_kind = self._infer_driver_kind([value for _, value in values_by_run])
+            group_payloads = self._group_runs_by_driver_value(values_by_run, driver_kind)
+            if len(group_payloads) < 2:
+                continue
+
+            metric_impacts = self._build_metric_impacts(
+                group_payloads,
+                metric_ids,
+                metric_stats,
+            )
             if not metric_impacts:
                 continue
 
+            warnings = []
+            if any(not group["minimum_support_met"] for group in group_payloads):
+                warnings.append("minimum_support_not_met")
+
             overall_effect_score = round(
                 sum(
-                    impact.get("relative_effect")
-                    if impact.get("relative_effect") is not None
-                    else impact["effect_size"]
+                    (
+                        impact.get("standardized_effect")
+                        if impact.get("standardized_effect") is not None
+                        else impact["effect_size"]
+                    )
+                    * impact.get("support_weight", 1.0)
                     for impact in metric_impacts
                 ),
                 4,
             )
-            driver_kind = self._infer_driver_kind([value for _, value in values_by_run])
+            top_impact = metric_impacts[0]
             rankings.append(
                 {
                     "driver_id": field_path,
                     "field_path": field_path,
                     "driver_kind": driver_kind,
                     "sample_count": len(values_by_run),
-                    "distinct_value_count": len(group_payloads),
+                    "distinct_value_count": len(distinct_values),
+                    "group_count": len(group_payloads),
+                    "minimum_support_count": self.analytics_policy.MINIMUM_SUPPORT_COUNT,
+                    "minimum_support_met": all(
+                        group["minimum_support_met"] for group in group_payloads
+                    ),
                     "overall_effect_score": overall_effect_score,
                     "metric_impacts": metric_impacts,
                     "metric_effects": metric_impacts,
+                    "driver_summary": {
+                        "semantics": "observational",
+                        "ranking_basis": "support_aware_standardized_effect_sum",
+                        "top_metric_id": top_impact.get("metric_id"),
+                        "top_metric_effect_size": top_impact.get("effect_size"),
+                        "top_metric_standardized_effect": top_impact.get(
+                            "standardized_effect"
+                        ),
+                        "support_label": (
+                            f"{len(values_by_run)} runs across {len(group_payloads)} groups"
+                        ),
+                    },
+                    "cluster_alignment_hints": self._build_cluster_alignment_hints(
+                        group_payloads,
+                        cluster_membership,
+                    ),
+                    "warnings": warnings,
                 }
             )
 
@@ -365,40 +539,40 @@ class SensitivityAnalyzer:
     def _group_runs_by_driver_value(
         self,
         values_by_run: List[tuple[Dict[str, Any], Any]],
+        driver_kind: str,
     ) -> List[Dict[str, Any]]:
-        group_map: Dict[str, Dict[str, Any]] = {}
-        for payload, raw_value in values_by_run:
-            label = self._format_value_label(raw_value)
-            key = self._stable_value_key(raw_value)
-            group = group_map.setdefault(
-                key,
-                {
-                    "value": raw_value,
-                    "value_label": label,
-                    "members": [],
-                },
-            )
-            group["members"].append(payload)
+        if driver_kind == "numeric":
+            numeric_values_by_run = [
+                (payload, float(raw_value))
+                for payload, raw_value in values_by_run
+                if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool)
+            ]
+            if len(numeric_values_by_run) == len(values_by_run):
+                groups = self.analytics_policy.build_numeric_driver_groups(
+                    numeric_values_by_run
+                )
+                if len(groups) >= 2:
+                    return groups
 
-        return sorted(
-            group_map.values(),
-            key=lambda item: (
-                self._sort_value(item["value"]),
-                item["value_label"],
-            ),
+        return self.analytics_policy.build_identity_groups(
+            values_by_run,
+            format_value=self._format_value_label,
+            stable_key=self._stable_value_key,
+            sort_value=self._sort_value,
         )
 
     def _build_metric_impacts(
         self,
         group_payloads: List[Dict[str, Any]],
         metric_ids: List[str],
+        metric_stats: Dict[str, Dict[str, float]],
     ) -> List[Dict[str, Any]]:
         impacts: List[Dict[str, Any]] = []
         for metric_id in metric_ids:
             group_summaries = []
             for group in group_payloads:
                 values = [
-                    self._coerce_numeric_value(
+                    self.analytics_policy.coerce_numeric_value(
                         payload["metrics"].get("metric_values", {}).get(metric_id)
                     )
                     for payload in group["members"]
@@ -407,38 +581,74 @@ class SensitivityAnalyzer:
                 if not numeric_values:
                     group_summaries = []
                     break
-                group_summaries.append(
-                    {
-                        "value_label": group["value_label"],
-                        "sample_count": len(numeric_values),
-                        "mean": round(sum(numeric_values) / len(numeric_values), 4),
-                        "min": round(min(numeric_values), 4),
-                        "max": round(max(numeric_values), 4),
-                    }
-                )
+
+                group_summary = {
+                    "value_label": group["value_label"],
+                    "sample_count": len(numeric_values),
+                    "support_count": group["support_count"],
+                    "support_fraction": group["support_fraction"],
+                    "minimum_support_count": group["minimum_support_count"],
+                    "minimum_support_met": group["minimum_support_met"],
+                    "warnings": list(group.get("warnings", [])),
+                    "mean": round(sum(numeric_values) / len(numeric_values), 4),
+                    "min": round(min(numeric_values), 4),
+                    "max": round(max(numeric_values), 4),
+                }
+                if group.get("group_kind") == "numeric_band":
+                    group_summary["range_min"] = group.get("range_min")
+                    group_summary["range_max"] = group.get("range_max")
+                group_summaries.append(group_summary)
 
             if len(group_summaries) < 2:
                 continue
 
             ordered_means = [group["mean"] for group in group_summaries]
             effect_size = round(max(ordered_means) - min(ordered_means), 4)
-            low_group = min(group_summaries, key=lambda item: (item["mean"], item["value_label"]))
-            high_group = max(group_summaries, key=lambda item: (item["mean"], item["value_label"]))
+            low_group = min(
+                group_summaries,
+                key=lambda item: (item["mean"], item["value_label"]),
+            )
+            high_group = max(
+                group_summaries,
+                key=lambda item: (item["mean"], item["value_label"]),
+            )
             baseline_mean = low_group["mean"]
             relative_effect = None
             if baseline_mean not in (None, 0):
                 relative_effect = round(effect_size / abs(baseline_mean), 4)
+            metric_stddev = metric_stats.get(metric_id, {}).get("stddev")
+            standardized_effect = None
+            if metric_stddev not in (None, 0):
+                standardized_effect = round(effect_size / metric_stddev, 4)
+            support_weight = round(
+                min(
+                    (
+                        group.get("support_fraction")
+                        for group in group_summaries
+                        if isinstance(group.get("support_fraction"), (int, float))
+                    ),
+                    default=1.0,
+                ),
+                4,
+            )
+
+            impact_warnings = []
+            if any(not group["minimum_support_met"] for group in group_summaries):
+                impact_warnings.append("minimum_support_not_met")
 
             impacts.append(
                 {
                     "metric_id": metric_id,
                     "effect_size": effect_size,
                     "relative_effect": relative_effect,
+                    "standardized_effect": standardized_effect,
+                    "support_weight": support_weight,
                     "strongest_groups": [
                         low_group["value_label"],
                         high_group["value_label"],
                     ],
                     "group_summaries": group_summaries,
+                    "warnings": impact_warnings,
                 }
             )
 
@@ -446,6 +656,51 @@ class SensitivityAnalyzer:
             key=lambda item: (-item["effect_size"], item["metric_id"])
         )
         return impacts
+
+    def _build_cluster_alignment_hints(
+        self,
+        group_payloads: List[Dict[str, Any]],
+        cluster_membership: Dict[str, Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
+        run_to_cluster = cluster_membership.get("run_to_cluster", {})
+        cluster_to_runs = cluster_membership.get("cluster_to_runs", {})
+        if not run_to_cluster or not cluster_to_runs:
+            return []
+
+        hints: List[Dict[str, Any]] = []
+        for group in group_payloads:
+            group_run_ids = [
+                str(member.get("run_id")).strip()
+                for member in group.get("members", [])
+                if str(member.get("run_id") or "").strip()
+            ]
+            if not group_run_ids:
+                continue
+            counts: Counter[str] = Counter(
+                run_to_cluster[run_id]
+                for run_id in group_run_ids
+                if run_id in run_to_cluster
+            )
+            if not counts:
+                continue
+            cluster_id, matched_run_count = sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0]
+            alignment_fraction = matched_run_count / len(group_run_ids)
+            if alignment_fraction < 0.75:
+                continue
+            hints.append(
+                {
+                    "cluster_id": cluster_id,
+                    "group_value_label": group.get("value_label"),
+                    "matched_run_count": matched_run_count,
+                    "alignment_fraction": round(alignment_fraction, 4),
+                    "cluster_run_count": len(cluster_to_runs.get(cluster_id, [])),
+                }
+            )
+
+        return hints
 
     def _build_quality_warnings(
         self,
@@ -481,8 +736,12 @@ class SensitivityAnalyzer:
     def _derive_generated_at(self, run_payloads: List[Dict[str, Any]]) -> str:
         timestamps = []
         for payload in run_payloads:
-            metrics_timestamp = payload["metrics"].get("extracted_at")
-            manifest_timestamp = payload["manifest"].get("generated_at")
+            metrics_timestamp = (
+                payload["metrics"].get("extracted_at")
+                if isinstance(payload.get("metrics"), dict)
+                else None
+            )
+            manifest_timestamp = payload.get("manifest", {}).get("generated_at")
             if metrics_timestamp:
                 timestamps.append(metrics_timestamp)
             if manifest_timestamp:
@@ -494,7 +753,10 @@ class SensitivityAnalyzer:
     def _infer_driver_kind(self, values: List[Any]) -> str:
         if values and all(isinstance(value, bool) for value in values):
             return "binary"
-        if values and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+        if values and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in values
+        ):
             return "numeric"
         return "categorical"
 
@@ -514,18 +776,6 @@ class SensitivityAnalyzer:
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return (0, float(value))
         return (1, str(value))
-
-    def _coerce_numeric_value(self, raw_entry: Any) -> Optional[float]:
-        if isinstance(raw_entry, dict):
-            value = raw_entry.get("value")
-        else:
-            value = raw_entry
-
-        if isinstance(value, bool):
-            return float(value)
-        if isinstance(value, (int, float)):
-            return float(value)
-        return None
 
     def _read_json(self, path: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as handle:

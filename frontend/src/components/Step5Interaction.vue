@@ -155,6 +155,178 @@
           <p class="probabilistic-step5-copy">{{ step5InteractionState.body }}</p>
         </div>
 
+        <div
+          v-if="chatTarget === 'report_agent' && probabilisticEvidenceSummary.available"
+          class="probabilistic-step5-evidence"
+          data-testid="probabilistic-step5-evidence"
+        >
+          <div class="probabilistic-step5-evidence-head">
+            <span class="probabilistic-step5-evidence-label">Scope</span>
+            <span class="probabilistic-step5-evidence-value">
+              {{ probabilisticScopeLabel }}
+            </span>
+          </div>
+          <div
+            v-if="availableScopeLevels.length"
+            class="probabilistic-step5-scope-control"
+            data-testid="probabilistic-step5-scope-control"
+          >
+            <div class="probabilistic-step5-scope-row">
+              <button
+                v-for="level in availableScopeLevels"
+                :key="level"
+                type="button"
+                class="probabilistic-step5-scope-btn"
+                :class="{ active: activeReportScope.level === level }"
+                @click="selectReportScopeLevel(level)"
+              >
+                {{ level === 'ensemble' ? 'Ensemble' : (level === 'cluster' ? 'Family' : 'Run') }}
+              </button>
+            </div>
+            <label
+              v-if="currentScopeOptions.length > 1"
+              class="probabilistic-step5-scope-select"
+            >
+              <span>Selection</span>
+              <select
+                :value="currentScopeValue"
+                @change="selectReportScopeValue($event.target.value)"
+              >
+                <option
+                  v-for="option in currentScopeOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <p class="probabilistic-step5-evidence-copy">
+            {{ probabilisticEvidenceSummary.scope.supportLabel }}
+          </p>
+          <p class="probabilistic-step5-evidence-copy">
+            Only the Report Agent lane uses this explicit scope. Interviews and surveys remain legacy-scoped.
+          </p>
+          <p
+            v-if="probabilisticEvidenceSummary.grounding?.boundaryNote"
+            class="probabilistic-step5-evidence-copy"
+          >
+            {{ probabilisticEvidenceSummary.grounding.boundaryNote }}
+          </p>
+          <div
+            v-if="probabilisticEvidenceSummary.selectedCompare"
+            class="probabilistic-step5-compare"
+            data-testid="probabilistic-step5-compare"
+          >
+            <div class="probabilistic-step5-evidence-head">
+              <span class="probabilistic-step5-evidence-label">Compare</span>
+              <span class="probabilistic-step5-evidence-value">
+                {{ probabilisticEvidenceSummary.selectedCompare.label }}
+              </span>
+            </div>
+            <p
+              v-if="probabilisticEvidenceSummary.selectedCompare.reason"
+              class="probabilistic-step5-evidence-copy"
+            >
+              {{ probabilisticEvidenceSummary.selectedCompare.reason }}
+            </p>
+            <p
+              v-for="line in probabilisticEvidenceSummary.selectedCompare.comparisonSummary.whatDiffers"
+              :key="`compare-line-${line}`"
+              class="probabilistic-step5-evidence-copy"
+            >
+              {{ line }}
+            </p>
+            <p
+              v-if="probabilisticEvidenceSummary.selectedCompare.comparisonSummary.boundaryNote"
+              class="probabilistic-step5-evidence-copy"
+            >
+              {{ probabilisticEvidenceSummary.selectedCompare.comparisonSummary.boundaryNote }}
+            </p>
+            <button
+              type="button"
+              class="probabilistic-starter-chip"
+              @click="applyStarterPrompt(probabilisticEvidenceSummary.selectedCompare.prompt)"
+            >
+              Use compare prompt
+            </button>
+          </div>
+          <div class="probabilistic-step5-chip-row">
+            <span
+              v-if="probabilisticEvidenceSummary.confidenceStatus"
+              class="probabilistic-step5-chip"
+            >
+              Confidence {{ probabilisticEvidenceSummary.confidenceStatus.status }}
+            </span>
+            <span
+              v-if="probabilisticEvidenceSummary.grounding"
+              class="probabilistic-step5-chip"
+            >
+              Grounding {{ probabilisticEvidenceSummary.grounding.status }}
+            </span>
+            <span
+              v-if="probabilisticEvidenceSummary.grounding"
+              class="probabilistic-step5-chip"
+            >
+              S{{ probabilisticEvidenceSummary.grounding.citationCounts.source }} / G{{ probabilisticEvidenceSummary.grounding.citationCounts.graph }}
+            </span>
+            <span
+              v-if="probabilisticEvidenceSummary.selectedCluster?.clusterId"
+              class="probabilistic-step5-chip"
+            >
+              Family {{ probabilisticEvidenceSummary.selectedCluster.clusterId }}
+            </span>
+            <span
+              v-for="runIdValue in probabilisticEvidenceSummary.scope.representativeRunIds"
+              :key="`rep-${runIdValue}`"
+              class="probabilistic-step5-chip"
+            >
+              Rep {{ runIdValue }}
+            </span>
+            <span
+              v-for="reason in (probabilisticEvidenceSummary.confidenceStatus?.gatingReasons || [])"
+              :key="`confidence-${reason}`"
+              class="probabilistic-step5-chip warning"
+            >
+              {{ reason }}
+            </span>
+            <span
+              v-for="warning in (probabilisticEvidenceSummary.confidenceStatus?.warnings || [])"
+              :key="`confidence-warning-${warning}`"
+              class="probabilistic-step5-chip warning"
+            >
+              {{ warning }}
+            </span>
+            <span
+              v-for="warning in probabilisticEvidenceSummary.scope.warnings"
+              :key="`warn-${warning}`"
+              class="probabilistic-step5-chip warning"
+            >
+              {{ warning }}
+            </span>
+            <span
+              v-if="probabilisticEvidenceSummary.selectedRun?.assumptionSummary"
+              class="probabilistic-step5-chip"
+            >
+              {{ probabilisticEvidenceSummary.selectedRun.assumptionSummary }}
+            </span>
+            <span
+              v-if="probabilisticEvidenceSummary.calibration?.summary"
+              class="probabilistic-step5-chip"
+            >
+              {{ probabilisticEvidenceSummary.calibration.summary }}
+            </span>
+            <span
+              v-for="item in (probabilisticEvidenceSummary.grounding?.evidenceItems || [])"
+              :key="`grounding-${item.citationId || item.title}`"
+              class="probabilistic-step5-chip"
+            >
+              {{ item.citationId || item.title }}
+            </span>
+          </div>
+        </div>
+
         <!-- Chat Mode -->
         <div v-if="activeTab === 'chat'" class="chat-container">
 
@@ -261,6 +433,20 @@
               <p class="empty-text">
                 {{ chatTarget === 'report_agent' ? 'Talk with Report Agent to explore the report in more depth' : 'Talk with simulated individuals to understand their perspectives' }}
               </p>
+              <div
+                v-if="chatTarget === 'report_agent' && probabilisticEvidenceSummary.comparePrompts.length"
+                class="probabilistic-starter-list"
+              >
+                <button
+                  v-for="prompt in probabilisticEvidenceSummary.comparePrompts"
+                  :key="prompt.label"
+                  class="probabilistic-starter-chip"
+                  type="button"
+                  @click="applyStarterPrompt(prompt.prompt)"
+                >
+                  {{ prompt.label }}
+                </button>
+              </div>
             </div>
             <div
               v-for="(msg, idx) in chatHistory"
@@ -426,6 +612,7 @@ import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulatio
 import { renderSafeMarkdown } from '../utils/safeMarkdown'
 import {
   buildReportAgentChatRequest,
+  deriveProbabilisticEvidenceSummary,
   getStep5InteractionState
 } from '../utils/probabilisticRuntime'
 
@@ -440,7 +627,15 @@ const props = defineProps({
     type: String,
     default: null
   },
+  clusterId: {
+    type: String,
+    default: null
+  },
   runId: {
+    type: String,
+    default: null
+  },
+  compareId: {
     type: String,
     default: null
   },
@@ -451,15 +646,210 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const normalizeScopeEntry = (entry, fallbackLevel = 'ensemble') => {
+  if (!entry || typeof entry !== 'object') {
+    return null
+  }
+  const level = typeof entry.level === 'string' ? entry.level : fallbackLevel
+  const ensembleId = typeof entry.ensemble_id === 'string' ? entry.ensemble_id : null
+  const clusterId = typeof entry.cluster_id === 'string' ? entry.cluster_id : null
+  const runId = typeof entry.run_id === 'string' ? entry.run_id : null
+  const value = level === 'run'
+    ? runId
+    : (level === 'cluster' ? clusterId : `ensemble:${ensembleId || 'current'}`)
+  const label = level === 'run'
+    ? `Run ${runId || '-'}`
+    : (level === 'cluster'
+      ? `Family ${clusterId || '-'}`
+      : `Ensemble ${ensembleId || '-'}`)
+
+  return {
+    level,
+    value,
+    label,
+    ensembleId,
+    clusterId: level === 'ensemble' ? null : clusterId,
+    runId: level === 'run' ? runId : null
+  }
+}
+
+const dedupeScopeOptions = (options = []) => {
+  const deduped = []
+  const seen = new Set()
+  for (const option of options) {
+    if (!option?.value || seen.has(option.value)) {
+      continue
+    }
+    seen.add(option.value)
+    deduped.push(option)
+  }
+  return deduped
+}
+
+const activeReportScope = ref({
+  level: 'ensemble',
+  ensembleId: props.ensembleId || null,
+  clusterId: null,
+  runId: null
+})
+const activeCompareId = ref(props.compareId || null)
+
+const scopeCatalog = computed(() => {
+  const context = (
+    props.probabilisticContext
+    && typeof props.probabilisticContext === 'object'
+  )
+    ? props.probabilisticContext
+    : {}
+  const catalog = (
+    context.scope_catalog
+    && typeof context.scope_catalog === 'object'
+  )
+    ? context.scope_catalog
+    : {}
+
+  const ensembleOption = normalizeScopeEntry(
+    catalog.ensemble || {
+      level: 'ensemble',
+      ensemble_id: props.ensembleId || context.ensemble_id || context.scope?.ensemble_id || null
+    },
+    'ensemble'
+  )
+  const clusterOptions = dedupeScopeOptions(
+    Array.isArray(catalog.clusters)
+      ? catalog.clusters.map((entry) => normalizeScopeEntry(entry, 'cluster')).filter(Boolean)
+      : []
+  )
+  const runOptions = dedupeScopeOptions(
+    Array.isArray(catalog.runs)
+      ? catalog.runs.map((entry) => normalizeScopeEntry(entry, 'run')).filter(Boolean)
+      : []
+  )
+
+  return {
+    ensemble: ensembleOption,
+    optionsByLevel: {
+      ensemble: ensembleOption ? [ensembleOption] : [],
+      cluster: clusterOptions,
+      run: runOptions
+    }
+  }
+})
+
+const availableScopeLevels = computed(() => (
+  ['ensemble', 'cluster', 'run'].filter((level) => scopeCatalog.value.optionsByLevel[level]?.length)
+))
+
+const currentScopeOptions = computed(() => (
+  scopeCatalog.value.optionsByLevel[activeReportScope.value.level] || []
+))
+
+const currentScopeValue = computed(() => {
+  if (activeReportScope.value.level === 'run') {
+    return activeReportScope.value.runId || ''
+  }
+  if (activeReportScope.value.level === 'cluster') {
+    return activeReportScope.value.clusterId || ''
+  }
+  return `ensemble:${activeReportScope.value.ensembleId || 'current'}`
+})
+
+const applyScopeOption = (option) => {
+  if (!option) {
+    return
+  }
+  activeReportScope.value = {
+    level: option.level,
+    ensembleId: option.ensembleId || props.ensembleId || null,
+    clusterId: option.level === 'ensemble' ? null : (option.clusterId || null),
+    runId: option.level === 'run' ? (option.runId || null) : null
+  }
+}
+
+const resetProbabilisticSelectionState = () => {
+  const context = (
+    props.probabilisticContext
+    && typeof props.probabilisticContext === 'object'
+  )
+    ? props.probabilisticContext
+    : {}
+  const baseLevel = (
+    context.scope
+    && typeof context.scope === 'object'
+    && typeof context.scope.level === 'string'
+  )
+    ? context.scope.level
+    : (props.runId ? 'run' : (props.clusterId ? 'cluster' : 'ensemble'))
+  const preferredOptions = scopeCatalog.value.optionsByLevel[baseLevel] || []
+  if (preferredOptions.length) {
+    const matchingOption = preferredOptions.find((option) => (
+      (baseLevel === 'run' && option.runId === props.runId)
+      || (baseLevel === 'cluster' && option.clusterId === props.clusterId)
+      || (baseLevel === 'ensemble' && option.ensembleId === props.ensembleId)
+    )) || preferredOptions[0]
+    applyScopeOption(matchingOption)
+  } else {
+    activeReportScope.value = {
+      level: baseLevel,
+      ensembleId: props.ensembleId || context.ensemble_id || context.scope?.ensemble_id || null,
+      clusterId: baseLevel === 'ensemble' ? null : (props.clusterId || context.cluster_id || context.scope?.cluster_id || null),
+      runId: baseLevel === 'run' ? (props.runId || context.run_id || context.scope?.run_id || null) : null
+    }
+  }
+  activeCompareId.value = props.compareId || null
+}
+
+const probabilisticEvidenceSummary = computed(() => deriveProbabilisticEvidenceSummary({
+  runtimeMode: props.runtimeMode,
+  ensembleId: activeReportScope.value.ensembleId,
+  clusterId: activeReportScope.value.clusterId,
+  runId: activeReportScope.value.runId,
+  scopeLevel: activeReportScope.value.level,
+  compareId: activeCompareId.value,
+  reportContext: props.probabilisticContext
+}))
 const step5InteractionState = computed(() => getStep5InteractionState(
   props.runtimeMode,
   {
+    ensembleId: activeReportScope.value.ensembleId,
+    clusterId: activeReportScope.value.clusterId,
+    runId: activeReportScope.value.runId,
+    reportContext: props.probabilisticContext,
     hasSavedProbabilisticContext: (
       props.probabilisticContext
       && typeof props.probabilisticContext === 'object'
     )
   }
 ))
+
+const probabilisticScopeLabel = computed(() => {
+  const level = probabilisticEvidenceSummary.value.scope?.level || 'ensemble'
+  if (level === 'run') {
+    return 'Run scoped'
+  }
+  if (level === 'cluster') {
+    return 'Scenario-family scoped'
+  }
+  return 'Ensemble scoped'
+})
+
+const selectReportScopeLevel = (level) => {
+  const options = scopeCatalog.value.optionsByLevel[level] || []
+  if (!options.length) {
+    return
+  }
+  applyScopeOption(options[0])
+  addLog(`Report Agent scope switched to ${level}`)
+}
+
+const selectReportScopeValue = (value) => {
+  const option = currentScopeOptions.value.find((entry) => entry.value === value)
+  if (!option) {
+    return
+  }
+  applyScopeOption(option)
+  addLog(`Report Agent scope switched to ${option.label}`)
+}
 
 // State
 const activeTab = ref('chat')
@@ -640,6 +1030,13 @@ const sendToReportAgent = async (message) => {
     ...buildReportAgentChatRequest({
       simulationId: props.simulationId,
       reportId: props.reportId,
+      runtimeMode: props.runtimeMode,
+      ensembleId: activeReportScope.value.ensembleId,
+      clusterId: activeReportScope.value.clusterId,
+      runId: activeReportScope.value.runId,
+      scopeLevel: activeReportScope.value.level,
+      compareId: activeCompareId.value,
+      reportContext: props.probabilisticContext,
       message,
       chatHistory: historyForApi
     })
@@ -721,6 +1118,16 @@ const scrollToBottom = () => {
     if (chatMessages.value) {
       chatMessages.value.scrollTop = chatMessages.value.scrollHeight
     }
+  })
+}
+
+const applyStarterPrompt = (prompt) => {
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    return
+  }
+  chatInput.value = prompt
+  nextTick(() => {
+    chatInputRef.value?.focus()
   })
 }
 
@@ -877,6 +1284,7 @@ const handleClickOutside = (e) => {
 // Lifecycle
 onMounted(() => {
   addLog('Step5 deep interaction initialized')
+  resetProbabilisticSelectionState()
   loadReportData()
   loadProfiles()
   document.addEventListener('click', handleClickOutside)
@@ -897,6 +1305,14 @@ watch(() => props.simulationId, (newId) => {
     loadProfiles()
   }
 }, { immediate: true })
+
+watch(
+  () => [props.runtimeMode, props.ensembleId, props.clusterId, props.runId, props.compareId, props.probabilisticContext],
+  () => {
+    resetProbabilisticSelectionState()
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>
@@ -1320,6 +1736,113 @@ watch(() => props.simulationId, (newId) => {
   font-size: 13px;
   line-height: 1.5;
   color: #6a5231;
+}
+
+.probabilistic-step5-evidence {
+  margin: 12px 20px 0;
+  border: 1px solid rgba(156, 107, 47, 0.14);
+  background: rgba(255, 253, 248, 0.92);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.probabilistic-step5-evidence-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.probabilistic-step5-evidence-label,
+.probabilistic-step5-evidence-value {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7a5424;
+}
+
+.probabilistic-step5-evidence-copy {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #5e4d37;
+}
+
+.probabilistic-step5-scope-control {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 248, 236, 0.8);
+  border: 1px solid rgba(156, 107, 47, 0.12);
+}
+
+.probabilistic-step5-scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.probabilistic-step5-scope-btn {
+  border: 1px solid rgba(156, 107, 47, 0.16);
+  background: #fffaf2;
+  color: #5f482d;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.probabilistic-step5-scope-btn.active {
+  background: #7d5530;
+  border-color: #7d5530;
+  color: #fffaf2;
+}
+
+.probabilistic-step5-scope-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #6c5636;
+}
+
+.probabilistic-step5-scope-select select {
+  border: 1px solid rgba(156, 107, 47, 0.16);
+  border-radius: 10px;
+  background: #fffdf8;
+  color: #31281f;
+  padding: 9px 11px;
+  font-size: 13px;
+}
+
+.probabilistic-step5-compare {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(248, 242, 231, 0.82);
+  border: 1px solid rgba(156, 107, 47, 0.12);
+}
+
+.probabilistic-step5-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.probabilistic-step5-chip {
+  background: rgba(36, 32, 28, 0.06);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #4a4137;
+}
+
+.probabilistic-step5-chip.warning {
+  background: rgba(198, 146, 66, 0.14);
+  color: #6c4a23;
 }
 
 .tab-pill {
@@ -1895,6 +2418,30 @@ watch(() => props.simulationId, (newId) => {
   text-align: center;
   max-width: 280px;
   line-height: 1.6;
+}
+
+.probabilistic-starter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 480px;
+}
+
+.probabilistic-starter-chip {
+  border: 1px solid rgba(156, 107, 47, 0.2);
+  background: rgba(255, 250, 242, 0.95);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: #6c4a23;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.probabilistic-starter-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(156, 107, 47, 0.12);
 }
 
 .chat-message {
