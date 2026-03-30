@@ -1,165 +1,95 @@
 # What MiroFishES Adds
 
-This document explains how the current MiroFishES repo differs from the fork-era MiroFish baseline.
+This file is the plain-language fork delta. It describes what is actually present in this repo now, not an audited comparison against some external upstream at a matching commit.
 
-It is intentionally phrased in terms of the repo you are holding, not a live audited comparison against an external upstream repository. Where the repo is still bounded or partial, it says so explicitly.
+## The Real Delta
 
-## Fork-Era Baseline
+### 1. Step 2 is no longer only transient setup
 
-The fork-era baseline can be summarized as:
-
-1. ingest source material
-2. build a graph-backed world
-3. configure and run a simulation
-4. produce a report
-5. explore the result through an interaction surface
-
-That baseline is still present in this repo as the legacy single-run path.
-
-## How MiroFishES Has Diverged
-
-MiroFishES extends that baseline into an artifact-first forecasting stack.
-
-### 1. Forecast control plane
-
-The repo now supports a bounded forecast-first path with durable artifacts instead of only transient setup state.
-
-Key additions:
+The original flow mostly moved from graph build into one simulation run. MiroFishES adds a Step 2 artifact layer:
 
 - `forecast_brief.json`
 - `uncertainty_spec.json`
 - `outcome_spec.json`
 - `prepared_snapshot.json`
-- `ensemble_spec.json`
-- `ensemble_state.json`
-- `run_manifest.json`
-- `resolved_config.json`
+- `grounding_bundle.json`
 
-Meaning:
+That matters because Step 2 can now prepare a forecast-oriented control packet before any Step 3 run is launched.
 
-- Step 2 can prepare a forecast-oriented control packet.
-- Step 3 can operate on stored runs and explicit ensemble state rather than only one ephemeral run.
+### 2. Step 2 handoff and Step 3 operate on stored shells
 
-### 2. Upstream grounding layer
+The next change is operational, not rhetorical.
 
-The repo now preserves a durable upstream evidence layer:
+Step 2 handoff creates or reopens stored Step 3 run shells. Step 3 then lets the operator launch, stop, retry, clean up, or branch those shells. A prepared shell is still passive until launch.
+
+That is different from the old single-run path, but it is still bounded. The repo is not claiming some larger automated forecasting certainty here than the stored-shell contract supports.
+
+### 3. The repo keeps a bounded upstream grounding layer
+
+MiroFishES persists:
 
 - `source_manifest.json`
 - `graph_build_summary.json`
 - `grounding_bundle.json`
 
-Meaning:
+That gives later steps a durable record of what source and graph-build evidence was attached. It does not mean the system has comprehensive research grounding or exhaustive code-analysis grounding.
 
-- later forecast steps can point to uploaded-source and graph-build provenance
-- report and interaction surfaces can cite bounded upstream evidence instead of only simulation outputs
+### 4. Reporting and interaction now understand scope
 
-Boundary:
+The repo treats `ensemble`, `cluster`, and `run` as explicit scope levels across Step 4 and the Report Agent lane in Step 5.
 
-- this is not comprehensive research grounding
-- this is not exhaustive external code-analysis grounding
+That scope travels through saved report metadata, history replay, and scoped report-agent requests. It is a real contract, not just prompt wording.
 
-### 3. Scope-aware analytics
+### 5. Analytics are more inspectable
 
-The repo now treats `ensemble`, `cluster`, and `run` as explicit scope levels across reporting and interaction.
-
-Key additions:
+The forecasting layer adds persisted analytics artifacts such as:
 
 - `aggregate_summary.json`
 - `scenario_clusters.json`
 - `sensitivity.json`
-- explicit `cluster_id` and scope routing in downstream report and chat flows
+- `probabilistic_report_context.json`
 
-Meaning:
+Those artifacts let the UI surface support counts, representative runs, selected family context, compare choices, and explicit evidence boundaries.
 
-- scenario-family analysis is no longer just an implicit prompt concept
-- operators can inspect ensemble-wide, family-level, and run-level evidence separately
+The boundary still matters:
 
-Boundary:
+- aggregate and cluster summaries are empirical
+- selected runs are observed
+- sensitivity is observational, not causal
 
-- scenario families are empirical, not causal
-- sensitivity is observational, not intervention-proof
+### 6. There is a narrow confidence lane
 
-### 4. Confidence lane
+The repo can persist:
 
-The repo now has a narrow, inspectable confidence layer:
-
-- `observed_truth_registry.json`
 - `backtest_summary.json`
 - `calibration_summary.json`
 
-Meaning:
+and expose `confidence_status` in saved report context.
 
-- the repo can preserve observed truth and backtesting results
-- a named binary metric can surface backtested calibration provenance when all readiness gates are satisfied
+That does not make the whole system calibrated. It only means a supported binary, categorical, or numeric answer lane can pass the confidence gate when the type-correct calibration artifact, backtest artifact, and provenance checks all pass.
 
-Boundary:
+### 7. History and compare are better, but still bounded
 
-- this does not make the whole system calibrated
-- non-binary metrics remain empirical or observed only
+Compared with the fork-era baseline, the repo now supports:
 
-### 5. Probabilistic report and interaction surfaces
+- reopening saved probabilistic Step 3 state
+- reopening saved probabilistic Step 4 and Step 5 state
+- one bounded compare workspace inside a saved report context
 
-The repo now has additive report-context and report-agent layers that understand the forecast artifacts.
-
-Key addition:
-
-- `probabilistic_report_context.json`
-
-Meaning:
-
-- Step 4 and Step 5 can surface explicit scope, grounding status, support, warnings, scenario-family evidence, run evidence, and confidence status
-- Step 5 report-agent chat can use bounded scope-aware context and one bounded compare handoff
-
-Boundary:
-
-- the report body is still legacy-shaped
-- interviews and surveys remain legacy-scoped
-
-### 6. Compare and operator surfaces
-
-The repo now includes:
-
-- a stored-run Step 3 operator shell
-- a bounded Step 4 compare workspace
-- Step 5 compare-aware report-agent prompts
-- smoke and live operator verification surfaces
-
-Meaning:
-
-- MiroFishES is no longer only a “generate one report and inspect it” flow
-- operators can recover, rerun, compare, and reopen saved probabilistic state
-
-Boundary:
-
-- compare is still bounded to one saved report context at a time
-- cross-report and cross-simulation compare remain unsupported
-- the strongest fresh live proof still depends on having a forecast-ready local simulation family
-
-## Summary Table
-
-| Area | Fork-era baseline | MiroFishES now |
-| --- | --- | --- |
-| Simulation flow | single-run oriented | legacy path plus bounded forecast-first control plane |
-| Upstream provenance | mostly transient or implicit | durable source, graph, and forecast-facing grounding artifacts |
-| Scope model | mostly one active run/report | explicit `ensemble`, `cluster`, and `run` scope |
-| Analytics | direct run outputs | aggregate summaries, scenario families, observational sensitivity |
-| Confidence | implicit probability language risk | observed truth, backtests, bounded binary calibration provenance |
-| Report/interaction | legacy report and interaction | additive probabilistic report context and scope-aware report-agent lane |
-| Compare/operator | limited | stored-run operations, compare workspace, history re-entry |
+It still does not support cross-report or cross-simulation compare.
 
 ## What Still Does Not Exist
 
-MiroFishES still does **not** truthfully support:
+MiroFishES still does not truthfully support:
 
-1. comprehensive research grounding
-2. comprehensive code-analysis grounding
-3. causal scenario analysis
-4. broad calibrated forecasting beyond the named ready binary metric artifacts
-5. release-grade local operator proof
+- comprehensive research grounding
+- comprehensive code-analysis grounding
+- causal scenario analysis
+- broad calibrated forecasting beyond the supported evaluated binary, categorical, and numeric answer lanes with validated provenance
+- release-grade live operator proof
 
-## Where To Look Next
+## Where To Go Next
 
-- [Root README](../README.md): front door and fresh-start workflow
-- [Documentation guide](README.md): audience-based reading paths
-- [Forecasting integration hardening wave](plans/2026-03-29-forecasting-integration-hardening-wave.md): current implementation contract
-- [Local probabilistic operator runbook](local-probabilistic-operator-runbook.md): operational usage and recovery guidance
+- [Root README](../README.md): setup, verification ladder, and readiness terms
+- [Local probabilistic operator runbook](local-probabilistic-operator-runbook.md): local operator behavior and recovery paths
+- [Forecasting integration hardening wave](plans/2026-03-29-forecasting-integration-hardening-wave.md): current contract and verification snapshot

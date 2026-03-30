@@ -155,6 +155,7 @@ def test_get_actions_and_cleanup_are_run_scoped(
     (run_dir / "simulation.log").write_text("run log", encoding="utf-8")
     (run_dir / "run_state.json").write_text("{}", encoding="utf-8")
     (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    (run_dir / "run_phase_timings.json").write_text("{}", encoding="utf-8")
 
     scoped_actions = runner.get_actions(
         simulation_id=simulation_id,
@@ -173,6 +174,7 @@ def test_get_actions_and_cleanup_are_run_scoped(
     assert cleanup_result["success"] is True
     assert run_actions.exists() is False
     assert (run_dir / "metrics.json").exists() is False
+    assert (run_dir / "run_phase_timings.json").exists() is False
     assert root_actions.exists() is True
 
 

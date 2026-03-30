@@ -339,10 +339,12 @@ SUPPORTED_SEED_STRATEGIES = {"deterministic-root"}
 SUPPORTED_GROUP_CORRELATION_MODES = {"shared_rank"}
 SUPPORTED_CONDITIONAL_OPERATORS = {"eq", "in", "gte", "lte"}
 SUPPORTED_EXPERIMENT_DESIGN_METHODS = {"latin-hypercube"}
-SUPPORTED_SCENARIO_ASSIGNMENTS = {"cyclic", "none"}
+SUPPORTED_SCENARIO_ASSIGNMENTS = {"cyclic", "weighted_cycle", "none"}
+SUPPORTED_TEMPLATE_COMBINATION_POLICIES = {"single_template", "pairwise"}
 CALIBRATION_BOUNDARY_NOTE = (
-    "Calibration in this repo is binary-only and applies only to named metrics with "
-    "ready backtest artifacts."
+    "Ensemble calibration artifacts apply only to named simulation metrics with "
+    "validated backtest artifacts. Forecast-workspace categorical and numeric "
+    "calibration, when present, is a separate answer-bound lane."
 )
 
 
@@ -353,6 +355,13 @@ def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
     except (TypeError, ValueError):
         normalized = default
     return max(normalized, 0)
+
+
+def _normalize_optional_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _normalize_string_list(
@@ -836,6 +845,10 @@ class ScenarioTemplateSpec:
     template_id: str
     label: str
     field_overrides: Dict[str, Any] = field(default_factory=dict)
+    coverage_tags: List[str] = field(default_factory=list)
+    exogenous_events: List[Dict[str, Any]] = field(default_factory=list)
+    conditional_overrides: List[ConditionalVariableSpec] = field(default_factory=list)
+    correlated_field_paths: List[str] = field(default_factory=list)
     weight: float = 1.0
     notes: List[str] = field(default_factory=list)
 
@@ -848,6 +861,45 @@ class ScenarioTemplateSpec:
             raise ValueError("label is required")
         if not isinstance(self.field_overrides, dict):
             raise ValueError("field_overrides must be a dictionary")
+        self.coverage_tags = _normalize_string_list(
+            self.coverage_tags,
+            field_name="scenario_template.coverage_tags",
+            allow_empty=True,
+        )
+        if not isinstance(self.exogenous_events, list):
+            raise ValueError("exogenous_events must be a list")
+        normalized_events: List[Dict[str, Any]] = []
+        seen_event_ids = set()
+        for index, item in enumerate(self.exogenous_events):
+            if not isinstance(item, dict):
+                raise ValueError("exogenous_events entries must be dictionaries")
+            normalized_item = dict(item)
+            event_id = str(
+                normalized_item.get("event_id")
+                or normalized_item.get("label")
+                or f"{self.template_id}-event-{index + 1}"
+            ).strip()
+            if not event_id:
+                raise ValueError("exogenous_events entries must include event_id or label")
+            normalized_item["event_id"] = event_id
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+            normalized_events.append(normalized_item)
+        self.exogenous_events = normalized_events
+        if not isinstance(self.conditional_overrides, list):
+            raise ValueError("conditional_overrides must be a list")
+        self.conditional_overrides = [
+            item
+            if isinstance(item, ConditionalVariableSpec)
+            else ConditionalVariableSpec.from_dict(item)
+            for item in self.conditional_overrides
+        ]
+        self.correlated_field_paths = _normalize_string_list(
+            self.correlated_field_paths,
+            field_name="scenario_template.correlated_field_paths",
+            allow_empty=True,
+        )
         self.weight = float(self.weight)
         if self.weight <= 0:
             raise ValueError("weight must be positive")
@@ -862,6 +914,12 @@ class ScenarioTemplateSpec:
             "template_id": self.template_id,
             "label": self.label,
             "field_overrides": dict(self.field_overrides),
+            "coverage_tags": list(self.coverage_tags),
+            "exogenous_events": [dict(item) for item in self.exogenous_events],
+            "conditional_overrides": [
+                item.to_dict() for item in self.conditional_overrides
+            ],
+            "correlated_field_paths": list(self.correlated_field_paths),
             "weight": self.weight,
             "notes": list(self.notes),
         }
@@ -872,6 +930,10 @@ class ScenarioTemplateSpec:
             template_id=data["template_id"],
             label=data.get("label", data["template_id"]),
             field_overrides=data.get("field_overrides", {}),
+            coverage_tags=data.get("coverage_tags", []),
+            exogenous_events=data.get("exogenous_events", []),
+            conditional_overrides=data.get("conditional_overrides", []),
+            correlated_field_paths=data.get("correlated_field_paths", []),
             weight=data.get("weight", 1.0),
             notes=data.get("notes", []),
         )
@@ -885,6 +947,11 @@ class ExperimentDesignSpec:
     numeric_dimensions: List[str] = field(default_factory=list)
     scenario_template_ids: List[str] = field(default_factory=list)
     scenario_assignment: str = "cyclic"
+    diversity_axes: List[str] = field(default_factory=list)
+    scenario_coverage_axes: List[str] = field(default_factory=list)
+    max_templates_per_run: int = 1
+    template_combination_policy: str = ""
+    max_template_reuse_streak: int = 1
     notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -908,6 +975,35 @@ class ExperimentDesignSpec:
                 f"Unsupported scenario assignment: {self.scenario_assignment}. "
                 f"Supported: {sorted(SUPPORTED_SCENARIO_ASSIGNMENTS)}"
             )
+        self.diversity_axes = _normalize_string_list(
+            self.diversity_axes,
+            field_name="diversity_axes",
+            allow_empty=True,
+        )
+        self.scenario_coverage_axes = _normalize_string_list(
+            self.scenario_coverage_axes,
+            field_name="scenario_coverage_axes",
+            allow_empty=True,
+        )
+        if self.diversity_axes and not self.scenario_coverage_axes:
+            self.scenario_coverage_axes = list(self.diversity_axes)
+        elif self.scenario_coverage_axes and not self.diversity_axes:
+            self.diversity_axes = list(self.scenario_coverage_axes)
+        self.max_templates_per_run = int(self.max_templates_per_run)
+        if self.max_templates_per_run <= 0:
+            raise ValueError("max_templates_per_run must be positive")
+        if not self.template_combination_policy:
+            self.template_combination_policy = (
+                "pairwise" if self.max_templates_per_run > 1 else "single_template"
+            )
+        if self.template_combination_policy not in SUPPORTED_TEMPLATE_COMBINATION_POLICIES:
+            raise ValueError(
+                f"Unsupported template_combination_policy: {self.template_combination_policy}. "
+                f"Supported: {sorted(SUPPORTED_TEMPLATE_COMBINATION_POLICIES)}"
+            )
+        self.max_template_reuse_streak = int(self.max_template_reuse_streak)
+        if self.max_template_reuse_streak <= 0:
+            raise ValueError("max_template_reuse_streak must be positive")
         self.notes = _normalize_string_list(
             self.notes,
             field_name="experiment_design.notes",
@@ -920,6 +1016,11 @@ class ExperimentDesignSpec:
             "numeric_dimensions": list(self.numeric_dimensions),
             "scenario_template_ids": list(self.scenario_template_ids),
             "scenario_assignment": self.scenario_assignment,
+            "diversity_axes": list(self.diversity_axes),
+            "scenario_coverage_axes": list(self.scenario_coverage_axes),
+            "max_templates_per_run": self.max_templates_per_run,
+            "template_combination_policy": self.template_combination_policy,
+            "max_template_reuse_streak": self.max_template_reuse_streak,
             "notes": list(self.notes),
         }
 
@@ -930,6 +1031,16 @@ class ExperimentDesignSpec:
             numeric_dimensions=data.get("numeric_dimensions", []),
             scenario_template_ids=data.get("scenario_template_ids", []),
             scenario_assignment=data.get("scenario_assignment", "cyclic"),
+            diversity_axes=data.get(
+                "diversity_axes", data.get("scenario_coverage_axes", [])
+            ),
+            scenario_coverage_axes=data.get("scenario_coverage_axes", []),
+            max_templates_per_run=data.get("max_templates_per_run", 1),
+            template_combination_policy=data.get(
+                "template_combination_policy",
+                "pairwise" if data.get("max_templates_per_run", 1) > 1 else "single_template",
+            ),
+            max_template_reuse_streak=data.get("max_template_reuse_streak", 1),
             notes=data.get("notes", []),
         )
 
@@ -1142,6 +1253,7 @@ class ForecastBrief:
     scoring_rule_preferences: List[str] = field(default_factory=list)
     compare_candidates: List[str] = field(default_factory=list)
     scenario_templates: List[str] = field(default_factory=list)
+    scenario_template_specs: List[ScenarioTemplateSpec] = field(default_factory=list)
     grounding_summary: Optional[Dict[str, Any]] = None
     artifact_type: str = "forecast_brief"
     schema_version: str = PROBABILISTIC_SCHEMA_VERSION
@@ -1194,11 +1306,54 @@ class ForecastBrief:
             field_name="compare_candidates",
             allow_empty=True,
         )
-        self.scenario_templates = _normalize_string_list(
-            self.scenario_templates,
-            field_name="scenario_templates",
-            allow_empty=True,
-        )
+        raw_scenario_templates = self.scenario_templates
+        normalized_template_ids: List[str] = []
+        normalized_template_specs: List[ScenarioTemplateSpec] = []
+        if raw_scenario_templates is None:
+            raw_scenario_templates = []
+        if not isinstance(raw_scenario_templates, list):
+            raise ValueError("scenario_templates must be a list")
+        for item in raw_scenario_templates:
+            if isinstance(item, str):
+                normalized_template_ids.extend(
+                    _normalize_string_list(
+                        [item],
+                        field_name="scenario_templates",
+                        allow_empty=True,
+                    )
+                )
+                continue
+            if not isinstance(item, dict):
+                raise ValueError("scenario_templates entries must be strings or objects")
+            normalized_spec = ScenarioTemplateSpec.from_dict(item)
+            normalized_template_specs.append(normalized_spec)
+            normalized_template_ids.append(normalized_spec.template_id)
+        if isinstance(self.scenario_template_specs, list):
+            for item in self.scenario_template_specs:
+                if isinstance(item, ScenarioTemplateSpec):
+                    normalized_template_specs.append(item)
+                elif isinstance(item, dict):
+                    normalized_template_specs.append(ScenarioTemplateSpec.from_dict(item))
+                else:
+                    raise ValueError(
+                        "scenario_template_specs entries must be ScenarioTemplateSpec or objects"
+                    )
+        else:
+            raise ValueError("scenario_template_specs must be a list")
+        deduped_template_ids: List[str] = []
+        seen_template_ids = set()
+        for template_id in normalized_template_ids:
+            if template_id not in seen_template_ids:
+                deduped_template_ids.append(template_id)
+                seen_template_ids.add(template_id)
+        deduped_template_specs: List[ScenarioTemplateSpec] = []
+        seen_spec_ids = set()
+        for spec in normalized_template_specs:
+            if spec.template_id not in seen_spec_ids:
+                deduped_template_specs.append(spec)
+                seen_spec_ids.add(spec.template_id)
+        self.scenario_templates = deduped_template_ids
+        self.scenario_template_specs = deduped_template_specs
         self.notes = _normalize_string_list(
             self.notes,
             field_name="forecast_brief.notes",
@@ -1219,6 +1374,15 @@ class ForecastBrief:
             "scoring_rule_preferences": list(self.scoring_rule_preferences),
             "compare_candidates": list(self.compare_candidates),
             "scenario_templates": list(self.scenario_templates),
+            **(
+                {
+                    "scenario_template_specs": [
+                        item.to_dict() for item in self.scenario_template_specs
+                    ]
+                }
+                if self.scenario_template_specs
+                else {}
+            ),
             **(
                 {"grounding_summary": dict(self.grounding_summary)}
                 if isinstance(self.grounding_summary, dict)
@@ -1257,6 +1421,7 @@ class ForecastBrief:
             scoring_rule_preferences=data.get("scoring_rule_preferences", []),
             compare_candidates=data.get("compare_candidates", []),
             scenario_templates=data.get("scenario_templates", []),
+            scenario_template_specs=data.get("scenario_template_specs", []),
             grounding_summary=data.get("grounding_summary"),
             notes=data.get("notes", []),
         )
@@ -1472,6 +1637,16 @@ class ObservedTruthCase:
     case_id: str
     metric_id: str
     observed_value: Any
+    issued_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    question_class: Optional[str] = None
+    comparable_question_class: Optional[str] = None
+    evaluation_split: Optional[str] = None
+    evaluation_window_id: Optional[str] = None
+    window_id: Optional[str] = None
+    evaluation_lane: Optional[str] = None
+    benchmark_id: Optional[str] = None
+    benchmark_probabilities: Dict[str, Any] = field(default_factory=dict)
     value_kind: Optional[str] = None
     forecast_probability: Optional[float] = None
     forecast_source: Optional[str] = None
@@ -1504,17 +1679,44 @@ class ObservedTruthCase:
             )
         if not isinstance(self.forecast_scope, dict):
             raise ValueError("forecast_scope must be a dictionary")
+        self.issued_at = _normalize_iso_datetime(
+            self.issued_at if self.issued_at is not None else self.forecast_issued_at,
+            field_name="issued_at",
+            allow_empty=True,
+        )
         if self.forecast_source is not None:
             self.forecast_source = str(self.forecast_source).strip() or None
         self.forecast_issued_at = _normalize_iso_datetime(
-            self.forecast_issued_at,
+            self.forecast_issued_at if self.forecast_issued_at is not None else self.issued_at,
             field_name="forecast_issued_at",
             allow_empty=True,
         )
+        self.resolved_at = _normalize_iso_datetime(
+            self.resolved_at if self.resolved_at is not None else self.observed_at,
+            field_name="resolved_at",
+            allow_empty=True,
+        )
+        self.question_class = _normalize_optional_string(self.question_class)
+        self.comparable_question_class = _normalize_optional_string(
+            self.comparable_question_class or self.question_class
+        )
+        self.evaluation_split = _normalize_optional_string(self.evaluation_split)
+        self.evaluation_window_id = _normalize_optional_string(
+            self.evaluation_window_id
+        )
+        self.window_id = _normalize_optional_string(self.window_id)
+        if self.evaluation_window_id is None:
+            self.evaluation_window_id = self.window_id
+        if self.window_id is None:
+            self.window_id = self.evaluation_window_id
+        self.evaluation_lane = _normalize_optional_string(self.evaluation_lane)
+        self.benchmark_id = _normalize_optional_string(self.benchmark_id)
+        if not isinstance(self.benchmark_probabilities, dict):
+            raise ValueError("benchmark_probabilities must be a dictionary")
         if self.observed_source is not None:
             self.observed_source = str(self.observed_source).strip() or None
         self.observed_at = _normalize_iso_datetime(
-            self.observed_at,
+            self.observed_at if self.observed_at is not None else self.resolved_at,
             field_name="observed_at",
             allow_empty=True,
         )
@@ -1539,6 +1741,16 @@ class ObservedTruthCase:
         return {
             "case_id": self.case_id,
             "metric_id": self.metric_id,
+            "issued_at": self.issued_at,
+            "resolved_at": self.resolved_at,
+            "question_class": self.question_class,
+            "comparable_question_class": self.comparable_question_class,
+            "evaluation_split": self.evaluation_split,
+            "evaluation_window_id": self.evaluation_window_id,
+            "window_id": self.window_id,
+            "evaluation_lane": self.evaluation_lane,
+            "benchmark_id": self.benchmark_id,
+            "benchmark_probabilities": dict(self.benchmark_probabilities),
             "value_kind": self.value_kind,
             "forecast_probability": self.forecast_probability,
             "observed_value": self.observed_value,
@@ -1562,6 +1774,16 @@ class ObservedTruthCase:
             value_kind=data.get("value_kind"),
             forecast_probability=data.get("forecast_probability"),
             observed_value=data.get("observed_value"),
+            issued_at=data.get("issued_at"),
+            resolved_at=data.get("resolved_at"),
+            question_class=data.get("question_class"),
+            comparable_question_class=data.get("comparable_question_class"),
+            evaluation_split=data.get("evaluation_split"),
+            evaluation_window_id=data.get("evaluation_window_id"),
+            window_id=data.get("window_id"),
+            evaluation_lane=data.get("evaluation_lane"),
+            benchmark_id=data.get("benchmark_id"),
+            benchmark_probabilities=data.get("benchmark_probabilities", {}),
             forecast_source=data.get("forecast_source"),
             forecast_issued_at=data.get("forecast_issued_at"),
             forecast_scope=data.get("forecast_scope", {}),
@@ -1583,6 +1805,8 @@ class ObservedTruthRegistry:
     ensemble_id: str
     cases: List[ObservedTruthCase] = field(default_factory=list)
     registry_scope: Dict[str, Any] = field(default_factory=dict)
+    evaluation_scope: Dict[str, Any] = field(default_factory=dict)
+    benchmark_scope: Dict[str, Any] = field(default_factory=dict)
     quality_summary: Dict[str, Any] = field(default_factory=dict)
     artifact_type: str = "observed_truth_registry"
     schema_version: str = OBSERVED_TRUTH_SCHEMA_VERSION
@@ -1602,6 +1826,10 @@ class ObservedTruthRegistry:
         ]
         if not isinstance(self.quality_summary, dict):
             raise ValueError("quality_summary must be a dictionary")
+        if not isinstance(self.evaluation_scope, dict):
+            raise ValueError("evaluation_scope must be a dictionary")
+        if not isinstance(self.benchmark_scope, dict):
+            raise ValueError("benchmark_scope must be a dictionary")
         if not self.registry_scope:
             self.registry_scope = {
                 "level": "ensemble",
@@ -1629,6 +1857,8 @@ class ObservedTruthRegistry:
             "simulation_id": self.simulation_id,
             "ensemble_id": self.ensemble_id,
             "registry_scope": dict(self.registry_scope),
+            "evaluation_scope": dict(self.evaluation_scope),
+            "benchmark_scope": dict(self.benchmark_scope),
             "cases": [item.to_dict() for item in self.cases],
             "quality_summary": dict(self.quality_summary),
             "notes": list(self.notes),
@@ -1641,6 +1871,8 @@ class ObservedTruthRegistry:
             ensemble_id=data["ensemble_id"],
             cases=[ObservedTruthCase.from_dict(item) for item in data.get("cases", [])],
             registry_scope=data.get("registry_scope", {}),
+            evaluation_scope=data.get("evaluation_scope", {}),
+            benchmark_scope=data.get("benchmark_scope", {}),
             quality_summary=data.get("quality_summary", {}),
             artifact_type=data.get("artifact_type", "observed_truth_registry"),
             schema_version=data.get("schema_version", OBSERVED_TRUTH_SCHEMA_VERSION),
@@ -1648,6 +1880,186 @@ class ObservedTruthRegistry:
                 "generator_version", OBSERVED_TRUTH_GENERATOR_VERSION
             ),
             notes=data.get("notes", []),
+        )
+
+
+@dataclass(eq=True)
+class BenchmarkComparisonSummary:
+    """One explicit comparison between scored system cases and a simple baseline."""
+
+    benchmark_id: str
+    metric_id: str
+    case_count: int
+    system_scores: Dict[str, float] = field(default_factory=dict)
+    baseline_scores: Dict[str, float] = field(default_factory=dict)
+    score_deltas: Dict[str, float] = field(default_factory=dict)
+    skill_scores: Dict[str, float] = field(default_factory=dict)
+    baseline_probability: Optional[float] = None
+    notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.benchmark_id = _normalize_optional_string(self.benchmark_id) or ""
+        if not self.benchmark_id:
+            raise ValueError("benchmark_id is required")
+        self.metric_id = validate_outcome_metric_id(str(self.metric_id or "").strip())
+        self.case_count = int(self.case_count)
+        if self.case_count < 0:
+            raise ValueError("case_count must be non-negative")
+        if not isinstance(self.system_scores, dict):
+            raise ValueError("system_scores must be a dictionary")
+        if not isinstance(self.baseline_scores, dict):
+            raise ValueError("baseline_scores must be a dictionary")
+        if not isinstance(self.score_deltas, dict):
+            raise ValueError("score_deltas must be a dictionary")
+        if not isinstance(self.skill_scores, dict):
+            raise ValueError("skill_scores must be a dictionary")
+        for payload in (
+            self.system_scores,
+            self.baseline_scores,
+            self.score_deltas,
+            self.skill_scores,
+        ):
+            for key, value in list(payload.items()):
+                payload[key] = float(value)
+        if self.baseline_probability is not None:
+            self.baseline_probability = float(self.baseline_probability)
+        self.notes = _normalize_string_list(
+            self.notes,
+            field_name="benchmark_comparison.notes",
+            allow_empty=True,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "benchmark_id": self.benchmark_id,
+            "metric_id": self.metric_id,
+            "case_count": self.case_count,
+            "system_scores": dict(self.system_scores),
+            "baseline_scores": dict(self.baseline_scores),
+            "score_deltas": dict(self.score_deltas),
+            "skill_scores": dict(self.skill_scores),
+            "baseline_probability": self.baseline_probability,
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BenchmarkComparisonSummary":
+        return cls(
+            benchmark_id=data["benchmark_id"],
+            metric_id=data["metric_id"],
+            case_count=data.get("case_count", 0),
+            system_scores=data.get("system_scores", {}),
+            baseline_scores=data.get("baseline_scores", {}),
+            score_deltas=data.get("score_deltas", {}),
+            skill_scores=data.get("skill_scores", {}),
+            baseline_probability=data.get("baseline_probability"),
+            notes=data.get("notes", []),
+        )
+
+
+@dataclass(eq=True)
+class EvaluationWindowSummary:
+    """One cohort summary for an explicit split/window of historical cases."""
+
+    window_id: str
+    case_count: int
+    scored_case_count: int = 0
+    evaluation_split: Optional[str] = None
+    question_class: Optional[str] = None
+    comparable_question_class: Optional[str] = None
+    metric_ids: List[str] = field(default_factory=list)
+    question_classes: List[str] = field(default_factory=list)
+    comparable_question_classes: List[str] = field(default_factory=list)
+    split_counts: Dict[str, int] = field(default_factory=dict)
+    issue_window: Dict[str, Optional[str]] = field(default_factory=dict)
+    resolution_window: Dict[str, Optional[str]] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.window_id = _normalize_optional_string(self.window_id) or ""
+        if not self.window_id:
+            raise ValueError("window_id is required")
+        self.case_count = int(self.case_count)
+        self.scored_case_count = int(self.scored_case_count)
+        if self.case_count < 0 or self.scored_case_count < 0:
+            raise ValueError("window counts must be non-negative")
+        self.evaluation_split = _normalize_optional_string(self.evaluation_split)
+        self.question_class = _normalize_optional_string(self.question_class)
+        self.comparable_question_class = _normalize_optional_string(
+            self.comparable_question_class or self.question_class
+        )
+        self.metric_ids = _normalize_string_list(
+            self.metric_ids,
+            field_name="evaluation_window.metric_ids",
+            allow_empty=True,
+        )
+        self.question_classes = _normalize_string_list(
+            self.question_classes,
+            field_name="evaluation_window.question_classes",
+            allow_empty=True,
+        )
+        self.comparable_question_classes = _normalize_string_list(
+            self.comparable_question_classes,
+            field_name="evaluation_window.comparable_question_classes",
+            allow_empty=True,
+        )
+        if not isinstance(self.split_counts, dict):
+            raise ValueError("split_counts must be a dictionary")
+        self.split_counts = {
+            str(key): _coerce_non_negative_int(value)
+            for key, value in self.split_counts.items()
+        }
+        if not isinstance(self.issue_window, dict):
+            raise ValueError("issue_window must be a dictionary")
+        if not isinstance(self.resolution_window, dict):
+            raise ValueError("resolution_window must be a dictionary")
+        self.issue_window = {
+            "start": _normalize_optional_string(self.issue_window.get("start")),
+            "end": _normalize_optional_string(self.issue_window.get("end")),
+        }
+        self.resolution_window = {
+            "start": _normalize_optional_string(self.resolution_window.get("start")),
+            "end": _normalize_optional_string(self.resolution_window.get("end")),
+        }
+        self.warnings = _normalize_string_list(
+            self.warnings,
+            field_name="evaluation_window.warnings",
+            allow_empty=True,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "window_id": self.window_id,
+            "case_count": self.case_count,
+            "scored_case_count": self.scored_case_count,
+            "evaluation_split": self.evaluation_split,
+            "question_class": self.question_class,
+            "comparable_question_class": self.comparable_question_class,
+            "metric_ids": list(self.metric_ids),
+            "question_classes": list(self.question_classes),
+            "comparable_question_classes": list(self.comparable_question_classes),
+            "split_counts": dict(self.split_counts),
+            "issue_window": dict(self.issue_window),
+            "resolution_window": dict(self.resolution_window),
+            "warnings": list(self.warnings),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvaluationWindowSummary":
+        return cls(
+            window_id=data["window_id"],
+            case_count=data.get("case_count", 0),
+            scored_case_count=data.get("scored_case_count", 0),
+            evaluation_split=data.get("evaluation_split"),
+            question_class=data.get("question_class"),
+            comparable_question_class=data.get("comparable_question_class"),
+            metric_ids=data.get("metric_ids", []),
+            question_classes=data.get("question_classes", []),
+            comparable_question_classes=data.get("comparable_question_classes", []),
+            split_counts=data.get("split_counts", {}),
+            issue_window=data.get("issue_window", {}),
+            resolution_window=data.get("resolution_window", {}),
+            warnings=data.get("warnings", []),
         )
 
 
@@ -1729,6 +2141,12 @@ class MetricBacktestSummary:
     case_results: List[BacktestCaseResult] = field(default_factory=list)
     scores: Dict[str, float] = field(default_factory=dict)
     mean_scores: Dict[str, float] = field(default_factory=dict)
+    question_classes: List[str] = field(default_factory=list)
+    comparable_question_classes: List[str] = field(default_factory=list)
+    evaluation_splits: List[str] = field(default_factory=list)
+    evaluation_window_ids: List[str] = field(default_factory=list)
+    benchmark_summaries: Dict[str, Any] = field(default_factory=dict)
+    evaluation_slices: List[Dict[str, Any]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -1776,6 +2194,40 @@ class MetricBacktestSummary:
             self.observed_event_rate = float(self.observed_event_rate)
         if self.mean_forecast_probability is not None:
             self.mean_forecast_probability = float(self.mean_forecast_probability)
+        self.question_classes = _normalize_string_list(
+            self.question_classes,
+            field_name="metric_backtest_summary.question_classes",
+            allow_empty=True,
+        )
+        self.comparable_question_classes = _normalize_string_list(
+            self.comparable_question_classes,
+            field_name="metric_backtest_summary.comparable_question_classes",
+            allow_empty=True,
+        )
+        self.evaluation_splits = _normalize_string_list(
+            self.evaluation_splits,
+            field_name="metric_backtest_summary.evaluation_splits",
+            allow_empty=True,
+        )
+        self.evaluation_window_ids = _normalize_string_list(
+            self.evaluation_window_ids,
+            field_name="metric_backtest_summary.evaluation_window_ids",
+            allow_empty=True,
+        )
+        if not isinstance(self.benchmark_summaries, dict):
+            raise ValueError("benchmark_summaries must be a dictionary")
+        if not isinstance(self.evaluation_slices, list):
+            raise ValueError("evaluation_slices must be a list")
+        self.benchmark_summaries = {
+            str(key): (dict(value) if isinstance(value, dict) else value)
+            for key, value in self.benchmark_summaries.items()
+        }
+        normalized_slices: List[Dict[str, Any]] = []
+        for item in self.evaluation_slices:
+            if not isinstance(item, dict):
+                raise ValueError("evaluation_slices entries must be dictionaries")
+            normalized_slices.append(dict(item))
+        self.evaluation_slices = normalized_slices
         self.warnings = _normalize_string_list(
             self.warnings,
             field_name="metric_backtest_summary.warnings",
@@ -1795,6 +2247,17 @@ class MetricBacktestSummary:
             "case_results": [item.to_dict() for item in self.case_results],
             "scores": dict(self.scores),
             "mean_scores": dict(self.mean_scores),
+            "question_classes": list(self.question_classes),
+            "comparable_question_classes": list(self.comparable_question_classes),
+            "evaluation_splits": list(self.evaluation_splits),
+            "evaluation_window_ids": list(self.evaluation_window_ids),
+            "benchmark_summaries": {
+                benchmark_id: dict(summary)
+                if isinstance(summary, dict)
+                else summary
+                for benchmark_id, summary in self.benchmark_summaries.items()
+            },
+            "evaluation_slices": [dict(item) for item in self.evaluation_slices],
             "warnings": list(self.warnings),
         }
 
@@ -1815,6 +2278,14 @@ class MetricBacktestSummary:
             ],
             scores=data.get("scores", data.get("mean_scores", {})),
             mean_scores=data.get("mean_scores", data.get("scores", {})),
+            question_classes=data.get("question_classes", []),
+            comparable_question_classes=data.get(
+                "comparable_question_classes", []
+            ),
+            evaluation_splits=data.get("evaluation_splits", []),
+            evaluation_window_ids=data.get("evaluation_window_ids", []),
+            benchmark_summaries=data.get("benchmark_summaries", {}),
+            evaluation_slices=data.get("evaluation_slices", []),
             warnings=data.get("warnings", []),
         )
 
@@ -1826,6 +2297,9 @@ class BacktestSummary:
     simulation_id: str
     ensemble_id: str
     metric_backtests: Dict[str, MetricBacktestSummary] = field(default_factory=dict)
+    evaluation_windows: Dict[str, EvaluationWindowSummary] = field(default_factory=dict)
+    benchmark_comparisons: Dict[str, BenchmarkComparisonSummary] = field(default_factory=dict)
+    evaluation_summary: Dict[str, Any] = field(default_factory=dict)
     quality_summary: Dict[str, Any] = field(default_factory=dict)
     artifact_type: str = "backtest_summary"
     schema_version: str = BACKTEST_SCHEMA_VERSION
@@ -1846,6 +2320,24 @@ class BacktestSummary:
             )
             for metric_id, summary in self.metric_backtests.items()
         }
+        self.evaluation_windows = {
+            window_id: (
+                summary
+                if isinstance(summary, EvaluationWindowSummary)
+                else EvaluationWindowSummary.from_dict(summary)
+            )
+            for window_id, summary in self.evaluation_windows.items()
+        }
+        self.benchmark_comparisons = {
+            comparison_id: (
+                summary
+                if isinstance(summary, BenchmarkComparisonSummary)
+                else BenchmarkComparisonSummary.from_dict(summary)
+            )
+            for comparison_id, summary in self.benchmark_comparisons.items()
+        }
+        if not isinstance(self.evaluation_summary, dict):
+            raise ValueError("evaluation_summary must be a dictionary")
         if not isinstance(self.quality_summary, dict):
             raise ValueError("quality_summary must be a dictionary")
 
@@ -1860,6 +2352,15 @@ class BacktestSummary:
                 metric_id: summary.to_dict()
                 for metric_id, summary in self.metric_backtests.items()
             },
+            "evaluation_windows": {
+                window_id: summary.to_dict()
+                for window_id, summary in self.evaluation_windows.items()
+            },
+            "benchmark_comparisons": {
+                comparison_id: summary.to_dict()
+                for comparison_id, summary in self.benchmark_comparisons.items()
+            },
+            "evaluation_summary": dict(self.evaluation_summary),
             "quality_summary": dict(self.quality_summary),
         }
 
@@ -1872,6 +2373,15 @@ class BacktestSummary:
                 metric_id: MetricBacktestSummary.from_dict(summary)
                 for metric_id, summary in data.get("metric_backtests", {}).items()
             },
+            evaluation_windows={
+                window_id: EvaluationWindowSummary.from_dict(summary)
+                for window_id, summary in data.get("evaluation_windows", {}).items()
+            },
+            benchmark_comparisons={
+                comparison_id: BenchmarkComparisonSummary.from_dict(summary)
+                for comparison_id, summary in data.get("benchmark_comparisons", {}).items()
+            },
+            evaluation_summary=data.get("evaluation_summary", {}),
             quality_summary=data.get("quality_summary", {}),
             artifact_type=data.get("artifact_type", "backtest_summary"),
             schema_version=data.get("schema_version", BACKTEST_SCHEMA_VERSION),
@@ -2125,6 +2635,7 @@ class CalibrationSummary:
     simulation_id: str
     ensemble_id: str
     metric_calibrations: Dict[str, MetricCalibrationSummary] = field(default_factory=dict)
+    evaluation_provenance: Dict[str, Any] = field(default_factory=dict)
     quality_summary: Dict[str, Any] = field(default_factory=dict)
     artifact_type: str = "calibration_summary"
     schema_version: str = CALIBRATION_SCHEMA_VERSION
@@ -2145,6 +2656,8 @@ class CalibrationSummary:
             )
             for metric_id, summary in self.metric_calibrations.items()
         }
+        if not isinstance(self.evaluation_provenance, dict):
+            raise ValueError("evaluation_provenance must be a dictionary")
         if not isinstance(self.quality_summary, dict):
             raise ValueError("quality_summary must be a dictionary")
 
@@ -2159,6 +2672,7 @@ class CalibrationSummary:
                 metric_id: summary.to_dict()
                 for metric_id, summary in self.metric_calibrations.items()
             },
+            "evaluation_provenance": dict(self.evaluation_provenance),
             "quality_summary": dict(self.quality_summary),
         }
 
@@ -2171,6 +2685,7 @@ class CalibrationSummary:
                 metric_id: MetricCalibrationSummary.from_dict(summary)
                 for metric_id, summary in data.get("metric_calibrations", {}).items()
             },
+            evaluation_provenance=data.get("evaluation_provenance", {}),
             quality_summary=data.get("quality_summary", {}),
             artifact_type=data.get("artifact_type", "calibration_summary"),
             schema_version=data.get("schema_version", CALIBRATION_SCHEMA_VERSION),

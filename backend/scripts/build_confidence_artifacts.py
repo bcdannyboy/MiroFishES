@@ -94,6 +94,20 @@ def main() -> int:
                     "status",
                     "unknown",
                 ),
+                "evaluation_window_count": backtest_summary.get(
+                    "evaluation_summary",
+                    {},
+                ).get("window_count", 0),
+                "benchmark_count": len(
+                    backtest_summary.get("evaluation_summary", {}).get(
+                        "benchmark_ids",
+                        [],
+                    )
+                ),
+                "out_of_sample_case_count": backtest_summary.get(
+                    "evaluation_summary",
+                    {},
+                ).get("out_of_sample_case_count", 0),
             },
             ensure_ascii=False,
         )

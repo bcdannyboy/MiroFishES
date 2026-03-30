@@ -90,6 +90,8 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
 
     assert payload["grounding_artifacts"]["source_manifest"]["exists"] is True
     assert payload["grounding_artifacts"]["graph_build_summary"]["exists"] is False
+    assert payload["grounding_artifacts"]["graph_phase_timings"]["exists"] is True
+    assert payload["grounding_artifacts"]["graph_entity_index"]["exists"] is False
     assert manifest["artifact_type"] == "source_manifest"
     assert manifest["project_id"] == project_id
     assert (
@@ -106,6 +108,17 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     assert source["combined_text_start"] < source["combined_text_end"]
     assert source["sha256"] == hashlib.sha256(b"labor memo").hexdigest()
     assert source["excerpt"].startswith("Labor policy memo.")
+
+    timings_path = projects_dir / project_id / "graph_phase_timings.json"
+    timings = json.loads(timings_path.read_text(encoding="utf-8"))
+    assert timings["artifact_type"] == "phase_timings"
+    assert set(timings["phases"]) == {"upload_parse", "ontology_generation"}
+    assert timings["phases"]["upload_parse"]["metadata"]["uploaded_file_count"] == 1
+    assert timings["phases"]["upload_parse"]["metadata"]["parsed_file_count"] == 1
+    assert timings["phases"]["upload_parse"]["metadata"]["failed_file_count"] == 0
+    assert timings["phases"]["upload_parse"]["metadata"]["total_text_length"] > 0
+    assert timings["phases"]["ontology_generation"]["metadata"]["entity_type_count"] == 1
+    assert timings["phases"]["ontology_generation"]["metadata"]["edge_type_count"] == 1
 
 
 def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
@@ -182,17 +195,39 @@ def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
         def add_text_batches(self, graph_id, chunks, batch_size=3, progress_callback=None):
             return ["ep-1"]
 
-        def _wait_for_episodes(self, episode_uuids, progress_callback=None, timeout=600):
+        def _wait_for_episodes(
+            self, graph_id, episode_uuids, progress_callback=None, timeout=600
+        ):
             return None
 
         def get_graph_data(self, graph_id, mode="full", max_nodes=None, max_edges=None):
+            raise AssertionError("build should not fetch full graph data for summary counts")
+
+        def get_graph_snapshot(self, graph_id):
             return {
                 "graph_id": graph_id,
                 "node_count": 7,
                 "edge_count": 9,
                 "entity_types": ["Person"],
-                "nodes": [],
-                "edges": [],
+                "nodes": [
+                    {
+                        "uuid": "node-1",
+                        "name": "Analyst",
+                        "labels": ["Entity", "Person"],
+                        "summary": "Tracked participant",
+                        "attributes": {"role": "analyst"},
+                    }
+                ],
+                "edges": [
+                    {
+                        "uuid": "edge-1",
+                        "name": "MENTIONS",
+                        "fact": "Analyst mentions rates",
+                        "source_node_uuid": "node-1",
+                        "target_node_uuid": "node-2",
+                        "attributes": {},
+                    }
+                ],
             }
 
     monkeypatch.setattr(graph_module, "GraphBuilderService", _FakeBuilder)
@@ -212,6 +247,16 @@ def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
     assert response.status_code == 200
     summary_path = projects_dir / project.project_id / "graph_build_summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    timings = json.loads(
+        (projects_dir / project.project_id / "graph_phase_timings.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entity_index = json.loads(
+        (projects_dir / project.project_id / "graph_entity_index.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert summary["artifact_type"] == "graph_build_summary"
     assert summary["project_id"] == project.project_id
@@ -225,10 +270,19 @@ def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
     assert summary["ontology_summary"]["analysis_summary"] == (
         "The seed documents emphasize labor-policy debate."
     )
+    assert timings["artifact_type"] == "phase_timings"
+    assert set(timings["phases"]) >= {"graph_batch_send", "graph_wait"}
+    assert entity_index["artifact_type"] == "graph_entity_index"
+    assert entity_index["graph_id"] == "graph-grounded"
+    assert entity_index["total_count"] == 1
+    assert entity_index["filtered_count"] == 1
+    assert entity_index["entity_types"] == ["Person"]
 
     project_response = client.get(f"/api/graph/project/{project.project_id}")
     project_payload = project_response.get_json()["data"]
     assert project_payload["grounding_artifacts"]["graph_build_summary"]["exists"] is True
+    assert project_payload["grounding_artifacts"]["graph_phase_timings"]["exists"] is True
+    assert project_payload["grounding_artifacts"]["graph_entity_index"]["exists"] is True
 
 
 def test_grounding_bundle_builder_marks_ready_vs_partial_without_code_analysis(
@@ -424,7 +478,7 @@ def test_grounding_bundle_builder_degrades_when_graph_summary_mismatches_scope(
     assert "graph_build_summary_graph_id_mismatch" in bundle["warnings"]
 
 
-def test_reset_project_clears_stale_graph_build_summary(monkeypatch, tmp_path):
+def test_reset_project_clears_stale_graph_artifacts(monkeypatch, tmp_path):
     graph_module = _load_graph_api_module()
     project_module, projects_dir = _configure_projects_dir(monkeypatch, tmp_path)
 
@@ -454,6 +508,26 @@ def test_reset_project_clears_stale_graph_build_summary(monkeypatch, tmp_path):
             "warnings": [],
         },
     )
+    _write_json(
+        projects_dir / project.project_id / "graph_entity_index.json",
+        {
+            "artifact_type": "graph_entity_index",
+            "graph_id": "graph-1",
+            "entity_types": ["Person"],
+            "total_count": 1,
+            "filtered_count": 1,
+            "entities": [],
+        },
+    )
+    _write_json(
+        projects_dir / project.project_id / "graph_phase_timings.json",
+        {
+            "artifact_type": "phase_timings",
+            "scope_kind": "project",
+            "scope_id": project.project_id,
+            "phases": {},
+        },
+    )
 
     client = _build_test_client(graph_module)
     response = client.post(f"/api/graph/project/{project.project_id}/reset")
@@ -462,4 +536,8 @@ def test_reset_project_clears_stale_graph_build_summary(monkeypatch, tmp_path):
     payload = response.get_json()["data"]
     assert payload["graph_id"] is None
     assert payload["grounding_artifacts"]["graph_build_summary"]["exists"] is False
+    assert payload["grounding_artifacts"]["graph_entity_index"]["exists"] is False
+    assert payload["grounding_artifacts"]["graph_phase_timings"]["exists"] is False
     assert not (projects_dir / project.project_id / "graph_build_summary.json").exists()
+    assert not (projects_dir / project.project_id / "graph_entity_index.json").exists()
+    assert not (projects_dir / project.project_id / "graph_phase_timings.json").exists()

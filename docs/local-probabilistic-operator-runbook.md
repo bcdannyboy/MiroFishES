@@ -1,376 +1,313 @@
 # Local Probabilistic Operator Runbook
 
-This runbook is the local operations guide for the bounded stochastic probabilistic rollout in MiroFishES.
+This runbook is the local operating guide for the bounded probabilistic path in MiroFishES.
 
-It is intentionally narrower than the repo front door or the fork-delta explanation:
+It is intentionally practical. It focuses on what the current code, tests, and verification commands support, not on the larger aspiration around forecasting.
 
-- it tells a local developer or operator how to run and recover the supported Step 1 through Step 5 path
-- it names what is fixture-backed, what is local-only non-fixture, and what is still unsupported
-- it does not claim 100% local readiness
-- it does not try to restate the whole "what makes MiroFishES different from fork-era MiroFish" story
-
-Read these first if you need project framing rather than operator procedure:
-
-- [Root README](../README.md)
-- [Documentation guide](README.md)
-- [What MiroFishES adds](what-mirofishes-adds.md)
-- [Forecasting integration hardening wave](plans/2026-03-29-forecasting-integration-hardening-wave.md)
-
-## 1. Supported local scope
+## What This Runbook Covers
 
 Supported now:
 
-1. Step 1 graph build through the normal project flow
-2. Step 2 forecast-first prepare when probabilistic prepare is available, including one durable upstream `grounding_bundle.json`
-3. Step 3 probabilistic stored-run launch, stop, retry on the same `run_id`, cleanup, child rerun, reload, saved-record re-entry, and Step 4 scope selection across ensemble, scenario-family, and run
-4. Step 4 legacy report generation plus additive observed probabilistic report context with separate upstream grounding, explicit `ensemble|cluster|run` scope, support, warnings, representative runs, assumption-ledger details, explicit `confidence_status`, calibration provenance only when a named metric is ready, and one bounded compare workspace
-5. Step 5 report-agent chat grounded on explicit `ensemble|cluster|run` scope from the current route, a saved report context, or a manual in-session scope switch, with one optional bounded compare handoff and bounded upstream citations when available
+- Step 1 graph build through the normal project flow
+- Step 2 forecast prepare and Step 2 handoff into stored Step 3 shells
+- Step 3 launch, stop, retry, cleanup, child rerun, and history re-entry for stored shells
+- Step 4 scoped probabilistic report context and one bounded compare workspace
+- Step 5 scoped Report Agent context, one bounded compare handoff, and history re-entry through saved report state
 
-Not supported yet:
+Still out of scope:
 
-1. calibrated forecast language beyond named binary metrics with ready backtest artifacts
-2. scope-aware interviews or surveys
-3. cross-report or cross-simulation compare
-4. claiming release-grade or 100% local readiness
+- broad calibrated forecasting claims
+- scope-aware interviews or surveys
+- cross-report or cross-simulation compare
+- release-grade operator proof
 
-## 2. Evidence classes
+## Verification Ladder
 
-Use these labels consistently in notes, QA readouts, and support handoffs.
+Run these from the repo root.
 
-| Evidence class | What to use | What it proves | What it does not prove |
-| --- | --- | --- | --- |
-| `unit/contract` | frontend node tests, backend pytest | code-level contract behavior | browser/runtime usability on a real project |
-| `fixture-backed browser` | `npm run verify:smoke` | the bounded probabilistic shell still renders and routes correctly | live LLM/Zep prepare viability |
-| `local-only non-fixture` | `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local` | one real local operator path can work and writes durable evidence | release-grade readiness |
-| `release-grade` | none today | nothing today | do not claim it |
-
-## 3. Prerequisites
-
-### Repository prerequisites
-
-- `node >= 18`
-- `python >= 3.11`
-- `uv`
-- root dependencies installed with `npm run setup`
-- backend dependencies installed with `npm run setup:backend` or `uv sync` in `backend/`
-
-### Environment prerequisites
-
-- `.env` exists at repo root
-- `LLM_API_KEY` is set
-- `ZEP_API_KEY` is set
-- the four probabilistic rollout flags are enabled together when you want the bounded probabilistic path:
-
-```env
-PROBABILISTIC_PREPARE_ENABLED=true
-PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
-PROBABILISTIC_REPORT_ENABLED=true
-PROBABILISTIC_INTERACTION_ENABLED=true
-CALIBRATED_PROBABILITY_ENABLED=false
-```
-
-Live Step 2 probabilistic prepare is not self-contained without those keys.
-Those four rollout flags default to `false` in `backend/app/config.py`, so a fresh operator must opt in explicitly.
-`CALIBRATED_PROBABILITY_ENABLED` is only an artifact-reading rollout flag. It does not by itself prove any forecast metric is calibrated.
-
-### Default local endpoints
-
-- frontend: `http://localhost:5173`
-- backend: `http://localhost:5001`
-
-### Startup checklist
-
-1. copy `.env.example` to `.env`
-2. set `LLM_API_KEY` and `ZEP_API_KEY`
-3. enable the four probabilistic rollout flags above
-4. install dependencies with `npm run setup:all`
-5. install Playwright browsers with `npx playwright install chromium` if they are not already present locally
-6. start the stack with `npm run dev`
-
-### Capability check
-
-Before debugging the UI, confirm the backend capability surface:
-
-```bash
-curl http://localhost:5001/api/simulation/prepare/capabilities
-```
-
-For the bounded probabilistic path, expect these booleans to be `true`:
-
-- `probabilistic_prepare_enabled`
-- `probabilistic_ensemble_storage_enabled`
-- `probabilistic_report_enabled`
-- `probabilistic_interaction_enabled`
-
-## 4. Verification ladder
-
-Run these from the repository root.
-
-### 4.1 Broad repo verification
+### Broad repo verify
 
 ```bash
 npm run verify
 ```
 
-Use this before trusting code changes. It should run:
+Use this for code and build health in the current worktree. It runs frontend tests, the frontend build, and backend pytest. It does not inspect persisted forecast artifacts or browser routing.
 
-- frontend unit/runtime tests
-- frontend production build
-- backend pytest
-
-### 4.2 Fixture-backed browser verification
-
-```bash
-npm run verify:smoke
-```
-
-Use this to prove the bounded probabilistic browser path still works against deterministic fixtures, including:
-
-- Step 2 prepared probabilistic state
-- Step 3 missing-handoff off-state
-- Step 3 stored-run shell
-- Step 4 observed probabilistic addendum plus bounded compare workspace and upstream-grounding status
-- Step 5 probabilistic banner truth, manual report-agent scope switching, and bounded compare handoff state
-- Step 3 history replay from a saved probabilistic record
-- Step 5 history replay from a saved report
-
-### 4.3 Live local operator verification
-
-```bash
-PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local
-```
-
-Use this only when you intentionally allow mutation of a real local simulation family.
-
-If you are not using the repo's current default local evidence family, pass the simulation explicitly:
-
-```bash
-PLAYWRIGHT_LIVE_ALLOW_MUTATION=true \
-PLAYWRIGHT_LIVE_SIMULATION_ID=<simulation_id> \
-npm run verify:operator:local
-```
-
-Notes:
-
-- the test currently falls back to `sim_7a6661c37719` when `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset
-- that fallback is local evidence scaffolding, not a guarantee that a fresh workspace contains the same simulation family
-- the target simulation must already satisfy the Step 2 forecast handoff gate; if the button stays disabled, the suite now fails fast with the visible helper-text blocker and records that blocker in `output/playwright/live-operator/latest.json`
-
-Evidence written:
-
-- `output/playwright/live-operator/latest.json`
-- `output/playwright/live-operator/operator-pass-<timestamp>.json`
-
-Current proven operator actions in that live path:
-
-- Fresh live verification in the current workspace is blocked before mutation because the default local family `sim_7a6661c37719` is missing `grounding_bundle.json`, so Step 2 never reaches the forecast handoff gate.
-- Historical local-only evidence still exists for Step 2 handoff plus Step 3 stop, retry, cleanup, and child rerun, but that proof is not fresh until a forecast-ready local family is supplied and the suite is rerun.
-- Step 4 compare and Step 5 scope behavior are currently smoke-backed and targeted-test-backed, not freshly live-operator-backed in this workspace.
-
-### 4.4 Focused confidence verification
+### Confidence verify
 
 ```bash
 npm run verify:confidence
 ```
 
-Use this when confidence, backtest, calibration, or report-context code changes. It proves:
+Use this when the change touches confidence, backtests, calibration, provenance, report context, or the Step 2 through Step 5 copy that depends on those states.
 
-- observed-truth schema and provenance round-trips
-- binary backtest artifacts persist explicit counts, scores, and skips
-- calibration readiness stays bounded to binary metrics with real support
-- report context surfaces `absent | not_ready | ready` confidence truthfully
-- frontend runtime helpers keep Step 2 through Step 5 copy artifact-gated instead of calling the stack calibrated from config alone
+### Targeted non-binary verify
 
-## 5. Recommended local operator flow
+```bash
+npm run verify:nonbinary
+```
 
-### Step 1: Graph build
+Use this when the change touches the active typed forecast path for `binary`, `categorical`, or `numeric` questions and you want the tightest backend plus runtime signal before running the broader wrappers.
 
-1. Upload or select source material.
-2. Complete the normal graph build flow.
-3. Confirm the project reaches the simulation setup view with a valid `simulation_id`.
+### Forecasting verify
 
-### Step 2: Environment setup
+```bash
+npm run verify:forecasting
+```
 
-1. If forecast prepare is available, leave Step 2 in `Forecast` mode and start that path directly.
-2. Use `Legacy` only when forecast prepare is disabled or when you intentionally need the single-run path.
-3. Reopening an already-prepared forecast simulation should keep Step 2 in `Forecast` mode automatically.
-4. Do not treat Step 2 as report-ready or calibration-ready. It only prepares artifacts and settings.
-5. Step 2 capability copy is artifact-gated. It means the repo can read confidence artifacts later, not that any named metric is already calibrated.
+This is the main non-mutating forecasting wrapper. It runs broad repo verify, targeted non-binary verify, confidence verify, the active artifact scan, and the fixture-backed smoke suite.
 
-Step 2 grounding truth:
+The active artifact scan is intentionally narrow. A green result here only means the active simulation set is clean enough for the default scan.
 
-- `grounding_bundle.json` is the only forecast-facing upstream grounding artifact later phases should rely on.
-- `ready` means uploaded-source plus graph-build artifacts were attached.
-- `partial` means some durable upstream evidence exists but the bundle is incomplete.
-- `unavailable` means no durable upstream evidence was attached; do not improvise live-research claims from that state.
+### Historical artifact verify
 
-If Step 2 says probabilistic runtime shells are disabled, do not keep clicking into Step 3. That is a real backend capability off-state.
+```bash
+npm run verify:forecasting:artifacts:all
+```
 
-### Step 3: Stored-run operator workflow
+Use this when you need the full historical backlog audited. It includes archived simulations that are excluded from the default active scan.
 
-Current supported actions:
+Use `npm run forecasting:migrate:historical` when archived simulations need to be migrated into the current artifact contract.
 
-- `Launch selected run`: start a prepared stored shell
-- `Retry selected run`: restart the same stored `run_id`
-- `Stop selected run`: stop active runtime state
-- `Cleanup selected run`: clear volatile runtime artifacts after the run is inactive
-- `Create child rerun`: clone the current run into a new child `run_id`
+After migration, this command passes only when archived simulations are either:
 
-Rules:
+- remediated into the current contract, or
+- explicitly marked in `forecast_archive.json` as `historical_conformance.status=quarantined_non_ready` for the currently allowed residual issue code `grounding_bundle_not_ready`
 
-1. Retry keeps the same `run_id`.
-2. Child rerun creates a new `run_id` and preserves lineage.
-3. Cleanup is a recovery action, not a delete action.
-4. Cleanup must not be used on an active run.
+Archive markers alone are not remediation. `npm run forecasting:archive:historical` only records pending-remediation archive metadata and still refuses to mark active simulations archived unless `--allow-active` is passed directly to the backend script.
 
-### Step 3 saved-record re-entry
+### Fixture-backed smoke verify
 
-History can now reopen Step 3 when a saved probabilistic record exists:
+```bash
+npm run verify:smoke
+```
 
-- if a saved probabilistic report already points to `ensemble_id` plus `run_id`, History reopens that exact Step 3 shell
-- if no report exists but storage history can resolve a latest probabilistic run, the replay target can still come from storage metadata
+This suite uses deterministic fixture data and Playwright-owned local env overrides from [playwright.config.mjs](../playwright.config.mjs). It checks the bounded browser path through Step 2, Step 3, Step 4, Step 5, and history replay.
 
-What remains out of scope:
+It proves routing and surfaced state. It does not prove live LLM or Zep access, live Step 2 prepare, or live Report Agent chat responses.
 
-- richer ensemble-history browsing beyond the existing history record model
-- cross-report or cross-simulation compare
+### Live mutating operator verify
+
+```bash
+PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local
+```
+
+This suite mutates a real local simulation family and is intentionally gated.
+
+Use it only when:
+
+- mutation is acceptable
+- the local environment is configured for live use
+- you want fresh evidence for one real Step 2 through Step 5 path
+
+It covers Step 2 handoff, Step 3 recovery actions, Step 4 report generation, Step 4 compare handoff, and one real Step 5 Report Agent message against a saved live report context.
+
+If `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset, the harness auto-selects the newest non-archived prepared-and-grounded simulation and skips smoke fixtures.
+
+## Workflow And Evidence Terms
+
+Use these terms literally.
+
+- `artifact completeness`: the required Step 2 probabilistic artifacts exist.
+- `grounding attachment status`: `grounding_bundle.json` exists and its `status` is `ready` only when upstream grounding was actually attached.
+- `workflow handoff status`: the Step 2 stored-run handoff gate. It combines artifact completeness and grounding attachment status.
+- `confidence gate status`: the Step 4 and Step 5 calibration gate. It passes only when the supported binary, categorical, or numeric answer lane has valid type-correct calibration and backtest artifacts plus matching provenance.
+- `active forecasting evidence`: simulations that count for the normal artifact scan and default history views.
+- `archived historical evidence`: saved simulations marked with `forecast_archive.json`. They remain readable but stop counting as active readiness evidence by default.
+- `historical conformance status`: the archive-side artifact contract for archived simulations. `pending_remediation` means the backlog still needs repair, `remediated` means the archived artifact set meets the current contract, and `quarantined_non_ready` means the simulation remains read-only historical evidence with explicitly listed non-ready issue codes.
+- `active artifact scan`: the default scan path. It evaluates only active simulations.
+- `historical artifact scan`: the all-history scan path. It includes archived simulations so backlog problems stay visible and currently only accepts explicit quarantine for archived `grounding_bundle_not_ready`.
+
+## Local Prerequisites
+
+### Tooling
+
+- `node >= 18`
+- `python >= 3.11`
+- `uv`
+- `npm run setup:all`
+- `npx playwright install chromium`
+
+### Live environment
+
+For real local Step 2 through Step 5 use, the repo expects a root `.env` with real keys and the probabilistic flags enabled:
+
+```env
+LLM_API_KEY=...
+ZEP_API_KEY=...
+
+PROBABILISTIC_PREPARE_ENABLED=true
+PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
+PROBABILISTIC_REPORT_ENABLED=true
+PROBABILISTIC_INTERACTION_ENABLED=true
+
+CALIBRATED_PROBABILITY_ENABLED=false
+```
+
+`CALIBRATED_PROBABILITY_ENABLED` is only a surface flag. It does not make any metric pass the confidence gate by itself.
+
+### Capability check
+
+Before debugging UI behavior, check the backend surface directly:
+
+```bash
+curl http://localhost:5001/api/simulation/prepare/capabilities
+```
+
+For the bounded probabilistic path, expect:
+
+- `probabilistic_prepare_enabled=true`
+- `probabilistic_ensemble_storage_enabled=true`
+- `probabilistic_report_enabled=true`
+- `probabilistic_interaction_enabled=true`
+
+## Operator Flow
+
+### Step 1
+
+Upload source material and complete the normal graph build. You need a real `simulation_id` before any probabilistic path matters.
+
+### Step 2
+
+Stay in `Forecast` mode when probabilistic prepare is available.
+
+What Step 2 does:
+
+- writes or refreshes the forecast-oriented artifact set
+- computes readiness summaries
+- prepares the later Step 3 shell contract
+
+What Step 2 does not do:
+
+- it does not launch a run
+- it does not make the report calibrated
+- it does not make Step 4 or Step 5 stronger than the saved artifacts support
+
+The important distinction is this:
+
+- forecast prepare writes artifacts
+- Step 2 handoff creates or reopens the stored Step 3 shell
+- Step 3 launch starts execution later, when the operator chooses to do it
+
+Grounding status in `grounding_bundle.json` should be read plainly:
+
+- `ready`: the required upstream source and graph-build evidence is attached
+- `partial`: some durable evidence exists, but the handoff gate should still block
+- `unavailable`: there is no usable upstream grounding evidence for the forecast path
+
+If Step 2 helper text says handoff is blocked, treat that as the real backend gate, not as a cosmetic warning.
+
+### Step 3
+
+Step 3 is the stored-shell operator view.
+
+A prepared shell stays passive until `Launch selected run`. That point matters because Step 3 is about execution control and observed runtime state, not about stronger forecast certainty than the prepared artifacts support.
+
+Current operator actions:
+
+- `Launch selected run`
+- `Stop selected run`
+- `Retry selected run`
+- `Clean selected run`
+- `Create child rerun`
+
+Their current semantics are narrow:
+
+- retry restarts the same `run_id`
+- child rerun creates a new `run_id` with lineage back to the source run
+- cleanup clears transient runtime traces while preserving the stored shell inputs
+- cleanup is a recovery action, not a delete action
 
 ### Step 4
 
-Step 4 remains the legacy report-generation surface plus additive observed probabilistic context. Treat the probabilistic addendum as empirical or observational only.
+Step 4 is still the legacy report-generation surface plus an additive probabilistic context layer.
 
-Current Step 4 probabilistic-native evidence includes:
+Treat that probabilistic layer as descriptive:
 
-- upstream grounding status, boundary note, and stable citations when available
-- scope at the ensemble, scenario-family, or run level
-- support counts and surfaced warnings
-- representative runs, selected scenario-family evidence, and selected-run assumption-ledger details where present
-- `confidence_status` always: `absent`, `not_ready`, or `ready`
-- calibration provenance only when ready calibration artifacts exist
-- one dedicated bounded compare workspace with inspectable left/right scope snapshots and one Step 5 handoff
+- ensemble and family summaries are empirical
+- selected runs are observed
+- sensitivity is observational
 
-Do not describe the report body itself as calibrated. At most, cite explicit backtested calibration provenance for the supported metric named in the artifact, and only when `confidence_status.status == ready`.
+Step 4 can surface:
+
+- grounding status and citations
+- explicit `ensemble`, `cluster`, or `run` scope
+- support counts and warnings
+- representative runs and selected family evidence
+- selected-run assumption ledger details when present
+- `confidence_status`
+- calibration provenance only when the confidence gate is truly ready
+- one bounded compare workspace
+
+Do not call the report body calibrated just because calibration artifacts exist somewhere nearby.
 
 ### Step 5
 
-Only the report-agent chat lane is probabilistic-context-aware. It can use explicit `ensemble|cluster|run` route scope, saved report context, or one manual in-session scope switch. Interviews and surveys remain legacy-scoped.
+Only the Report Agent lane is probabilistic-context-aware.
 
-Current Step 5 operator expectations:
+It can use:
 
-- the probabilistic banner can reflect live scoped context, not just saved-report reopen state
-- report-agent chat can ground answers on explicit scope, support, warnings, representative runs, assumption-ledger details, and calibration provenance when valid
-- operators can switch the report-agent lane across bounded `ensemble`, `cluster`, and `run` scopes without changing report identity
-- compare support can arrive either from Step 4 handoff or bounded starter prompts, but it remains one saved-context compare at a time
+- saved report scope
+- explicit route scope
+- one manual in-session scope switch
+- one bounded compare handoff from the current saved report context
 
-## 6. Recovery paths
+Interviews and surveys remain legacy-scoped.
 
-### Step 2 handoff blocked
+## History and Archives
 
-Cause:
+History can currently:
 
-- runtime shells disabled by capability state
-- probabilistic prepare still in flight
-- missing required probabilistic sidecar artifacts
+- reopen Step 3 when probabilistic runtime scope is available
+- reopen Step 4 from the latest saved report
+- reopen Step 5 from the latest saved report
 
-Action:
+Archive behavior is deliberate:
 
-1. wait for prepare to finish
-2. confirm the Step 2 helper text
-3. if capabilities disable runtime shells, stay on legacy or re-enable the backend flags
+- active history excludes archived simulations by default
+- `/api/simulation/history?include_archived=true` includes them again
+- archived simulations carry `forecast_archive` metadata
+- archived simulations can additionally carry `historical_conformance` metadata that records whether they were remediated or explicitly quarantined as non-ready historical evidence
+- archived simulations remain readable, but they stop counting as active forecasting evidence
+- `npm run verify:forecasting:artifacts` is active-only
+- `npm run verify:forecasting:artifacts:all` audits active plus archived history
+- `npm run verify:forecasting:artifacts:all` only passes when archived backlog gaps are either remediated or explicitly quarantined as non-ready historical evidence
+- a green all-history scan is still not a claim that archived simulations are forecast-ready; quarantined archived simulations remain non-ready by design
+- a green active scan is not a claim about historical backlog health
 
-### Run is active and you want a clean retry
+## Recovery Paths
 
-Action:
+### Step 2 handoff is blocked
 
-1. click `Stop selected run`
-2. wait until the run becomes inactive
-3. click `Retry selected run`
+Check the helper text first. The usual causes are:
+
+- missing required Step 2 artifacts
+- `grounding_bundle.json` present but not `ready`
+- probabilistic runtime shells disabled by backend capability flags
+
+### A run is active and you want to retry or branch it
+
+Stop it first. Cleanup and child rerun are meant for inactive shells.
 
 ### Cleanup is refused
 
-Cause:
+That usually means the shell still has active runtime state. Wait for the run to become inactive, then clean it up.
 
-- cleanup was attempted while the run still had active runtime state
+### You need a new branch of execution
 
-Action:
+Use `Create child rerun`. That preserves the existing stored run as evidence and creates a new `run_id` with lineage.
 
-1. stop the run first
-2. refresh or wait for the Step 3 shell to show an inactive status
-3. run cleanup again
+## Evidence Locations
 
-### You need a fresh branch of execution
+- fixture-backed smoke artifacts: `output/playwright/fixtures/`
+- live local operator evidence: `output/playwright/live-operator/`
+- active artifact scan contract: `backend/scripts/scan_forecasting_artifacts.py`
+- historical archive marker logic: `backend/scripts/archive_nonconforming_forecasting_artifacts.py`
+- current browser contracts: `tests/smoke/probabilistic-runtime.spec.mjs` and `tests/live/probabilistic-operator-local.spec.mjs`
 
-Action:
+## Known Limits
 
-1. keep the source run intact
-2. click `Create child rerun`
-3. confirm Step 3 switches to the new child `run_id`
-
-### Stuck-run first response
-
-Use this conservative sequence:
-
-1. inspect the Step 3 status, timeline, and actions
-2. inspect `run_manifest.json` and any surviving runtime logs under the current run directory
-3. attempt `Stop selected run`
-4. if the run becomes inactive, use `Cleanup selected run`
-5. relaunch with `Retry selected run` if you want the same shell, or `Create child rerun` if you want a fresh child run
-6. if the shell stays unavailable, reopen Step 3 from History or return to Step 2 and create a new stored shell
-
-This is a local operator recovery path, not release-grade incident handling.
-
-## 7. History behavior
-
-History currently supports:
-
-- Step 3 replay when probabilistic runtime scope can be resolved
-- Step 4 reopen from the latest saved report
-- Step 5 reopen from the latest saved report
-
-History still does not support:
-
-- compare
-- deep ensemble-history browsing as a first-class route
-
-## 8. Known limitations
-
-1. Live Step 2 probabilistic prepare still depends on LLM plus Zep prerequisites.
-2. The deterministic smoke fixture is separate QA evidence, not proof that live prepare is self-contained.
-3. Probability language must stay empirical, observed, or observational unless a valid backtested calibration artifact exists for the cited metric, and even then that does not imply globally calibrated forecasting.
-4. Step 5 beyond the report-agent lane is still legacy-scoped.
-5. The repo has local-only non-fixture operator evidence, not release-grade rollout evidence.
-
-## 9. Artifact inspection paths
-
-Use this generic path pattern for one stored run:
-
-`backend/uploads/simulations/<simulation_id>/ensemble/ensemble_<ensemble_id>/runs/run_<run_id>/`
-
-Files to inspect:
-
-- `run_manifest.json`: durable lifecycle, lineage, and artifact pointers
-- `resolved_config.json`: durable resolved inputs for the stored run
-- `simulation.log`: runtime log if the run has been launched and not cleaned
-- `twitter/actions.jsonl`: platform action log if present and not cleaned
-- `reddit/actions.jsonl`: platform action log if present and not cleaned
-
-Cleanup behavior to remember:
-
-- cleanup preserves `run_manifest.json` and `resolved_config.json`
-- cleanup may remove `simulation.log`, `twitter/actions.jsonl`, and `reddit/actions.jsonl`
-
-## 10. Current evidence locations
-
-- live local operator capture: `output/playwright/live-operator/latest.json`
-- fixture-backed smoke suite: `tests/smoke/probabilistic-runtime.spec.mjs`
-- local-only operator suite: `tests/live/probabilistic-operator-local.spec.mjs`
-- PM/control packet: `docs/plans/2026-03-08-stochastic-probabilistic-*.md`
-
-## 11. Escalation boundary
-
-Escalate beyond this runbook when:
-
-1. Step 2 cannot complete a live prepare even though credentials and flags are correct
-2. Step 3 status, stop, cleanup, or rerun behavior diverges from the current tests and evidence files
-3. a report or interaction surface implies calibrated support or unsupported probabilistic scope
-4. someone wants to claim 100% local readiness or release-grade evidence
+- Live Step 2 prepare still depends on real LLM and Zep configuration.
+- The smoke suite is good routing evidence, but it is not proof that live prepare or live chat works in a fresh environment.
+- Confidence language must stay bounded to supported ready binary, categorical, or numeric answer lanes with valid provenance.
+- The repo has local bounded operator evidence, not release-grade rollout evidence.

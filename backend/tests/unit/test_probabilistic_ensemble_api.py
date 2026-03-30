@@ -14,6 +14,11 @@ def _load_simulation_api_module():
     return importlib.import_module("app.api.simulation")
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module=None):
     config_module = importlib.import_module("app.config")
     monkeypatch.setattr(
@@ -28,6 +33,84 @@ def _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_mod
             "SIMULATION_DATA_DIR",
             str(simulation_data_dir),
         )
+
+
+def _configure_project_grounding_dir(monkeypatch, project_root: Path):
+    project_module = importlib.import_module("app.models.project")
+    monkeypatch.setattr(
+        project_module.ProjectManager,
+        "PROJECTS_DIR",
+        str(project_root),
+        raising=False,
+    )
+    return project_module
+
+
+def _write_project_grounding_artifacts(
+    monkeypatch,
+    project_root: Path,
+    *,
+    project_id: str,
+    graph_id: str = "graph-1",
+):
+    _configure_project_grounding_dir(monkeypatch, project_root)
+    project_dir = project_root / project_id
+    _write_json(
+        project_dir / "source_manifest.json",
+        {
+            "artifact_type": "source_manifest",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "created_at": "2026-03-29T09:00:00",
+            "simulation_requirement": "Forecast discussion spread",
+            "boundary_note": "Uploaded project sources only; this artifact does not claim live-web coverage.",
+            "source_count": 1,
+            "sources": [
+                {
+                    "source_id": "src-1",
+                    "original_filename": "memo.md",
+                    "saved_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "size_bytes": 10,
+                    "sha256": "abc123",
+                    "content_kind": "document",
+                    "extraction_status": "succeeded",
+                    "extracted_text_length": 42,
+                    "combined_text_start": 0,
+                    "combined_text_end": 42,
+                    "parser_warnings": [],
+                    "excerpt": "Workers mention slowdown risk and policy response.",
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_build_summary.json",
+        {
+            "artifact_type": "graph_build_summary",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "generated_at": "2026-03-29T09:05:00",
+            "source_artifacts": {"source_manifest": "source_manifest.json"},
+            "ontology_summary": {
+                "analysis_summary": "Uploaded evidence emphasizes labor-policy timing.",
+                "entity_type_count": 1,
+                "edge_type_count": 1,
+            },
+            "chunk_size": 300,
+            "chunk_overlap": 40,
+            "chunk_count": 2,
+            "graph_counts": {
+                "node_count": 7,
+                "edge_count": 9,
+                "entity_types": ["Person"],
+            },
+            "warnings": [],
+        },
+    )
 
 
 def _build_test_client(simulation_module):
@@ -228,10 +311,18 @@ def _prepare_simulation(
     simulation_data_dir,
     monkeypatch,
     probabilistic_mode=True,
+    with_grounding=True,
 ):
     manager_module = _load_manager_module()
     _install_prepare_stubs(monkeypatch, manager_module)
     _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+    if probabilistic_mode and with_grounding:
+        _write_project_grounding_artifacts(
+            monkeypatch,
+            Path(simulation_data_dir).parent / "projects",
+            project_id="proj-1",
+            graph_id="graph-1",
+        )
 
     manager = manager_module.SimulationManager()
     state = manager.create_simulation("proj-1", "graph-1")
@@ -981,7 +1072,11 @@ def test_ensemble_create_endpoint_rejects_legacy_prepare_inputs(
     )
 
     assert response.status_code == 400
-    assert "probabilistic prepare artifacts" in response.get_json()["error"]
+    assert response.get_json()["error"] == (
+        "Forecast artifacts are incomplete. Missing files: "
+        "simulation_config.base.json, grounding_bundle.json, uncertainty_spec.json, "
+        "outcome_spec.json, prepared_snapshot.json."
+    )
 
 
 def test_ensemble_create_endpoint_rejects_partial_probabilistic_sidecars(
@@ -1018,6 +1113,73 @@ def test_ensemble_create_endpoint_rejects_partial_probabilistic_sidecars(
         "uncertainty_spec.json"
         in payload["prepare_info"]["prepared_artifact_summary"]["missing_probabilistic_artifacts"]
     )
+
+
+def test_ensemble_create_endpoint_rejects_unready_grounding_bundle(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_simulation(
+        simulation_data_dir,
+        monkeypatch,
+        probabilistic_mode=True,
+        with_grounding=False,
+    )
+
+    simulation_module = _load_simulation_api_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir)
+    monkeypatch.setattr(
+        simulation_module.Config,
+        "PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED",
+        True,
+        raising=False,
+    )
+    client = _build_test_client(simulation_module)
+
+    response = client.post(
+        f"/api/simulation/{state.simulation_id}/ensembles",
+        json={
+            "run_count": 2,
+            "max_concurrency": 1,
+            "root_seed": 17,
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert (
+        payload["error"]
+        == "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+    )
+    assert payload["prepare_info"]["prepared_artifact_summary"]["artifact_completeness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "missing_artifacts": [],
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["grounding_readiness"] == {
+        "ready": False,
+        "status": "unavailable",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["forecast_readiness"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["workflow_handoff_status"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+        "semantics": "workflow_handoff_status",
+    }
 
 
 def test_ensemble_runs_endpoint_applies_result_cap(

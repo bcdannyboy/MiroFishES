@@ -2,7 +2,7 @@
 Probabilistic report-context builder.
 
 This service packages the already-persisted ensemble analytics into one
-report-ready artifact that Step 4 and Step 5 can consume without having to
+report-context artifact that Step 4 and Step 5 can consume without having to
 reconstruct ensemble semantics from raw logs.
 
 The artifact is intentionally conservative:
@@ -34,6 +34,11 @@ from .simulation_manager import SimulationManager
 
 REPORT_CONTEXT_SCHEMA_VERSION = "probabilistic.report_context.v3"
 REPORT_CONTEXT_GENERATOR_VERSION = "probabilistic.report_context.generator.v3"
+FORECAST_WORKSPACE_CALIBRATION_BOUNDARY_NOTE = (
+    "Calibrated confidence is only earned when a forecast answer is explicitly marked "
+    "calibrated and carries ready backtest and calibration metadata on a supported "
+    "evaluation lane with resolved cases."
+)
 
 
 class ProbabilisticReportContextBuilder:
@@ -50,6 +55,37 @@ class ProbabilisticReportContextBuilder:
             simulation_data_dir=self.simulation_data_dir
         )
 
+    @staticmethod
+    def _get_answer_confidence_semantics(answer: Any) -> str:
+        if isinstance(answer, dict):
+            return str(answer.get("confidence_semantics") or "").strip()
+        return str(getattr(answer, "confidence_semantics", "") or "").strip()
+
+    @classmethod
+    def _workspace_calibrated_confidence_earned(
+        cls,
+        *,
+        latest_answer: Any,
+        confidence_basis: Dict[str, Any],
+        calibration_summary: Dict[str, Any],
+    ) -> bool:
+        if latest_answer is None:
+            return False
+        confidence_semantics = cls._get_answer_confidence_semantics(latest_answer)
+        confidence_status = str(confidence_basis.get("status") or "").strip()
+        resolved_case_count = int(confidence_basis.get("resolved_case_count") or 0)
+        calibration_status = str(calibration_summary.get("status") or "").strip()
+        benchmark_status = str(confidence_basis.get("benchmark_status") or "").strip()
+        backtest_status = str(confidence_basis.get("backtest_status") or "").strip()
+        return (
+            confidence_semantics == "calibrated"
+            and confidence_status == "available"
+            and resolved_case_count > 0
+            and calibration_status == "ready"
+            and benchmark_status in {"available", "ready"}
+            and backtest_status in {"available", "ready"}
+        )
+
     def get_report_context(
         self,
         simulation_id: str,
@@ -63,6 +99,16 @@ class ProbabilisticReportContextBuilder:
         prepared_artifact_summary = SimulationManager().get_prepare_artifact_summary(
             simulation_id
         )
+        try:
+            from .forecast_manager import ForecastManager
+
+            forecast_manager = ForecastManager()
+            linked_forecast_questions = forecast_manager.list_question_summaries_for_simulation(
+                simulation_id
+            )
+        except Exception:
+            linked_forecast_questions = []
+            forecast_manager = None
         aggregate_summary = self.ensemble_manager.get_aggregate_summary(
             simulation_id,
             normalized_ensemble_id,
@@ -75,12 +121,21 @@ class ProbabilisticReportContextBuilder:
             simulation_id,
             normalized_ensemble_id,
         )
-        calibration_summary = self._load_calibration_summary(
-            simulation_id,
-            normalized_ensemble_id,
+        confidence_inspection = self._inspect_confidence_artifacts(
+            ensemble_dir=ensemble_payload["ensemble_dir"],
+            simulation_id=simulation_id,
+            ensemble_id=normalized_ensemble_id,
         )
-        confidence_status = self._build_confidence_status(calibration_summary)
-        calibrated_summary = self._build_ready_calibrated_summary(calibration_summary)
+        calibration_summary = confidence_inspection.get("calibration_summary")
+        confidence_status = self._build_confidence_status(confidence_inspection)
+        calibrated_summary = (
+            self._build_ready_calibrated_summary(calibration_summary)
+            if confidence_status.get("artifact_readiness", {})
+            .get("provenance", {})
+            .get("status")
+            == "valid"
+            else None
+        )
         run_lookup = self._build_run_lookup(ensemble_payload)
         selected_run = self._resolve_selected_run(run_lookup, run_id)
         selected_cluster_source = "route" if cluster_id else None
@@ -117,6 +172,11 @@ class ProbabilisticReportContextBuilder:
             simulation_data_dir=self.simulation_data_dir
         ).load_bundle(simulation_id)
         grounding_context = build_grounding_context(grounding_bundle)
+        forecast_workspace = self._build_forecast_workspace_context(
+            forecast_manager=forecast_manager,
+            linked_forecast_questions=linked_forecast_questions,
+            confidence_status=confidence_status,
+        )
         ensemble_facts = self._build_ensemble_facts(
             ensemble_payload=ensemble_payload,
             aggregate_summary=aggregate_summary,
@@ -164,6 +224,7 @@ class ProbabilisticReportContextBuilder:
             "probability_semantics": {
                 "summary": "empirical",
                 "clusters": "empirical",
+                "cluster_share": "observed_run_share",
                 "runs": "observed",
                 "sensitivity": "observational",
                 **(
@@ -173,6 +234,14 @@ class ProbabilisticReportContextBuilder:
                 ),
             },
             "confidence_status": confidence_status,
+            "simulation_role": {
+                "worker": "simulation",
+                "mode": "worker_composed",
+                "summary": (
+                    "Simulation contributes scenario evidence as one forecast worker. Saved artifacts define scope and evidence boundaries; they do not turn simulation frequencies into earned real-world probabilities."
+                ),
+            },
+            "forecast_workspace": forecast_workspace,
             **(
                 {
                     "calibration_provenance": self._build_calibration_provenance(
@@ -188,6 +257,7 @@ class ProbabilisticReportContextBuilder:
                 sensitivity=sensitivity,
             ),
             "prepared_artifact_summary": prepared_artifact_summary,
+            "linked_forecast_questions": linked_forecast_questions,
             "grounding_context": grounding_context,
             "ensemble_facts": ensemble_facts,
             "top_outcomes": top_outcomes,
@@ -228,7 +298,18 @@ class ProbabilisticReportContextBuilder:
                 "grounding_bundle": GroundingBundleBuilder.GROUNDING_BUNDLE_FILENAME,
                 **(
                     {"calibration_summary": self.ensemble_manager.CALIBRATION_SUMMARY_FILENAME}
-                    if confidence_status.get("status") != "absent"
+                    if confidence_status.get("artifact_readiness", {})
+                    .get("calibration_summary", {})
+                    .get("status")
+                    != "absent"
+                    else {}
+                ),
+                **(
+                    {"backtest_summary": self.ensemble_manager.BACKTEST_SUMMARY_FILENAME}
+                    if confidence_status.get("artifact_readiness", {})
+                    .get("backtest_summary", {})
+                    .get("status")
+                    != "absent"
                     else {}
                 ),
             },
@@ -262,6 +343,466 @@ class ProbabilisticReportContextBuilder:
             cluster_id=cluster_id,
             run_id=run_id,
         )
+
+    @staticmethod
+    def _build_empty_forecast_workspace_context() -> Dict[str, Any]:
+        return {
+            "status": "unavailable",
+            "boundary_note": (
+                "No linked forecast-question workspace is attached to this simulation scope."
+            ),
+            "supported_question_types": [],
+            "supported_question_templates": [],
+            "linked_forecast_count": 0,
+            "linked_forecast_questions": [],
+            "linked_forecasts": [],
+            "selected_forecast_id": None,
+            "selected_forecast": None,
+            "simulation_role_note": (
+                "Simulation remains available as supporting scenario analysis whether or not a linked forecast workspace exists."
+            ),
+        }
+
+    def _build_forecast_workspace_context(
+        self,
+        *,
+        forecast_manager: Any,
+        simulation_id: str,
+    ) -> Dict[str, Any]:
+        from ..models.forecasting import get_forecast_capabilities_domain
+
+        workspaces = [
+            workspace
+            for workspace in forecast_manager.list_workspaces()
+            if workspace.forecast_question.primary_simulation_id == simulation_id
+        ]
+        workspaces.sort(
+            key=self._forecast_workspace_sort_key,
+            reverse=True,
+        )
+        linked_forecasts = [
+            self._build_linked_forecast_summary(workspace) for workspace in workspaces
+        ]
+        selected_forecast = linked_forecasts[0] if linked_forecasts else None
+        capabilities = get_forecast_capabilities_domain()
+
+        return {
+            "status": "available" if linked_forecasts else "unavailable",
+            "boundary_note": (
+                "Linked forecast workspaces summarize bounded question, evidence, ledger, and evaluation state for this simulation. They do not upgrade simulation-only scenario evidence into calibrated confidence."
+            ),
+            "supported_question_types": list(
+                capabilities.get("supported_question_types", [])
+            ),
+            "supported_question_templates": list(
+                capabilities.get("supported_question_templates", [])
+            ),
+            "linked_forecast_count": len(linked_forecasts),
+            "linked_forecast_questions": [
+                {
+                    "forecast_id": item.get("forecast_id"),
+                    "title": item.get("title"),
+                    "question_text": item.get("question_text"),
+                    "question_status": item.get("question_status"),
+                    "issue_timestamp": item.get("issue_timestamp"),
+                    "resolution_status": item.get("resolution_status"),
+                    "prediction_entry_count": item.get("prediction_ledger", {}).get(
+                        "entry_count",
+                        0,
+                    ),
+                    "worker_kinds": item.get("worker_kinds", []),
+                }
+                for item in linked_forecasts
+            ],
+            "linked_forecasts": linked_forecasts,
+            "selected_forecast_id": (
+                selected_forecast.get("forecast_id") if selected_forecast else None
+            ),
+            "selected_forecast": selected_forecast,
+            "forecast_question": (
+                {
+                    "forecast_id": selected_forecast.get("forecast_id"),
+                    "title": selected_forecast.get("title"),
+                    "question_text": selected_forecast.get("question_text"),
+                    "question_type": selected_forecast.get("question_type"),
+                    "horizon": selected_forecast.get("horizon"),
+                    "issue_timestamp": selected_forecast.get("issue_timestamp"),
+                    "owner": selected_forecast.get("owner"),
+                    "source": selected_forecast.get("source"),
+                    "question_status": selected_forecast.get("question_status"),
+                    "abstention_conditions": selected_forecast.get(
+                        "abstention_conditions",
+                        [],
+                    ),
+                    "supported_question_templates": list(
+                        capabilities.get("supported_question_templates", [])
+                    ),
+                }
+                if selected_forecast
+                else None
+            ),
+            "evidence_bundle": (
+                selected_forecast.get("evidence_bundle") if selected_forecast else None
+            ),
+            "prediction_ledger": (
+                selected_forecast.get("prediction_ledger") if selected_forecast else None
+            ),
+            "evaluation_results": (
+                selected_forecast.get("evaluation") if selected_forecast else None
+            ),
+            "forecast_answer": (
+                {
+                    **(selected_forecast.get("latest_answer") or {}),
+                    "answer_payload": {
+                        "best_estimate": (
+                            (selected_forecast.get("latest_answer") or {}).get(
+                                "best_estimate"
+                            )
+                        ),
+                        "abstain": (
+                            (selected_forecast.get("latest_answer") or {}).get("abstain")
+                        ),
+                        "abstain_reason": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("abstain_reason")
+                        ),
+                        "counterevidence": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("counterevidence", [])
+                        ),
+                        "assumption_summary": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("assumption_summary", {})
+                        ),
+                        "uncertainty_decomposition": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("uncertainty_decomposition", {})
+                        ),
+                        "evaluation_summary": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("evaluation_summary", {})
+                        ),
+                        "confidence_basis": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("confidence_basis", {})
+                        ),
+                        "simulation_context": (
+                            (
+                                selected_forecast.get("latest_answer") or {}
+                            ).get("simulation_context", {})
+                        ),
+                    },
+                }
+                if selected_forecast
+                else None
+            ),
+            "worker_comparison": (
+                {
+                    "worker_count": len(selected_forecast.get("worker_kinds", [])),
+                    "worker_kinds": selected_forecast.get("worker_kinds", []),
+                    "worker_contribution_trace": (
+                        (
+                            selected_forecast.get("latest_answer") or {}
+                        ).get("worker_contribution_trace", [])
+                    ),
+                    "abstain": (
+                        (selected_forecast.get("latest_answer") or {}).get("abstain")
+                    ),
+                    "abstain_reason": (
+                        (
+                            selected_forecast.get("latest_answer") or {}
+                        ).get("abstain_reason")
+                    ),
+                    "best_estimate": (
+                        (
+                            selected_forecast.get("latest_answer") or {}
+                        ).get("best_estimate")
+                    ),
+                    "simulation_context": (
+                        (
+                            selected_forecast.get("latest_answer") or {}
+                        ).get("simulation_context")
+                    ),
+                }
+                if selected_forecast
+                else None
+            ),
+            "truthfulness_surface": (
+                {
+                    "evidence_available": selected_forecast.get("status_matrix", {}).get(
+                        "evidence_available",
+                        False,
+                    ),
+                    "evaluation_available": selected_forecast.get("status_matrix", {}).get(
+                        "evaluation_available",
+                        False,
+                    ),
+                    "calibrated_confidence_earned": selected_forecast.get(
+                        "status_matrix",
+                        {},
+                    ).get("calibrated_confidence_earned", False),
+                    "simulation_only_scenario_exploration": selected_forecast.get(
+                        "status_matrix",
+                        {},
+                    ).get("simulation_only_scenario_exploration", False),
+                    "boundary_note": (
+                        "Evidence availability, evaluation availability, calibrated confidence, and simulation-only scenario exploration remain distinct surfaces."
+                    ),
+                }
+                if selected_forecast
+                else None
+            ),
+            "simulation_role_note": (
+                "Simulation remains visible here as supporting scenario analysis, not the default answer source."
+            ),
+        }
+
+    @staticmethod
+    def _forecast_workspace_sort_key(workspace: Any) -> tuple[str, str, str]:
+        latest_answer_at = ""
+        if getattr(workspace, "forecast_answers", None):
+            latest_answer_at = max(
+                [
+                    item.created_at
+                    for item in workspace.forecast_answers
+                    if getattr(item, "created_at", None)
+                ],
+                default="",
+            )
+
+        return (
+            latest_answer_at or "",
+            getattr(workspace.forecast_question, "updated_at", "") or "",
+            getattr(workspace.forecast_question, "issue_timestamp", "") or "",
+        )
+
+    def _build_linked_forecast_summary(self, workspace: Any) -> Dict[str, Any]:
+        question = workspace.forecast_question
+        evidence_bundle = workspace.evidence_bundle
+        ledger = workspace.prediction_ledger
+        latest_answer = (
+            max(
+                workspace.forecast_answers,
+                key=lambda item: getattr(item, "created_at", "") or "",
+            )
+            if workspace.forecast_answers
+            else None
+        )
+        latest_answer_payload = (
+            dict(latest_answer.answer_payload)
+            if latest_answer is not None and isinstance(latest_answer.answer_payload, dict)
+            else {}
+        )
+        worker_trace = latest_answer_payload.get("worker_contribution_trace", [])
+        if not isinstance(worker_trace, list):
+            worker_trace = []
+        influential_non_simulation_workers = [
+            item
+            for item in worker_trace
+            if isinstance(item, dict)
+            and item.get("worker_kind") != "simulation"
+            and item.get("influences_best_estimate")
+        ]
+        why_summary = [
+            item.get("summary", "")
+            for item in influential_non_simulation_workers
+            if str(item.get("summary", "")).strip()
+        ]
+        if not why_summary and latest_answer is not None:
+            why_summary = [latest_answer.summary]
+
+        evaluation_summary = (
+            dict(latest_answer.evaluation_summary)
+            if latest_answer is not None and isinstance(latest_answer.evaluation_summary, dict)
+            else {
+                "status": (
+                    "available"
+                    if any(case.status == "resolved" for case in workspace.evaluation_cases)
+                    else "partial"
+                    if workspace.evaluation_cases
+                    else "unavailable"
+                ),
+                "case_count": len(workspace.evaluation_cases),
+                "resolved_case_count": len(
+                    [case for case in workspace.evaluation_cases if case.status == "resolved"]
+                ),
+            }
+        )
+        confidence_basis = (
+            dict(latest_answer.confidence_basis)
+            if latest_answer is not None and isinstance(latest_answer.confidence_basis, dict)
+            else {}
+        )
+        calibration_summary = (
+            dict(latest_answer.calibration_summary)
+            if latest_answer is not None and isinstance(latest_answer.calibration_summary, dict)
+            else {}
+        )
+        prediction_entries = list(getattr(ledger, "entries", []))
+        worker_outputs = list(getattr(ledger, "worker_outputs", []))
+        resolution_criteria = [
+            {
+                "criteria_id": item.criteria_id,
+                "label": item.label,
+                "criteria_type": item.criteria_type,
+                "resolution_date": item.resolution_date,
+            }
+            for item in workspace.resolution_criteria
+        ]
+
+        calibrated_confidence_earned = self._workspace_calibrated_confidence_earned(
+            latest_answer=latest_answer,
+            confidence_basis=confidence_basis,
+            calibration_summary=calibration_summary,
+        )
+        simulation_only_scenario_exploration = bool(
+            latest_answer_payload.get("simulation_context", {}).get("included")
+        ) and not influential_non_simulation_workers
+
+        latest_prediction_time = max(
+            [item.recorded_at for item in prediction_entries if getattr(item, "recorded_at", None)],
+            default=None,
+        )
+        latest_worker_output_time = max(
+            [
+                str(item.get("recorded_at"))
+                for item in worker_outputs
+                if isinstance(item, dict) and item.get("recorded_at")
+            ],
+            default=None,
+        )
+
+        return {
+            "forecast_id": question.forecast_id,
+            "title": question.title,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "horizon": question.horizon,
+            "issue_timestamp": question.issue_timestamp,
+            "owner": question.owner,
+            "source": question.source,
+            "question_status": question.status,
+            "resolution_status": ledger.resolution_status,
+            "decomposition_support_count": len(question.decomposition_support)
+            or len(question.decomposition.get("subquestion_ids", [])),
+            "abstention_conditions": list(question.abstention_conditions),
+            "resolution_criteria": resolution_criteria,
+            "worker_kinds": [item.kind for item in workspace.forecast_workers],
+            "evidence_bundle": {
+                "bundle_id": evidence_bundle.bundle_id,
+                "status": evidence_bundle.status,
+                "title": evidence_bundle.title,
+                "summary": evidence_bundle.summary,
+                "source_entry_count": len(evidence_bundle.source_entries),
+                "provider_count": len(evidence_bundle.provider_snapshots),
+                "retrieval_quality_status": evidence_bundle.retrieval_quality.get("status"),
+                "conflict_marker_count": len(evidence_bundle.conflict_markers),
+                "missing_evidence_count": len(evidence_bundle.missing_evidence_markers),
+                "uncertainty_causes": list(
+                    evidence_bundle.uncertainty_summary.get("causes", [])
+                ),
+                "boundary_note": evidence_bundle.boundary_note,
+                "source_entries": [
+                    item.to_dict()
+                    if hasattr(item, "to_dict")
+                    else dict(item)
+                    if isinstance(item, dict)
+                    else {}
+                    for item in evidence_bundle.source_entries[:5]
+                ],
+                "provider_snapshots": [
+                    item.to_dict()
+                    if hasattr(item, "to_dict")
+                    else dict(item)
+                    if isinstance(item, dict)
+                    else {}
+                    for item in evidence_bundle.provider_snapshots[:5]
+                ],
+            },
+            "prediction_ledger": {
+                "entry_count": len(prediction_entries),
+                "worker_output_count": len(worker_outputs),
+                "resolution_status": ledger.resolution_status,
+                "latest_prediction_recorded_at": latest_prediction_time,
+                "latest_worker_output_recorded_at": latest_worker_output_time,
+                "entries": [
+                    item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                    for item in prediction_entries[:5]
+                ],
+                "worker_outputs": [
+                    dict(item) if isinstance(item, dict) else {}
+                    for item in worker_outputs[:5]
+                ],
+                "resolution_history": [
+                    dict(item) if isinstance(item, dict) else {}
+                    for item in list(getattr(ledger, "resolution_history", []))[:5]
+                ],
+            },
+            "evaluation": {
+                "status": evaluation_summary.get("status", "unavailable"),
+                "case_count": evaluation_summary.get("case_count", len(workspace.evaluation_cases)),
+                "resolved_case_count": evaluation_summary.get(
+                    "resolved_case_count",
+                    len([case for case in workspace.evaluation_cases if case.status == "resolved"]),
+                ),
+                "question_classes": list(evaluation_summary.get("question_classes", [])),
+                "split_ids": list(evaluation_summary.get("split_ids", [])),
+                "window_ids": list(evaluation_summary.get("window_ids", [])),
+                "cases": [
+                    item.to_dict() if hasattr(item, "to_dict") else dict(item)
+                    for item in workspace.evaluation_cases[:5]
+                ],
+            },
+            "status_matrix": {
+                "evidence_available": evidence_bundle.status in {"available", "partial"},
+                "evaluation_available": bool(
+                    (evaluation_summary.get("resolved_case_count", 0) or 0) > 0
+                ),
+                "calibrated_confidence_earned": calibrated_confidence_earned,
+                "simulation_only_scenario_exploration": simulation_only_scenario_exploration,
+            },
+            "latest_answer": (
+                {
+                    "answer_id": latest_answer.answer_id,
+                    "answer_type": latest_answer.answer_type,
+                    "summary": latest_answer.summary,
+                    "created_at": latest_answer.created_at,
+                    "confidence_semantics": latest_answer.confidence_semantics,
+                    "worker_ids": list(latest_answer.worker_ids),
+                    "prediction_entry_ids": list(latest_answer.prediction_entry_ids),
+                    "best_estimate": latest_answer_payload.get("best_estimate"),
+                    "abstain": bool(
+                        latest_answer_payload.get("abstain", latest_answer_payload.get("abstained"))
+                    ),
+                    "abstain_reason": latest_answer_payload.get("abstain_reason"),
+                    "why_summary": why_summary,
+                    "counterevidence": list(latest_answer_payload.get("counterevidence", [])),
+                    "assumption_summary": dict(
+                        latest_answer_payload.get("assumption_summary", {})
+                    ),
+                    "uncertainty_decomposition": dict(
+                        latest_answer_payload.get("uncertainty_decomposition", {})
+                    ),
+                    "worker_contribution_trace": worker_trace,
+                    "simulation_context": dict(
+                        latest_answer_payload.get("simulation_context", {})
+                    ),
+                    "confidence_basis": confidence_basis,
+                    "evaluation_summary": evaluation_summary,
+                    "benchmark_summary": dict(latest_answer.benchmark_summary),
+                    "backtest_summary": dict(latest_answer.backtest_summary),
+                    "calibration_summary": calibration_summary,
+                }
+                if latest_answer is not None
+                else None
+            ),
+        }
 
     def _build_scope(
         self,
@@ -341,9 +882,15 @@ class ProbabilisticReportContextBuilder:
         for metric_id, summary in metric_summaries.items():
             numeric_sort_value = summary.get("mean")
             if numeric_sort_value is None:
-                numeric_sort_value = summary.get("empirical_probability")
+                numeric_sort_value = summary.get(
+                    "observed_true_share",
+                    summary.get("empirical_probability"),
+                )
             if numeric_sort_value is None:
-                numeric_sort_value = summary.get("dominant_probability")
+                numeric_sort_value = summary.get(
+                    "dominant_observed_share",
+                    summary.get("dominant_probability"),
+                )
             if numeric_sort_value is None:
                 numeric_sort_value = summary.get("sample_count", 0)
 
@@ -398,7 +945,14 @@ class ProbabilisticReportContextBuilder:
                     "prototype_run_id": cluster.get("prototype_run_id"),
                     "representative_run_ids": cluster.get("representative_run_ids", []),
                     "member_run_ids": cluster.get("member_run_ids", []),
-                    "probability_mass": cluster.get("probability_mass"),
+                    "observed_run_share": cluster.get(
+                        "observed_run_share",
+                        cluster.get("probability_mass"),
+                    ),
+                    "share_semantics": cluster.get(
+                        "share_semantics",
+                        "observed_run_share",
+                    ),
                     "assumption_template_counts": cluster.get(
                         "assumption_template_counts",
                         {},
@@ -425,6 +979,7 @@ class ProbabilisticReportContextBuilder:
                         "prepared_run_count": prepared_run_count,
                         "label": f"Observed in {run_count} of {prepared_run_count} runs",
                     },
+                    "support_assessment": cluster.get("support_assessment", {}),
                     "warnings": cluster.get("warnings", []),
                 }
             )
@@ -505,6 +1060,10 @@ class ProbabilisticReportContextBuilder:
             "ranking_basis": sensitivity.get("methodology", {}).get("ranking_basis"),
             "top_drivers": top_drivers,
             "warnings": sensitivity.get("quality_summary", {}).get("warnings", []),
+            "support_assessment": sensitivity.get("quality_summary", {}).get(
+                "support_assessment",
+                {},
+            ),
             "provenance": {
                 "mode": "observational",
                 "label": "Observational sensitivity ranking",
@@ -527,6 +1086,7 @@ class ProbabilisticReportContextBuilder:
                 "overall_effect_score": driver.get("overall_effect_score"),
                 "driver_summary": driver.get("driver_summary"),
                 "cluster_alignment_hints": driver.get("cluster_alignment_hints", []),
+                "support_assessment": driver.get("support_assessment", {}),
                 "warnings": driver.get("warnings", []),
             }
             for driver in driver_rankings[:5]
@@ -541,6 +1101,10 @@ class ProbabilisticReportContextBuilder:
                 selected_run=selected_run,
             ),
             "warnings": sensitivity.get("quality_summary", {}).get("warnings", []),
+            "support_assessment": sensitivity.get("quality_summary", {}).get(
+                "support_assessment",
+                {},
+            ),
             "provenance": {
                 "mode": "observational",
                 "label": "Observational driver analysis",
@@ -699,7 +1263,7 @@ class ProbabilisticReportContextBuilder:
                         "prompt": (
                             f"Compare scenario family {selected_cluster.get('cluster_id')} "
                             f"against {hint['scope'].get('cluster_id')}. Focus on "
-                            "probability mass, representative runs, distinguishing metrics, "
+                            "observed run share, representative runs, distinguishing metrics, "
                             "support counts, and warnings only."
                         ),
                     }
@@ -735,7 +1299,7 @@ class ProbabilisticReportContextBuilder:
                     "prompt": (
                         f"Compare scenario family {first_family.get('cluster_id')} "
                         f"against {second_family.get('cluster_id')}. Focus on "
-                        "probability mass, representative runs, distinguishing metrics, "
+                        "observed run share, representative runs, distinguishing metrics, "
                         "support counts, and warnings only."
                     ),
                 }
@@ -1108,6 +1672,187 @@ class ProbabilisticReportContextBuilder:
             "warnings": warnings,
         }
 
+    def _build_supported_question_templates(
+        self,
+        forecast_question: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        templates: List[Dict[str, Any]] = []
+        decomposition_support = forecast_question.get("decomposition_support") or []
+        abstention_conditions = [
+            str(item).strip()
+            for item in (forecast_question.get("abstention_conditions") or [])
+            if str(item).strip()
+        ]
+
+        for index, item in enumerate(decomposition_support):
+            if not isinstance(item, dict):
+                continue
+            question_text = item.get("question_text") or forecast_question.get("question_text")
+            templates.append(
+                {
+                    "template_id": item.get("template_id") or f"{forecast_question.get('forecast_id')}-template-{index + 1}",
+                    "label": item.get("label") or f"Template {index + 1}",
+                    "question_text": question_text,
+                    "question_type": item.get("question_type") or forecast_question.get("question_type"),
+                    "resolution_criteria_ids": item.get("resolution_criteria_ids") or list(
+                        forecast_question.get("resolution_criteria_ids") or []
+                    ),
+                    "abstention_conditions": item.get("abstention_conditions") or abstention_conditions,
+                    "source": item.get("source") or forecast_question.get("source"),
+                    "owner": item.get("owner") or forecast_question.get("owner"),
+                }
+            )
+
+        if not templates:
+            templates.append(
+                {
+                    "template_id": f"{forecast_question.get('forecast_id')}-primary",
+                    "label": forecast_question.get("title") or "Primary forecast question",
+                    "question_text": forecast_question.get("question_text"),
+                    "question_type": forecast_question.get("question_type"),
+                    "resolution_criteria_ids": list(
+                        forecast_question.get("resolution_criteria_ids") or []
+                    ),
+                    "abstention_conditions": abstention_conditions,
+                    "source": forecast_question.get("source"),
+                    "owner": forecast_question.get("owner"),
+                }
+            )
+
+        return templates
+
+    def _build_forecast_workspace_context(
+        self,
+        *,
+        forecast_manager,
+        linked_forecast_questions: List[Dict[str, Any]],
+        confidence_status: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if forecast_manager is None or not linked_forecast_questions:
+            return None
+
+        sorted_questions = sorted(
+            [
+                question
+                for question in linked_forecast_questions
+                if isinstance(question, dict) and question.get("forecast_id")
+            ],
+            key=lambda item: (
+                item.get("updated_at") or item.get("created_at") or item.get("issue_timestamp") or "",
+                item.get("forecast_id") or "",
+            ),
+            reverse=True,
+        )
+        if not sorted_questions:
+            return None
+
+        primary_forecast_id = sorted_questions[0]["forecast_id"]
+        try:
+            workspace = forecast_manager.get_workspace(primary_forecast_id)
+        except Exception:
+            workspace = None
+        if workspace is None:
+            return None
+
+        workspace_payload = workspace.to_dict()
+        forecast_question = dict(workspace_payload.get("forecast_question") or {})
+        forecast_question["supported_question_templates"] = self._build_supported_question_templates(
+            forecast_question
+        )
+        forecast_answers = list(workspace_payload.get("forecast_answers") or [])
+        latest_answer = forecast_answers[-1] if forecast_answers else None
+        latest_answer_payload = dict((latest_answer or {}).get("answer_payload") or {})
+        worker_trace = list(latest_answer_payload.get("worker_contribution_trace") or [])
+        evidence_bundle = dict(workspace_payload.get("evidence_bundle") or {})
+        prediction_ledger = dict(workspace_payload.get("prediction_ledger") or {})
+        prediction_ledger = {
+            **prediction_ledger,
+            "entry_count": len(prediction_ledger.get("entries") or []),
+            "worker_output_count": len(prediction_ledger.get("worker_outputs") or []),
+            "resolution_history_count": len(
+                prediction_ledger.get("resolution_history") or []
+            ),
+        }
+        evaluation_cases = list(workspace_payload.get("evaluation_cases") or [])
+        forecast_workers = list(workspace_payload.get("forecast_workers") or [])
+        simulation_worker_contract = workspace_payload.get("simulation_worker_contract")
+        truthfulness_surface = {
+            "evidence_available": bool(
+                evidence_bundle.get("status") in {"ready", "partial"}
+                or evidence_bundle.get("source_entries")
+                or evidence_bundle.get("entries")
+            ),
+            "evaluation_available": bool(
+                evaluation_cases
+                or latest_answer_payload.get("evaluation_summary", {}).get("resolved_case_count")
+                or latest_answer_payload.get("confidence_basis", {}).get("resolved_case_count")
+            ),
+            "calibrated_confidence_earned": self._workspace_calibrated_confidence_earned(
+                latest_answer=latest_answer,
+                confidence_basis=dict(latest_answer_payload.get("confidence_basis", {})),
+                calibration_summary=dict(
+                    (latest_answer or {}).get("calibration_summary", {})
+                ),
+            ),
+            "simulation_only_scenario_exploration": bool(
+                latest_answer_payload.get("abstain")
+                or latest_answer_payload.get("abstained")
+                or (
+                    forecast_workers
+                    and all(str(worker.get("kind")) == "simulation" for worker in forecast_workers if isinstance(worker, dict))
+                )
+            ),
+            "boundary_note": FORECAST_WORKSPACE_CALIBRATION_BOUNDARY_NOTE,
+        }
+
+        workspace_payload.update(
+            {
+                "forecast_question": forecast_question,
+                "forecast_answer": latest_answer,
+                "forecast_workspace_status": "available",
+                "supported_question_templates": list(forecast_question.get("supported_question_templates", [])),
+                "truthfulness_surface": truthfulness_surface,
+                "prediction_ledger": prediction_ledger,
+                "worker_comparison": {
+                    "worker_count": len(forecast_workers),
+                    "worker_kinds": [
+                        str(worker.get("kind") or "").strip()
+                        for worker in forecast_workers
+                        if isinstance(worker, dict) and str(worker.get("kind") or "").strip()
+                    ],
+                    "worker_contribution_trace": worker_trace,
+                    "simulation_worker_contract": simulation_worker_contract,
+                    "best_estimate": latest_answer_payload.get("best_estimate"),
+                    "abstain": bool(
+                        latest_answer_payload.get("abstain")
+                        or latest_answer_payload.get("abstained")
+                    ),
+                    "abstain_reason": latest_answer_payload.get("abstain_reason"),
+                    "simulation_context": latest_answer_payload.get("simulation_context"),
+                },
+                "abstain_state": {
+                    "abstain": bool(
+                        latest_answer_payload.get("abstain")
+                        or latest_answer_payload.get("abstained")
+                    ),
+                    "abstain_reason": latest_answer_payload.get("abstain_reason"),
+                    "summary": latest_answer.get("summary") if isinstance(latest_answer, dict) else "",
+                },
+                "evaluation_results": {
+                    "status": "available" if evaluation_cases else "unavailable",
+                    "case_count": len(evaluation_cases),
+                    "resolved_case_count": len(
+                        [case for case in evaluation_cases if isinstance(case, dict) and case.get("status") == "resolved"]
+                    ),
+                    "pending_case_count": len(
+                        [case for case in evaluation_cases if isinstance(case, dict) and case.get("status") != "resolved"]
+                    ),
+                    "cases": evaluation_cases,
+                },
+            }
+        )
+        return workspace_payload
+
     def _build_calibration_provenance(
         self,
         calibrated_summary: Dict[str, Any],
@@ -1131,44 +1876,234 @@ class ProbabilisticReportContextBuilder:
             ),
         }
 
-    def _load_calibration_summary(
+    def _inspect_confidence_artifacts(
         self,
+        *,
+        ensemble_dir: str,
         simulation_id: str,
         ensemble_id: str,
-    ) -> Optional[Dict[str, Any]]:
-        try:
-            summary = self.ensemble_manager.load_calibration_summary(
-                simulation_id,
-                ensemble_id,
+    ) -> Dict[str, Any]:
+        artifact_readiness = {
+            "calibration_summary": {
+                "status": "absent",
+                "reason": "No calibration summary artifact is attached to this ensemble.",
+            },
+            "backtest_summary": {
+                "status": "absent",
+                "reason": "No backtest summary artifact is attached to this ensemble.",
+            },
+            "provenance": {
+                "status": "absent",
+                "reason": (
+                    "Calibration provenance cannot be verified without a valid "
+                    "calibration summary artifact."
+                ),
+            },
+        }
+        inspection = {
+            "calibration_summary": None,
+            "backtest_summary": None,
+            "artifact_readiness": artifact_readiness,
+            "gating_reasons": [],
+            "warnings": [],
+        }
+
+        calibration_path = os.path.join(
+            ensemble_dir,
+            self.ensemble_manager.CALIBRATION_SUMMARY_FILENAME,
+        )
+        backtest_path = os.path.join(
+            ensemble_dir,
+            self.ensemble_manager.BACKTEST_SUMMARY_FILENAME,
+        )
+
+        if os.path.exists(calibration_path):
+            try:
+                inspection["calibration_summary"] = self.ensemble_manager.load_calibration_summary(
+                    simulation_id,
+                    ensemble_id,
+                )
+            except (ValueError, OSError, json.JSONDecodeError):
+                artifact_readiness["calibration_summary"] = {
+                    "status": "invalid",
+                    "reason": (
+                        "Calibration summary failed validation and cannot support "
+                        "confidence surfaces."
+                    ),
+                }
+                artifact_readiness["provenance"] = {
+                    "status": "invalid",
+                    "reason": (
+                        "Calibration provenance cannot be trusted until the calibration "
+                        "summary validates."
+                    ),
+                }
+                inspection["gating_reasons"].append("invalid_calibration_artifact")
+                inspection["warnings"].append("invalid_calibration_artifact")
+            else:
+                artifact_readiness["calibration_summary"] = {
+                    "status": "valid",
+                    "reason": "",
+                }
+        else:
+            inspection["gating_reasons"].append("missing_calibration_artifact")
+
+        if os.path.exists(backtest_path):
+            try:
+                inspection["backtest_summary"] = self.ensemble_manager.load_backtest_summary(
+                    simulation_id,
+                    ensemble_id,
+                )
+            except (ValueError, OSError, json.JSONDecodeError):
+                artifact_readiness["backtest_summary"] = {
+                    "status": "invalid",
+                    "reason": (
+                        "Backtest summary failed validation and cannot anchor "
+                        "confidence provenance."
+                    ),
+                }
+                inspection["warnings"].append("invalid_backtest_artifact")
+                if "invalid_calibration_artifact" not in inspection["warnings"]:
+                    artifact_readiness["provenance"] = {
+                        "status": "invalid",
+                        "reason": (
+                            "Calibration provenance cannot be trusted until the backtest "
+                            "summary validates."
+                        ),
+                    }
+                    inspection["gating_reasons"].append("invalid_backtest_artifact")
+            else:
+                artifact_readiness["backtest_summary"] = {
+                    "status": "valid",
+                    "reason": "",
+                }
+        elif inspection["calibration_summary"] is not None:
+            artifact_readiness["provenance"] = {
+                "status": "absent",
+                "reason": (
+                    "Calibration summary cannot support confidence without a valid "
+                    "backtest summary artifact."
+                ),
+            }
+            inspection["gating_reasons"].append("missing_backtest_artifact")
+            inspection["warnings"].append("missing_backtest_artifact")
+
+        if (
+            inspection["calibration_summary"] is not None
+            and inspection["backtest_summary"] is not None
+        ):
+            provenance_issue = self._assess_calibration_provenance(
+                calibration_summary=inspection["calibration_summary"],
+                backtest_summary=inspection["backtest_summary"],
             )
-        except ValueError:
-            return None
-        except (OSError, json.JSONDecodeError):
-            return None
-        return summary
+            if provenance_issue:
+                artifact_readiness["provenance"] = provenance_issue
+                inspection["gating_reasons"].append(
+                    "missing_backtest_provenance"
+                    if provenance_issue["status"] == "absent"
+                    else "invalid_backtest_provenance"
+                )
+                inspection["warnings"].append(
+                    "missing_backtest_provenance"
+                    if provenance_issue["status"] == "absent"
+                    else "invalid_backtest_provenance"
+                )
+            else:
+                artifact_readiness["provenance"] = {
+                    "status": "valid",
+                    "reason": "",
+                }
+
+        inspection["gating_reasons"] = self._dedupe_strings(inspection["gating_reasons"])
+        inspection["warnings"] = self._dedupe_strings(inspection["warnings"])
+        return inspection
+
+    def _assess_calibration_provenance(
+        self,
+        *,
+        calibration_summary: Dict[str, Any],
+        backtest_summary: Dict[str, Any],
+    ) -> Optional[Dict[str, str]]:
+        quality_summary = calibration_summary.get("quality_summary", {})
+        source_artifacts = quality_summary.get("source_artifacts", {})
+        provenance = quality_summary.get("provenance", {})
+
+        if source_artifacts.get("backtest_summary") != self.ensemble_manager.BACKTEST_SUMMARY_FILENAME:
+            return {
+                "status": "absent",
+                "reason": (
+                    "Calibration summary is missing explicit provenance back to "
+                    "backtest_summary.json."
+                ),
+            }
+
+        if not isinstance(provenance, dict):
+            return {
+                "status": "absent",
+                "reason": (
+                    "Calibration summary is missing explicit provenance back to "
+                    "backtest_summary.json."
+                ),
+            }
+
+        expected = {
+            "backtest_artifact_type": "backtest_summary",
+            "backtest_schema_version": backtest_summary.get("schema_version"),
+            "backtest_simulation_id": backtest_summary.get("simulation_id"),
+            "backtest_ensemble_id": backtest_summary.get("ensemble_id"),
+        }
+        for key, expected_value in expected.items():
+            if provenance.get(key) != expected_value:
+                return {
+                    "status": "invalid",
+                    "reason": (
+                        "Calibration summary backtest provenance does not match the "
+                        "stored backtest_summary.json artifact."
+                    ),
+                }
+        return None
+
+    def _dedupe_strings(self, values: List[str]) -> List[str]:
+        deduped: List[str] = []
+        for value in values:
+            if value and value not in deduped:
+                deduped.append(value)
+        return deduped
 
     def _build_confidence_status(
         self,
-        calibration_summary: Optional[Dict[str, Any]],
+        confidence_inspection: Dict[str, Any],
     ) -> Dict[str, Any]:
+        calibration_summary = confidence_inspection.get("calibration_summary")
+        artifact_readiness = confidence_inspection.get("artifact_readiness", {})
+        try:
+            calibration_status = artifact_readiness.get("calibration_summary", {}).get(
+                "status",
+                "absent",
+            )
+        except AttributeError:
+            calibration_status = "absent"
         status = {
-            "status": "absent",
+            "status": "absent" if calibration_status == "absent" else "not_ready",
             "supported_metric_ids": [],
             "ready_metric_ids": [],
             "not_ready_metric_ids": [],
-            "gating_reasons": [],
-            "warnings": [],
+            "gating_reasons": list(confidence_inspection.get("gating_reasons", [])),
+            "warnings": list(confidence_inspection.get("warnings", [])),
+            "artifact_readiness": artifact_readiness,
             "boundary_note": CALIBRATION_BOUNDARY_NOTE,
         }
         if not calibration_summary:
             return status
 
-        status["status"] = "not_ready"
-        warnings: List[str] = []
-        gating_reasons: List[str] = []
+        warnings: List[str] = list(status["warnings"])
+        gating_reasons: List[str] = list(status["gating_reasons"])
         supported_metric_ids: List[str] = []
         ready_metric_ids: List[str] = []
         not_ready_metric_ids: List[str] = []
+        provenance_valid = (
+            artifact_readiness.get("provenance", {}).get("status") == "valid"
+        )
 
         for warning in calibration_summary.get("quality_summary", {}).get("warnings", []):
             if warning not in warnings:
@@ -1192,7 +2127,7 @@ class ProbabilisticReportContextBuilder:
                 continue
             supported_metric_ids.append(metric_id)
             readiness = metric_summary.get("readiness", {})
-            if readiness.get("ready") is True:
+            if readiness.get("ready") is True and provenance_valid:
                 ready_metric_ids.append(metric_id)
             else:
                 not_ready_metric_ids.append(metric_id)
@@ -1200,7 +2135,7 @@ class ProbabilisticReportContextBuilder:
                     if reason not in gating_reasons:
                         gating_reasons.append(reason)
 
-        if ready_metric_ids:
+        if ready_metric_ids and provenance_valid:
             status["status"] = "ready"
         elif not supported_metric_ids:
             gating_reasons.append("no_supported_binary_metrics")
@@ -1357,23 +2292,41 @@ class ProbabilisticReportContextBuilder:
         }
 
     def _extract_metric_value_summary(self, summary: Dict[str, Any]) -> Dict[str, Any]:
-        keys = [
+        value_summary: Dict[str, Any] = {}
+        for key in [
             "mean",
             "min",
             "max",
             "quantiles",
-            "empirical_probability",
             "dominant_value",
-            "dominant_probability",
             "counts",
             "category_counts",
-            "category_probabilities",
-        ]
-        return {
-            key: summary[key]
-            for key in keys
-            if key in summary
-        }
+        ]:
+            if key in summary:
+                value_summary[key] = summary[key]
+
+        observed_true_share = summary.get(
+            "observed_true_share",
+            summary.get("empirical_probability"),
+        )
+        if observed_true_share is not None:
+            value_summary["observed_true_share"] = observed_true_share
+
+        dominant_observed_share = summary.get(
+            "dominant_observed_share",
+            summary.get("dominant_probability"),
+        )
+        if dominant_observed_share is not None:
+            value_summary["dominant_observed_share"] = dominant_observed_share
+
+        category_observed_shares = summary.get(
+            "category_observed_shares",
+            summary.get("category_probabilities"),
+        )
+        if category_observed_shares is not None:
+            value_summary["category_observed_shares"] = category_observed_shares
+
+        return value_summary
 
     def _derive_generated_at(
         self,

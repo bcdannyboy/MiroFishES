@@ -63,11 +63,11 @@
               <div>
                 <span class="prepare-mode-title">Prepare Mode</span>
                 <p class="prepare-mode-copy">
-                  Legacy prepare keeps the current single-run setup path. Forecast prepare captures an explicit catalog of run-varying config fields plus provenance for later seeded resolution, report scope, and runtime work.
+                  Legacy prepare keeps the current single-run setup path. Scenario prepare captures an explicit catalog of run-varying config fields plus provenance for later stored-run handoff, report scope, and runtime work.
                 </p>
               </div>
               <span v-if="capabilitiesLoading" class="badge pending">Checking</span>
-              <span v-else-if="probabilisticPrepareEnabled" class="badge accent">Forecast Ready</span>
+              <span v-else-if="probabilisticPrepareEnabled" class="badge accent">Scenario Prepare Available</span>
               <span v-else class="badge pending">Legacy Only</span>
             </div>
 
@@ -99,7 +99,18 @@
               >
                 <div class="probabilistic-grid">
                   <div class="control-group">
-                    <label class="control-label" for="probabilistic-run-count">Prepared Runs</label>
+                    <div class="control-label-row">
+                      <label class="control-label" for="probabilistic-run-count">Prepared Runs</label>
+                      <button
+                        type="button"
+                        class="control-info-btn"
+                        :disabled="prepareInFlight"
+                        aria-label="Explain prepared runs"
+                        @click="openStep2InfoModal('prepared-runs')"
+                      >
+                        i
+                      </button>
+                    </div>
                     <input
                       id="probabilistic-run-count"
                       v-model.number="selectedProbabilisticRunCount"
@@ -115,7 +126,18 @@
                   </div>
 
                   <div class="control-group">
-                    <label class="control-label" for="uncertainty-profile">Uncertainty Profile</label>
+                    <div class="control-label-row">
+                      <label class="control-label" for="uncertainty-profile">Uncertainty Profile</label>
+                      <button
+                        type="button"
+                        class="control-info-btn"
+                        :disabled="prepareInFlight"
+                        aria-label="Explain uncertainty profiles"
+                        @click="openStep2InfoModal('uncertainty-profiles')"
+                      >
+                        i
+                      </button>
+                    </div>
                     <select
                       id="uncertainty-profile"
                       v-model="selectedUncertaintyProfile"
@@ -131,12 +153,29 @@
                       </option>
                     </select>
                     <p class="control-help">
+                      {{ selectedUncertaintyProfileDefinition.summary }}
+                    </p>
+                    <p class="control-help control-help-emphasis">
+                      {{ selectedUncertaintyProfileDefinition.emphasis }}
+                    </p>
+                    <p class="control-help">
                       Profiles stay descriptive only at this stage. No sampling or calibrated probabilities are produced yet.
                     </p>
                   </div>
 
-                  <div class="control-group">
-                    <span class="control-label">Empirical Outcome Metrics</span>
+                  <div class="control-group control-group-span-full">
+                    <div class="control-label-row">
+                      <span class="control-label">Empirical Outcome Metrics</span>
+                      <button
+                        type="button"
+                        class="control-info-btn"
+                        :disabled="prepareInFlight"
+                        aria-label="Explain empirical outcome metrics"
+                        @click="openStep2InfoModal('outcome-metrics')"
+                      >
+                        i
+                      </button>
+                    </div>
                     <div class="metrics-grid">
                       <label
                         v-for="metric in outcomeMetricOptions"
@@ -161,7 +200,7 @@
                 </div>
 
                 <p class="prepare-disclaimer">
-                  This step prepares artifact contracts first. Runtime shells are {{ probabilisticCapabilityState.runtimeEnabled ? 'available' : 'disabled' }}, Step 4 is {{ probabilisticCapabilityState.reportModeLabel }}, Step 5 is {{ probabilisticCapabilityState.interactionModeLabel }}, and confidence language is {{ probabilisticCapabilityState.calibrationModeLabel }}: only named binary metrics with ready backtest artifacts may be called calibrated.
+                  Workflow surfaces: runtime shells are {{ probabilisticCapabilityState.runtimeEnabled ? 'enabled' : 'disabled' }}, Step 4 evidence is {{ probabilisticCapabilityState.reportModeLabel }}, and Step 5 scoped evidence is {{ probabilisticCapabilityState.interactionModeLabel }}. Epistemic boundary: confidence language is {{ probabilisticCapabilityState.calibrationModeLabel }}, only supported evaluated binary, categorical, or numeric answer lanes with validated backtest and calibration metadata may be called calibrated, and observed run share stays descriptive rather than real-world probability.
                 </p>
               </div>
 
@@ -171,10 +210,10 @@
               >
                 {{ capabilitiesError
                   ? 'Prepare capability discovery failed, so Step 2 is staying on the legacy single-run path.'
-                  : 'Forecast prepare is disabled by the backend flag. Step 2 stays on the legacy single-run path.' }}
+                  : 'Scenario prepare is disabled by the backend flag. Step 2 stays on the legacy single-run path.' }}
               </div>
               <div v-else class="prepare-mode-note muted">
-                Legacy mode preserves the current auto-generated prepare flow and does not emit forecast artifact sidecars.
+                Legacy mode preserves the current auto-generated prepare flow and does not emit probabilistic artifact sidecars.
               </div>
 
               <div v-if="prepareError" class="prepare-error">
@@ -238,6 +277,9 @@
             <p v-if="preparedGroundingBoundaryNote" class="summary-note">
               Grounding boundary: {{ preparedGroundingBoundaryNote }}
             </p>
+            <p v-if="preparedWorkflowHandoffBlocker" class="summary-note warning">
+              {{ preparedWorkflowHandoffBlocker }}
+            </p>
             <div class="artifact-list">
               <div
                 v-for="artifact in preparedArtifactRows"
@@ -249,7 +291,7 @@
                   <span class="artifact-file mono">{{ artifact.filename || '-' }}</span>
                 </div>
                 <span class="artifact-meta">
-                  {{ artifact.exists === false ? 'planned' : 'ready' }}
+                  {{ artifact.exists === false ? 'planned' : 'stored' }}
                 </span>
               </div>
             </div>
@@ -693,7 +735,7 @@
               :disabled="!step2StartState.enabled"
               @click="handleStartSimulation"
             >
-              {{ step3HandoffInFlight ? 'Preparing Step 3 runtime...' : 'Start Dual-World Parallel Simulation ->' }}
+              {{ step2HandoffButtonLabel }}
             </button>
             <p v-if="step2StartState.helperText" class="prepare-mode-note muted action-note">
               {{ step2StartState.helperText }}
@@ -781,6 +823,52 @@
       </div>
     </Transition>
 
+    <Transition name="modal">
+      <div
+        v-if="step2InfoModal"
+        class="profile-modal-overlay info-modal-overlay"
+        @click.self="closeStep2InfoModal"
+      >
+        <div class="profile-modal info-modal">
+          <div class="modal-header info-modal-header">
+            <div class="modal-header-info">
+              <div class="modal-name-row">
+                <span class="modal-realname">{{ step2InfoModal.title }}</span>
+              </div>
+              <span class="modal-profession">{{ step2InfoModal.badge }}</span>
+            </div>
+            <button
+              type="button"
+              class="close-btn"
+              aria-label="Close forecast prepare help"
+              @click="closeStep2InfoModal"
+            >
+              ×
+            </button>
+          </div>
+
+          <div class="modal-body info-modal-body">
+            <p class="info-modal-copy">{{ step2InfoModal.description }}</p>
+            <div class="info-modal-grid">
+              <article
+                v-for="section in step2InfoModal.sections"
+                :key="section.key"
+                class="info-modal-card"
+                :class="{ active: section.active }"
+              >
+                <div class="info-modal-card-header">
+                  <span class="info-modal-card-title">{{ section.title }}</span>
+                  <span v-if="section.active" class="info-modal-chip">Selected</span>
+                </div>
+                <p class="info-modal-card-body">{{ section.body }}</p>
+                <p v-if="section.note" class="info-modal-card-note">{{ section.note }}</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- Bottom Info / Logs -->
     <div class="system-logs">
       <div class="log-header">
@@ -809,7 +897,9 @@ import {
 } from '../api/simulation'
 import {
   buildProbabilisticEnsembleRequest,
+  getUncertaintyProfileDefinition,
   getProbabilisticRuntimeShellErrorMessage,
+  getStep2HandoffButtonLabel,
   getStep2PrepareBootstrapState,
   isStep2PrepareInFlight,
   shouldPromoteStep2ReadyState,
@@ -838,6 +928,7 @@ const entityTypes = ref([])
 const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
+const activeInfoModalKey = ref('')
 const showProfilesDetail = ref(true)
 const capabilitiesLoading = ref(true)
 const prepareCapabilities = ref(null)
@@ -909,6 +1000,98 @@ const outcomeMetricOptions = computed(() => {
   }))
 })
 
+const selectedUncertaintyProfileDefinition = computed(() => (
+  getUncertaintyProfileDefinition(selectedUncertaintyProfile.value)
+))
+
+const uncertaintyProfileDefinitions = computed(() => {
+  const orderedProfiles = (
+    supportedUncertaintyProfiles.value.length > 0
+      ? supportedUncertaintyProfiles.value
+      : [selectedUncertaintyProfile.value].filter(Boolean)
+  )
+
+  const seen = new Set()
+  return orderedProfiles
+    .filter(Boolean)
+    .filter((profile) => {
+      if (seen.has(profile)) {
+        return false
+      }
+      seen.add(profile)
+      return true
+    })
+    .map((profile) => ({
+      ...getUncertaintyProfileDefinition(profile),
+      active: profile === selectedUncertaintyProfile.value
+    }))
+})
+
+const step2InfoModal = computed(() => {
+  if (!activeInfoModalKey.value) {
+    return null
+  }
+
+  if (activeInfoModalKey.value === 'prepared-runs') {
+    return {
+      title: 'Prepared Runs',
+      badge: 'Stored Run Shells',
+      description: 'Step 2 stores one run shell per prepared run so Step 3 can launch, compare, or replay those shells later without pretending they have already executed.',
+      sections: [
+        {
+          key: 'prepared-runs-what',
+          title: 'What this controls',
+          body: 'Each prepared run gets its own resolved config, seed lineage, and artifact slot under the ensemble.'
+        },
+        {
+          key: 'prepared-runs-not',
+          title: 'What this does not prove',
+          body: 'A larger count does not by itself create calibration, confidence, or stored-run handoff eligibility.'
+        },
+        {
+          key: 'prepared-runs-when',
+          title: 'When to increase it',
+          body: 'Raise the count when you want more stored variation to inspect later, not because a badge implies stronger evidence.'
+        }
+      ]
+    }
+  }
+
+  if (activeInfoModalKey.value === 'uncertainty-profiles') {
+    return {
+      title: 'Uncertainty Profiles',
+      badge: 'Scenario Prepare',
+      description: 'These profiles only shape how Step 2 prepares run-varying shells. They stay descriptive at this stage and do not create calibrated probabilities on their own.',
+      sections: uncertaintyProfileDefinitions.value.map((definition) => ({
+        key: definition.id,
+        title: definition.label,
+        body: definition.summary,
+        note: definition.emphasis,
+        active: definition.active
+      }))
+    }
+  }
+
+  if (activeInfoModalKey.value === 'outcome-metrics') {
+    return {
+      title: 'Empirical Outcome Metrics',
+      badge: `${outcomeMetricOptions.value.length} Available`,
+      description: 'These metrics are measured from stored runs after they execute. Later steps can aggregate them into empirical summaries, but selection here does not promise calibration or prediction strength.',
+      sections: outcomeMetricOptions.value.map((metric) => ({
+        key: metric.metricId,
+        title: metric.label,
+        body: metric.description,
+        note: selectedOutcomeMetrics.value.includes(metric.metricId)
+          ? 'Currently selected for this forecast prepare run family.'
+          : 'Available to include if this metric matters for later comparison.',
+        active: selectedOutcomeMetrics.value.includes(metric.metricId)
+      }))
+    }
+  }
+
+  return null
+})
+
 const prepareInFlight = computed(() => (
   isStep2PrepareInFlight({
     hasStartedPrepare: hasStartedPrepare.value,
@@ -955,17 +1138,34 @@ const prepareActionDisabled = computed(() => {
 
 const prepareActionLabel = computed(() => (
   selectedPrepareMode.value === 'probabilistic'
-    ? 'Prepare forecast artifact set'
+    ? 'Prepare stored-run shell inputs'
     : 'Start legacy prepare'
 ))
+
+const step2HandoffButtonLabel = computed(() => getStep2HandoffButtonLabel({
+  selectedPrepareMode: selectedPrepareMode.value,
+  step3HandoffInFlight: step3HandoffInFlight.value
+}))
+
+const hasProbabilisticArtifactSummary = computed(() => {
+  const summary = preparedArtifactSummary.value
+  if (!summary || typeof summary !== 'object') {
+    return false
+  }
+
+  return (
+    Boolean(summary.probabilistic_mode)
+    || summary.mode === 'probabilistic'
+    || summary.feature_metadata?.partial_probabilistic_artifacts === true
+    || summary.artifact_completeness?.ready === true
+    || summary.artifact_completeness?.status === 'partial'
+  )
+})
 
 const showPreparedArtifactSummary = computed(() => (
   !prepareInFlight.value
     && Boolean(simulationConfig.value)
-    && (
-      Boolean(preparedArtifactSummary.value?.probabilistic_mode)
-      || preparedArtifactSummary.value?.mode === 'probabilistic'
-    )
+    && hasProbabilisticArtifactSummary.value
 ))
 
 const preparedArtifactRows = computed(() => (
@@ -1012,6 +1212,18 @@ const preparedGroundingEvidenceCount = computed(() => (
 
 const preparedGroundingBoundaryNote = computed(() => (
   preparedGroundingSummary.value?.boundary_note || ''
+))
+
+const preparedWorkflowHandoffStatus = computed(() => (
+  preparedArtifactSummary.value?.workflow_handoff_status
+  || preparedArtifactSummary.value?.forecast_readiness
+  || null
+))
+
+const preparedWorkflowHandoffBlocker = computed(() => (
+  preparedWorkflowHandoffStatus.value?.ready === false
+    ? preparedWorkflowHandoffStatus.value?.reason || ''
+    : ''
 ))
 
 // Polling timer
@@ -1064,6 +1276,28 @@ const formatArtifactLabel = (artifactName) => (
     .join(' ')
 )
 
+const openStep2InfoModal = (key) => {
+  activeInfoModalKey.value = key
+}
+
+const closeStep2InfoModal = () => {
+  activeInfoModalKey.value = ''
+}
+
+const handleEscapeKey = (event) => {
+  if (event.key !== 'Escape') {
+    return
+  }
+
+  if (activeInfoModalKey.value) {
+    closeStep2InfoModal()
+  }
+
+  if (selectedProfile.value) {
+    selectedProfile.value = null
+  }
+}
+
 const selectPrepareMode = (mode) => {
   selectedPrepareMode.value = mode
   prepareError.value = ''
@@ -1094,7 +1328,13 @@ const syncPrepareMetadata = (payload = {}) => {
     selectedUncertaintyProfile.value = uncertaintyProfile
   }
 
-  if (payload.probabilistic_mode || summary?.probabilistic_mode || summary?.mode === 'probabilistic') {
+  if (
+    payload.probabilistic_mode
+    || summary?.probabilistic_mode
+    || summary?.mode === 'probabilistic'
+    || summary?.feature_metadata?.partial_probabilistic_artifacts === true
+    || summary?.artifact_completeness?.status === 'partial'
+  ) {
     selectedPrepareMode.value = 'probabilistic'
   }
 }
@@ -1110,14 +1350,30 @@ const reopenPreparedSimulation = async ({ mode = 'legacy' } = {}) => {
       probabilistic_mode: mode === 'probabilistic'
     })
 
-    if (!res?.success || !res.data?.already_prepared) {
+    if (!res?.success || !res.data) {
       return false
     }
 
-    syncPrepareMetadata(res.data.prepare_info || res.data)
+    const prepareInfo = res.data.prepare_info || res.data
+    if (!res.data.already_prepared) {
+      if (mode !== 'probabilistic' || prepareInfo?.config_generated !== true) {
+        syncPrepareMetadata(prepareInfo)
+        return false
+      }
+
+      syncPrepareMetadata(prepareInfo)
+      addLog('Reopened the saved probabilistic artifact layer for this simulation.')
+      if (prepareInfo.reason) {
+        addLog(prepareInfo.reason)
+      }
+      await loadPreparedData()
+      return true
+    }
+
+    syncPrepareMetadata(prepareInfo)
     addLog(
       mode === 'probabilistic'
-        ? 'Reopened existing forecast prepare artifacts for this simulation.'
+        ? 'Reopened existing probabilistic prepare artifacts for this simulation.'
         : 'Reopened existing legacy prepare artifacts for this simulation.'
     )
     await loadPreparedData()
@@ -1226,7 +1482,7 @@ const handleStartSimulation = async () => {
       )
       addLog(
         probabilisticCapabilityState.value.reportEnabled
-          ? 'Step 4 can add observed empirical ensemble context for this probabilistic runtime path once report generation completes.'
+          ? 'Step 4 can add scoped simulation evidence for this probabilistic runtime path once report generation completes.'
           : 'Step 4 report generation remains legacy-only for this probabilistic runtime path.'
       )
     }
@@ -1274,7 +1530,7 @@ const startPrepareSimulation = async ({ mode = 'legacy' } = {}) => {
   simulationConfig.value = null
   addLog(`Simulation instance created: ${props.simulationId}`)
   if (probabilisticMode) {
-    addLog(`Preparing probabilistic artifact set with profile ${selectedUncertaintyProfile.value || 'default'}`)
+    addLog(`Preparing stored-run shell inputs with profile ${selectedUncertaintyProfile.value || 'default'}`)
   } else {
     addLog('Preparing simulation environment...')
   }
@@ -1586,7 +1842,7 @@ const initializeStep2 = async () => {
   selectedPrepareMode.value = bootstrapState.selectedPrepareMode
 
   if (capabilities?.probabilistic_prepare_enabled) {
-    addLog('Forecast prepare is available and is now the primary Step 2 path for this simulation.')
+    addLog('Stored-run shell preparation is available and is now the primary Step 2 path for this simulation.')
     addLog(`Supported uncertainty profiles: ${capabilities.supported_uncertainty_profiles.join(', ')}`)
   }
 
@@ -1605,17 +1861,19 @@ const initializeStep2 = async () => {
   }
 
   emit('update-status', 'ready')
-  addLog('Forecast prepare is selected. Start it from the Step 2 action panel when you are ready to persist forecast artifacts.')
+  addLog('Stored-run shell preparation is selected. Start it from the Step 2 action panel when you are ready to persist the artifacts needed before Step 3.')
 }
 
 onMounted(() => {
   initializeStep2()
+  window.addEventListener('keydown', handleEscapeKey)
 })
 
 onUnmounted(() => {
   stopPolling()
   stopProfilesPolling()
   stopConfigPolling()
+  window.removeEventListener('keydown', handleEscapeKey)
 })
 </script>
 
@@ -1803,12 +2061,51 @@ onUnmounted(() => {
   gap: 8px;
 }
 
+.control-group-span-full {
+  grid-column: 1 / -1;
+}
+
+.control-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .control-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #0F172A;
+}
+
+.control-info-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid #CBD5E1;
+  background: #FFFFFF;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.control-info-btn:hover:not(:disabled) {
+  border-color: #111827;
+  color: #111827;
+  background: #F8FAFC;
+}
+
+.control-info-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .control-select {
@@ -1833,6 +2130,7 @@ onUnmounted(() => {
 
 .metrics-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1846,6 +2144,7 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #FFFFFF;
   cursor: pointer;
+  min-height: 100%;
 }
 
 .metric-option.selected {
@@ -1873,6 +2172,10 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.5;
   color: #64748B;
+}
+
+.control-help-emphasis {
+  color: #475569;
 }
 
 .prepare-error {
@@ -2818,6 +3121,81 @@ onUnmounted(() => {
   border-radius: 0;
 }
 
+.info-modal {
+  max-width: 720px;
+}
+
+.info-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.info-modal-copy {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #475569;
+}
+
+.info-modal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.info-modal-card {
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  background: #FFFFFF;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-modal-card.active {
+  border-color: #111827;
+  background: #F8FAFC;
+}
+
+.info-modal-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.info-modal-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0F172A;
+}
+
+.info-modal-chip {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #0F172A;
+  background: #E2E8F0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.info-modal-card-body,
+.info-modal-card-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #475569;
+}
+
+.info-modal-card-note {
+  color: #64748B;
+}
+
 .persona-content::-webkit-scrollbar {
   width: 4px;
 }
@@ -3387,6 +3765,8 @@ onUnmounted(() => {
 
 @media (max-width: 1100px) {
   .probabilistic-grid,
+  .metrics-grid,
+  .info-modal-grid,
   .summary-grid,
   .stats-grid,
   .config-grid,

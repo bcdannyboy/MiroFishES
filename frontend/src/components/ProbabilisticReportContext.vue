@@ -7,8 +7,8 @@
   >
     <div class="report-context-header">
       <div>
-        <span class="context-eyebrow">Probabilistic</span>
-        <h3 class="context-title">Observed Forecast Context</h3>
+        <span class="context-eyebrow">{{ contextEyebrow }}</span>
+        <h3 class="context-title">{{ contextTitle }}</h3>
       </div>
       <div class="context-meta mono">
         <span>E {{ ensembleId || '-' }}</span>
@@ -18,8 +18,7 @@
     </div>
 
     <p class="context-copy">
-      The report body remains the legacy simulation-scoped artifact. These cards add observed empirical or observational
-      ensemble, scenario-family, or run context only and do not imply calibrated probabilities or causal claims.
+      {{ contextCopy }}
     </p>
 
     <div v-if="contextError" class="context-banner error">
@@ -29,7 +28,7 @@
       Loading probabilistic report capabilities...
     </div>
     <div v-else-if="isFlaggedOff" class="context-banner warning">
-      Probabilistic report surfaces are disabled by the backend flag. The legacy report remains available without
+      Scoped report evidence surfaces are disabled by the backend flag. The legacy report remains available without
       ensemble analytics cards.
     </div>
     <template v-else>
@@ -37,9 +36,29 @@
         {{ historicalNotice }}
       </div>
       <div class="context-pill-row">
-        <span class="context-pill">Empirical report addendum</span>
+        <span class="context-pill">Scoped evidence addendum</span>
         <span class="context-pill">{{ scopePillLabel }}</span>
-        <span class="context-pill">No calibrated claims</span>
+        <span class="context-pill">
+          {{ evidenceSummary.hybridWorkspace?.statusSurface?.calibratedConfidenceEarned ? 'Calibrated confidence earned' : 'No calibrated claims' }}
+        </span>
+      </div>
+      <div
+        v-if="evidenceSummary.hybridWorkspace?.available"
+        class="context-pill-row"
+        data-testid="probabilistic-hybrid-status"
+      >
+        <span class="context-pill capability">
+          Evidence available: {{ evidenceSummary.hybridWorkspace.statusSurface.evidenceAvailable ? 'yes' : 'no' }}
+        </span>
+        <span class="context-pill epistemic">
+          Evaluation available: {{ evidenceSummary.hybridWorkspace.statusSurface.evaluationAvailable ? 'yes' : 'no' }}
+        </span>
+        <span class="context-pill epistemic">
+          Calibrated confidence earned: {{ evidenceSummary.hybridWorkspace.statusSurface.calibratedConfidenceEarned ? 'yes' : 'no' }}
+        </span>
+        <span class="context-pill capability">
+          Simulation-only scenario exploration: {{ evidenceSummary.hybridWorkspace.statusSurface.simulationOnlyScenarioExploration ? 'yes' : 'no' }}
+        </span>
       </div>
 
       <div v-if="evidenceEntries.length" class="context-evidence-grid">
@@ -284,6 +303,7 @@ import {
   deriveProbabilisticEvidenceSummary,
   deriveProbabilisticReportContextState
 } from '../utils/probabilisticRuntime'
+import { formatForecastBestEstimate } from '../utils/forecastRuntime'
 
 const props = defineProps({
   simulationId: {
@@ -372,6 +392,21 @@ const shouldRender = computed(() => (
   reportContextState.value.shouldRender
 ))
 
+const contextEyebrow = computed(() => (
+  hybridWorkspace.value ? 'Forecast Addendum' : 'Scoped Evidence'
+))
+
+const contextTitle = computed(() => (
+  hybridWorkspace.value ? 'Hybrid Forecast Addendum' : 'Scoped Simulation Evidence'
+))
+
+const contextCopy = computed(() => {
+  if (hybridWorkspace.value) {
+    return 'This report addendum can surface the forecast question, evidence bundle, prediction ledger, forecast answer, evaluation results, and worker comparison when those artifacts are present. It distinguishes evidence availability, evaluation availability, earned calibration, and simulation-only scenario exploration. Calibration is only earned on supported evaluated question lanes with type-correct evidence, and simulation remains supporting scenario analysis only.'
+  }
+  return 'The report body remains the legacy simulation-scoped artifact. These cards add empirical ensemble or scenario-family summaries, observed run facts, and observational sensitivity only. They do not turn simulation frequencies into real-world probability or imply calibrated or causal claims.'
+})
+
 const isFlaggedOff = computed(() => (
   reportContextState.value.isFlaggedOff
 ))
@@ -379,6 +414,8 @@ const isFlaggedOff = computed(() => (
 const historicalNotice = computed(() => (
   reportContextState.value.historicalNotice
 ))
+
+const hybridWorkspace = computed(() => evidenceSummary.value.hybridWorkspace || null)
 
 const analyticsCards = computed(() => deriveProbabilisticAnalyticsCards({
   summaryArtifact: effectiveSummaryArtifact.value,
@@ -402,7 +439,7 @@ const contextError = computed(() => {
     return ''
   }
   if (!evidenceSummary.value.scope?.ensembleId) {
-    return 'Probabilistic Step 4 requires at least an ensemble identifier from Step 3.'
+    return 'Scoped Step 4 evidence requires at least an ensemble identifier from Step 3.'
   }
   return capabilitiesError.value
 })
@@ -413,9 +450,9 @@ const scopePillLabel = computed(() => {
     return 'Observed run scope'
   }
   if (level === 'cluster') {
-    return 'Observed scenario-family scope'
+    return 'Empirical scenario-family scope'
   }
-  return 'Observed ensemble scope'
+  return 'Empirical ensemble scope'
 })
 
 const analyticsEntries = computed(() => ([
@@ -442,6 +479,160 @@ const evidenceEntries = computed(() => {
   }
 
   const entries = [
+    ...(hybridWorkspace.value ? [
+      {
+        key: 'hybrid-question',
+        title: 'Forecast Question',
+        headline: hybridWorkspace.value.forecastQuestion.questionText || hybridWorkspace.value.forecastQuestion.title || 'Forecast question unavailable',
+        body: [
+          hybridWorkspace.value.forecastQuestion.questionType ? `Type: ${hybridWorkspace.value.forecastQuestion.questionType}.` : null,
+          hybridWorkspace.value.forecastQuestion.questionHorizon ? `Horizon: ${hybridWorkspace.value.forecastQuestion.questionHorizon}.` : null,
+          hybridWorkspace.value.forecastQuestion.issuedAt ? `Issued: ${hybridWorkspace.value.forecastQuestion.issuedAt}.` : null,
+          hybridWorkspace.value.forecastQuestion.owner ? `Owner/source: ${hybridWorkspace.value.forecastQuestion.owner}.` : null,
+          hybridWorkspace.value.forecastQuestion.abstentionConditions.length
+            ? `Abstention conditions: ${hybridWorkspace.value.forecastQuestion.abstentionConditions.join('; ')}.`
+            : null
+        ].filter(Boolean).join(' '),
+        chips: [
+          ...hybridWorkspace.value.forecastQuestion.supportedQuestionTemplates,
+          ...hybridWorkspace.value.forecastQuestion.decompositionSupport
+        ].filter(Boolean)
+      },
+      {
+        key: 'hybrid-answer',
+        title: 'Hybrid Answer',
+        headline: hybridWorkspace.value.latestAnswer.abstain
+          ? `Abstained: ${hybridWorkspace.value.latestAnswer.abstainReason || 'insufficient support'}`
+          : `Best estimate ${hybridWorkspace.value.latestAnswer.bestEstimateDisplay || formatForecastBestEstimate(
+              hybridWorkspace.value.latestAnswer.bestEstimate,
+              hybridWorkspace.value.latestAnswer.bestEstimateSemantics
+            )}`,
+        body: hybridWorkspace.value.latestAnswer.abstain
+          ? [
+              hybridWorkspace.value.latestAnswer.bestEstimateWhy ? hybridWorkspace.value.latestAnswer.bestEstimateWhy : null,
+              hybridWorkspace.value.latestAnswer.evaluationSummary?.status
+                ? `Evaluation status: ${hybridWorkspace.value.latestAnswer.evaluationSummary.status}.`
+                : null
+            ].filter(Boolean).join(' ')
+          : [
+              hybridWorkspace.value.latestAnswer.bestEstimateWhy ? `Why: ${hybridWorkspace.value.latestAnswer.bestEstimateWhy}.` : null,
+              hybridWorkspace.value.latestAnswer.counterevidence.length
+                ? `Counterevidence: ${hybridWorkspace.value.latestAnswer.counterevidence.join('; ')}.`
+                : null,
+              hybridWorkspace.value.latestAnswer.assumptionLedger.items.length
+                ? `Assumption ledger: ${hybridWorkspace.value.latestAnswer.assumptionLedger.items.join('; ')}.`
+                : null,
+              hybridWorkspace.value.latestAnswer.uncertaintyDecomposition.components.length
+                ? `Uncertainty: ${hybridWorkspace.value.latestAnswer.uncertaintyDecomposition.components.map((item) => item.summary || item.code).filter(Boolean).join('; ')}.`
+                : null,
+              hybridWorkspace.value.simulationScenarioAnalysis.available
+                ? `Simulation remains supporting scenario analysis with observed run share ${formatHybridPercent(hybridWorkspace.value.simulationScenarioAnalysis.observedRunShare)}.`
+                : null
+            ].filter(Boolean).join(' '),
+        chips: [
+          hybridWorkspace.value.statusSurface.evidenceAvailable ? 'Evidence available' : 'Evidence unavailable',
+          hybridWorkspace.value.statusSurface.evaluationAvailable ? 'Evaluation available' : 'Evaluation unavailable',
+          hybridWorkspace.value.statusSurface.calibratedConfidenceEarned ? 'Calibrated confidence earned' : 'Confidence not earned',
+          hybridWorkspace.value.statusSurface.simulationOnlyScenarioExploration ? 'Simulation-only scenario exploration' : 'Hybrid answer assembled',
+          ...(hybridWorkspace.value.supportedQuestionTemplates || [])
+        ].filter(Boolean)
+      },
+      {
+        key: 'hybrid-evidence',
+        title: 'Evidence Bundle',
+        headline: hybridWorkspace.value.evidenceBundle.title || hybridWorkspace.value.evidenceBundle.status || 'Evidence bundle',
+        body: [
+          hybridWorkspace.value.evidenceBundle.summary || null,
+          hybridWorkspace.value.evidenceBundle.boundaryNote ? `Boundary: ${hybridWorkspace.value.evidenceBundle.boundaryNote}.` : null
+        ].filter(Boolean).join(' ') || 'Evidence bundle details are available for this hybrid workspace.',
+        chips: [
+          `Status ${hybridWorkspace.value.evidenceBundle.status}`,
+          `Sources ${hybridWorkspace.value.evidenceBundle.sourceEntryCount}`,
+          `Freshness ${hybridWorkspace.value.evidenceBundle.freshness}`,
+          `Relevance ${hybridWorkspace.value.evidenceBundle.relevance}`,
+          hybridWorkspace.value.evidenceBundle.qualityScore !== null ? `Quality ${Math.round(hybridWorkspace.value.evidenceBundle.qualityScore * 100)}%` : null,
+          hybridWorkspace.value.evidenceBundle.conflictCount > 0 ? `Conflicts ${hybridWorkspace.value.evidenceBundle.conflictCount}` : null,
+          hybridWorkspace.value.evidenceBundle.missingEvidenceCount > 0 ? `Missing ${hybridWorkspace.value.evidenceBundle.missingEvidenceCount}` : null,
+          ...hybridWorkspace.value.evidenceBundle.uncertaintyCauses.map((cause) => String(cause || '').replace(/_/g, ' '))
+        ].filter(Boolean)
+      },
+      {
+        key: 'hybrid-ledger',
+        title: 'Prediction Ledger',
+        headline: `${hybridWorkspace.value.predictionLedger.entryCount} ledger entries`,
+        body: [
+          `Final resolution state: ${hybridWorkspace.value.predictionLedger.finalResolutionState}.`,
+          hybridWorkspace.value.predictionLedger.resolutionNote ? hybridWorkspace.value.predictionLedger.resolutionNote : null,
+          hybridWorkspace.value.predictionLedger.workerOutputCount ? `${hybridWorkspace.value.predictionLedger.workerOutputCount} worker outputs retained.` : null
+        ].filter(Boolean).join(' '),
+        chips: [
+          hybridWorkspace.value.predictionLedger.evaluationCaseCount ? `${hybridWorkspace.value.predictionLedger.evaluationCaseCount} evaluation cases` : null,
+          hybridWorkspace.value.predictionLedger.resolvedEvaluationCaseCount ? `${hybridWorkspace.value.predictionLedger.resolvedEvaluationCaseCount} resolved` : null
+        ].filter(Boolean)
+      },
+      {
+        key: 'hybrid-evaluation',
+        title: 'Evaluation',
+        headline: hybridWorkspace.value.evaluation.available
+          ? 'Evaluation available'
+          : 'Evaluation not yet available',
+        body: [
+          hybridWorkspace.value.evaluation.caseCount ? `${hybridWorkspace.value.evaluation.caseCount} evaluation cases tracked.` : null,
+          hybridWorkspace.value.evaluation.resolvedCaseCount ? `${hybridWorkspace.value.evaluation.resolvedCaseCount} resolved.` : null,
+          hybridWorkspace.value.evaluation.calibratedConfidenceEarned
+            ? 'Calibrated confidence has been earned for this workspace.'
+            : 'Calibrated confidence has not been earned for this workspace on the current typed answer.',
+          hybridWorkspace.value.evaluation.confidenceBasis?.note ? hybridWorkspace.value.evaluation.confidenceBasis.note : null
+        ].filter(Boolean).join(' '),
+        chips: [
+          `Evidence ${hybridWorkspace.value.statusSurface.evidenceAvailable ? 'available' : 'missing'}`,
+          `Evaluation ${hybridWorkspace.value.statusSurface.evaluationAvailable ? 'available' : 'missing'}`,
+          `Calibration ${hybridWorkspace.value.statusSurface.calibratedConfidenceEarned ? 'earned' : 'not earned'}`
+        ]
+      },
+      {
+        key: 'hybrid-workers',
+        title: 'Worker Comparison',
+        headline: `${hybridWorkspace.value.workerComparison.workerCount} workers`,
+        body: [
+          hybridWorkspace.value.workerComparison.workerKinds.length
+            ? `Worker kinds: ${hybridWorkspace.value.workerComparison.workerKinds.join(', ')}.`
+            : null,
+          hybridWorkspace.value.workerComparison.simulationIsOnlyWorker
+            ? 'Simulation is the only worker and remains scenario analysis only.'
+            : 'Simulation remains one worker inside the hybrid comparison.',
+          hybridWorkspace.value.workerComparison.contributionTrace.length
+            ? `Contribution trace: ${hybridWorkspace.value.workerComparison.contributionTrace.slice(0, 3).map((item) => item.summary || item.workerId || item.workerKind).filter(Boolean).join('; ')}.`
+            : null
+        ].filter(Boolean).join(' '),
+        chips: [
+          hybridWorkspace.value.workerComparison.simulationWorkerCount ? `Simulation workers ${hybridWorkspace.value.workerComparison.simulationWorkerCount}` : null,
+          hybridWorkspace.value.workerComparison.simulationObservedRunShare !== null ? `Observed run share ${formatHybridPercent(hybridWorkspace.value.workerComparison.simulationObservedRunShare)}` : null,
+          ...hybridWorkspace.value.workerComparison.contributionTrace
+            .slice(0, 3)
+            .map((item) => item.summary || item.workerId || item.workerKind)
+        ].filter(Boolean)
+      },
+      {
+        key: 'hybrid-simulation',
+        title: 'Simulation Scenario Analysis',
+        headline: 'Simulation remains supporting scenario analysis',
+        body: hybridWorkspace.value.simulationScenarioAnalysis.available
+          ? [
+              hybridWorkspace.value.simulationScenarioAnalysis.onlyScenarioExploration
+                ? 'The current workspace is simulation-only scenario exploration.'
+                : 'The current workspace combines simulation with non-simulation workers.',
+              hybridWorkspace.value.simulationScenarioAnalysis.observedRunShare !== null
+                ? `Observed run share: ${formatHybridPercent(hybridWorkspace.value.simulationScenarioAnalysis.observedRunShare)}.`
+                : null
+            ].filter(Boolean).join(' ')
+          : 'Simulation data are not attached to this hybrid workspace.',
+        chips: [
+          hybridWorkspace.value.simulationScenarioAnalysis.onlyScenarioExploration ? 'Simulation-only' : 'Supporting scenario analysis',
+          hybridWorkspace.value.simulationScenarioAnalysis.available ? 'Scenario evidence attached' : 'Scenario evidence missing'
+        ]
+      }
+    ] : []),
     {
       key: 'scope',
       title: 'Scope & Provenance',
@@ -463,7 +654,7 @@ const evidenceEntries = computed(() => {
       title: 'Upstream Grounding',
       headline: evidenceSummary.value.grounding.status === 'ready'
         ? `${evidenceSummary.value.grounding.evidenceCount} cited upstream artifact${evidenceSummary.value.grounding.evidenceCount === 1 ? '' : 's'}`
-        : `Grounding ${evidenceSummary.value.grounding.status}`,
+        : `Grounding attachment ${evidenceSummary.value.grounding.status}`,
       body: evidenceSummary.value.grounding.boundaryNote || 'No upstream grounding bundle was attached to this report context.',
       chips: [
         `Source ${evidenceSummary.value.grounding.citationCounts.source}`,
@@ -478,13 +669,17 @@ const evidenceEntries = computed(() => {
   }
 
   if (evidenceSummary.value.selectedCluster) {
+    const supportAssessment = evidenceSummary.value.selectedCluster.supportAssessment || {}
     entries.push({
       key: 'selected-cluster',
       title: 'Selected Scenario Family',
       headline: evidenceSummary.value.selectedCluster.familyLabel || `Scenario family ${evidenceSummary.value.selectedCluster.clusterId || '-'}`,
-      body: evidenceSummary.value.selectedCluster.familySummary || 'Scenario-family evidence is available for the selected cluster scope.',
+      body: supportAssessment.downgraded && supportAssessment.reason
+        ? `${evidenceSummary.value.selectedCluster.familySummary || 'Scenario-family evidence is available for the selected cluster scope.'} ${supportAssessment.reason}`
+        : (evidenceSummary.value.selectedCluster.familySummary || 'Scenario-family evidence is available for the selected cluster scope.'),
       chips: [
-        evidenceSummary.value.selectedCluster.clusterId
+        evidenceSummary.value.selectedCluster.clusterId,
+        supportAssessment.label
       ].filter(Boolean)
     })
   }
@@ -501,17 +696,68 @@ const evidenceEntries = computed(() => {
     })
   }
 
+  if (evidenceSummary.value.hybridWorkspace?.available) {
+    const hybridWorkspace = evidenceSummary.value.hybridWorkspace
+    const latestAnswer = hybridWorkspace.latestAnswer || {}
+    const truthfulnessSurface = hybridWorkspace.statusSurface || {}
+    const supportedTemplates = Array.isArray(hybridWorkspace.supportedQuestionTemplateDetails)
+      ? hybridWorkspace.supportedQuestionTemplateDetails
+      : []
+
+    entries.push({
+      key: 'hybrid-workspace',
+      title: 'Hybrid Forecast',
+      headline: hybridWorkspace.forecastQuestion?.questionText
+        || hybridWorkspace.forecastQuestion?.title
+        || `Forecast ${hybridWorkspace.forecastQuestion?.forecastId || '-'}`,
+      body: latestAnswer.abstain
+        ? `Abstaining because ${latestAnswer.abstainReason || 'support is insufficient'}. ${latestAnswer.bestEstimateWhy ? `Why: ${latestAnswer.bestEstimateWhy}` : ''} Simulation remains supporting scenario analysis only.`
+        : `${latestAnswer.bestEstimateDisplay ? `Best estimate ${latestAnswer.bestEstimateDisplay}.` : latestAnswer.bestEstimate !== null && latestAnswer.bestEstimate !== undefined ? `Best estimate ${formatForecastBestEstimate(latestAnswer.bestEstimate, latestAnswer.bestEstimateSemantics)}.` : 'No best estimate yet.'} ${latestAnswer.bestEstimateWhy || 'The latest answer explains the estimate in the forecast answer payload.'}`.trim(),
+      chips: [
+        truthfulnessSurface.evidenceAvailable ? 'Evidence available' : 'Evidence missing',
+        truthfulnessSurface.evaluationAvailable ? 'Evaluation available' : 'Evaluation missing',
+        truthfulnessSurface.calibratedConfidenceEarned ? 'Calibrated confidence earned' : 'Confidence not yet calibrated',
+        truthfulnessSurface.simulationOnlyScenarioExploration ? 'Simulation-only scenario exploration' : 'Simulation supporting scenario analysis',
+        ...supportedTemplates.slice(0, 3).map((template) => template.label || template.questionText || template.templateId),
+        ...((latestAnswer.counterevidence || []).slice(0, 2)),
+        ...((latestAnswer.assumptionLedger?.items || []).slice(0, 2))
+      ].filter(Boolean)
+    })
+
+    if (hybridWorkspace.workerComparison) {
+      const workerComparison = hybridWorkspace.workerComparison
+      entries.push({
+        key: 'worker-comparison',
+        title: 'Worker Comparison',
+        headline: `${workerComparison.workerCount || 0} workers summarized`,
+        body: workerComparison.abstain
+          ? `The hybrid answer abstained because ${workerComparison.abstainReason || 'support is insufficient'}. Simulation remains scenario evidence only.`
+          : (
+              workerComparison.simulationContext
+                ? 'Simulation remains supporting scenario analysis, while the non-simulation workers determine the best estimate unless they abstain or disagree too widely.'
+                : 'Non-simulation workers determine the best estimate; simulation remains supporting scenario analysis only.'
+            ),
+        chips: [
+          ...(workerComparison.workerKinds || []).slice(0, 4),
+          ...(workerComparison.workerContributionTrace || [])
+            .map((item) => item.summary || item.worker_id || item.workerId)
+            .filter(Boolean)
+            .slice(0, 3),
+          workerComparison.simulationContext?.observed_run_share !== undefined && workerComparison.simulationContext?.observed_run_share !== null
+            ? `Simulation observed run share ${workerComparison.simulationContext.observed_run_share}`
+            : null
+        ].filter(Boolean)
+      })
+    }
+  }
+
   if (evidenceSummary.value.confidenceStatus) {
     const confidenceStatus = evidenceSummary.value.confidenceStatus
     entries.push({
       key: 'confidence',
       title: 'Confidence Status',
-      headline: confidenceStatus.status === 'ready'
-        ? `Calibration ready for ${confidenceStatus.readyMetricIds.join(', ') || 'named metrics'}`
-        : (confidenceStatus.status === 'not_ready'
-          ? `Calibration artifacts present but not ready`
-          : 'No calibration artifacts attached'),
-      body: confidenceStatus.boundaryNote,
+      headline: confidenceStatus.headline,
+      body: confidenceStatus.body,
       chips: [
         `Status ${confidenceStatus.status}`,
         ...confidenceStatus.gatingReasons,
@@ -524,7 +770,7 @@ const evidenceEntries = computed(() => {
     entries.push({
       key: 'calibration',
       title: 'Calibration Provenance',
-      headline: `Backtested calibration for ${evidenceSummary.value.calibration.readyMetricIds.join(', ') || 'supported metrics'}`,
+      headline: `Backtest-linked calibration for ${evidenceSummary.value.calibration.readyMetricIds.join(', ') || 'supported metrics'}`,
       body: evidenceSummary.value.calibration.summary || 'Backtested calibration metadata is available for this report context.',
       chips: [
         evidenceSummary.value.calibration.confidenceLabel,
@@ -537,7 +783,7 @@ const evidenceEntries = computed(() => {
     entries.push({
       key: 'compare',
       title: 'Compare Next',
-      headline: 'Bounded compare workflow ready',
+      headline: 'Bounded compare workflow available',
       body: 'Carry these prompts into Step 5 Report Agent chat to compare runs or scenario families without dropping provenance.',
       chips: []
     })
@@ -545,6 +791,13 @@ const evidenceEntries = computed(() => {
 
   return entries
 })
+
+const formatHybridPercent = (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '-'
+  }
+  return `${Math.round(value * 100)}%`
+}
 
 const cardTone = computed(() => {
   if (contextError.value) {
@@ -687,7 +940,7 @@ const formatAnalyticsStatus = (status) => {
     error: 'Error',
     empty: 'Empty',
     partial: 'Partial',
-    complete: 'Complete'
+    complete: 'Loaded'
   }
   return labels[status] || 'Observed'
 }
@@ -821,6 +1074,16 @@ const handoffCompare = (compareId) => {
   padding: 7px 12px;
   font-size: 12px;
   color: #4a4137;
+}
+
+.context-pill.capability {
+  background: rgba(58, 101, 75, 0.12);
+  color: #224032;
+}
+
+.context-pill.epistemic {
+  background: rgba(79, 67, 132, 0.12);
+  color: #352a72;
 }
 
 .context-grid {

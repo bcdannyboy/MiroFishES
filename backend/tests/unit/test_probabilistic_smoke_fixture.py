@@ -61,6 +61,7 @@ def test_seed_probabilistic_smoke_fixture_creates_prepared_probabilistic_simulat
     assert fixture["simulation_route"] == f"/simulation/{fixture['simulation_id']}"
     assert fixture["prepared_artifact_summary"]["probabilistic_mode"] is True
     assert fixture["prepared_artifact_summary"]["mode"] == "probabilistic"
+    assert fixture["prepared_artifact_summary"]["forecast_readiness"]["ready"] is True
     assert fixture["ensemble"] is None
 
     simulation_dir = Path(fixture["simulation_dir"])
@@ -71,6 +72,8 @@ def test_seed_probabilistic_smoke_fixture_creates_prepared_probabilistic_simulat
     assert (simulation_dir / "uncertainty_spec.json").exists()
     assert (simulation_dir / "outcome_spec.json").exists()
     assert (simulation_dir / "prepared_snapshot.json").exists()
+    assert (simulation_dir / "grounding_bundle.json").exists()
+    assert (simulation_dir / "probabilistic_smoke_fixture.json").exists()
     assert (simulation_dir / "twitter_profiles.csv").exists()
     assert (simulation_dir / "reddit_profiles.json").exists()
 

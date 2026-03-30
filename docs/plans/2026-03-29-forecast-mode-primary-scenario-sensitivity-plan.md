@@ -157,7 +157,7 @@ Interviews and surveys remain legacy-scoped in this phase.
 - `prototype_run_id`
 - `representative_run_ids`
 - `member_run_ids`
-- `probability_mass`
+- `observed_run_share`
 - support metadata
 - `distinguishing_metrics`
 - `assumption_template_counts`

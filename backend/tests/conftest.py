@@ -96,6 +96,7 @@ def _install_test_stubs() -> None:
         api_pkg.graph_bp = Blueprint("graph", __name__)
         api_pkg.simulation_bp = Blueprint("simulation", __name__)
         api_pkg.report_bp = Blueprint("report", __name__)
+        api_pkg.forecast_bp = Blueprint("forecast", __name__)
         sys.modules["app.api"] = api_pkg
 
     for module_name in ("app.api.graph", "app.api.report"):
@@ -115,6 +116,18 @@ def simulation_data_dir(tmp_path, monkeypatch):
     from app.config import Config
 
     monkeypatch.setattr(Config, "OASIS_SIMULATION_DATA_DIR", str(data_dir), raising=False)
+    return data_dir
+
+
+@pytest.fixture
+def forecast_data_dir(tmp_path, monkeypatch):
+    """Provide an isolated forecast artifact root for each test."""
+    data_dir = tmp_path / "forecasts"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    from app.config import Config
+
+    monkeypatch.setattr(Config, "FORECAST_DATA_DIR", str(data_dir), raising=False)
     return data_dir
 
 

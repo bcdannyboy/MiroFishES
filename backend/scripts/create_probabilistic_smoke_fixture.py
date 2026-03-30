@@ -25,6 +25,7 @@ from app.services.probabilistic_smoke_fixture import (  # noqa: E402
     DEFAULT_GRAPH_ID,
     DEFAULT_PROJECT_NAME,
     DEFAULT_SIMULATION_REQUIREMENT,
+    SUPPORTED_SMOKE_HYBRID_VARIANTS,
     seed_probabilistic_smoke_fixture,
 )
 
@@ -87,6 +88,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional run_id to bind the synthetic completed report to. Defaults to the first seeded run.",
     )
     parser.add_argument(
+        "--hybrid-answer-variant",
+        default="binary",
+        choices=sorted(SUPPORTED_SMOKE_HYBRID_VARIANTS),
+        help="Hybrid forecast workspace variant to embed in the seeded completed report.",
+    )
+    parser.add_argument(
         "--output-file",
         default=None,
         help="Optional path to also write the JSON fixture payload to disk.",
@@ -107,6 +114,7 @@ def main() -> int:
         ensemble_root_seed=args.root_seed,
         seed_completed_report=args.seed_completed_report,
         report_run_id=args.report_run_id,
+        hybrid_answer_variant=args.hybrid_answer_variant,
     )
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     if args.output_file:

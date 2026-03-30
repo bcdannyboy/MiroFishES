@@ -2,6 +2,8 @@ import importlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _load_calibration_module():
     return importlib.import_module("app.services.calibration_manager")
@@ -92,6 +94,74 @@ def test_calibration_manager_builds_reliability_bins_and_readiness(
                     "warnings": [],
                 }
             },
+            "evaluation_windows": {
+                "window-1": {
+                    "window_id": "window-1",
+                    "case_count": 10,
+                    "scored_case_count": 10,
+                    "evaluation_split": "out_of_sample",
+                    "question_class": "survey-support",
+                    "comparable_question_class": "survey-support",
+                    "metric_ids": ["simulation.completed"],
+                    "question_classes": ["survey-support"],
+                    "comparable_question_classes": ["survey-support"],
+                    "split_counts": {"out_of_sample": 10},
+                    "issue_window": {
+                        "start": "2026-03-30T09:00:00",
+                        "end": "2026-03-30T10:00:00",
+                    },
+                    "resolution_window": {
+                        "start": "2026-04-01T09:00:00",
+                        "end": "2026-04-01T09:30:00",
+                    },
+                    "warnings": [],
+                }
+            },
+            "benchmark_comparisons": {
+                "simulation.completed::climatology": {
+                    "benchmark_id": "climatology",
+                    "metric_id": "simulation.completed",
+                    "case_count": 10,
+                    "system_scores": {
+                        "brier_score": 0.12,
+                        "log_score": 0.41,
+                        "brier_skill_score": 0.52,
+                    },
+                    "baseline_scores": {
+                        "brier_score": 0.18,
+                        "log_score": 0.52,
+                        "brier_skill_score": 0.0,
+                    },
+                    "score_deltas": {
+                        "brier_score": 0.06,
+                        "log_score": 0.11,
+                    },
+                    "skill_scores": {
+                        "brier_skill_score": 0.333333333333,
+                        "log_score_improvement": 0.11,
+                    },
+                    "baseline_probability": 0.5,
+                    "notes": ["Uses a static 0.50 probability baseline."],
+                }
+            },
+            "evaluation_summary": {
+                "case_count": 10,
+                "scored_case_count": 10,
+                "split_counts": {"out_of_sample": 10},
+                "question_class_counts": {"survey-support": 10},
+                "comparable_question_class_counts": {"survey-support": 10},
+                "window_count": 1,
+                "window_ids": ["window-1"],
+                "question_classes": ["survey-support"],
+                "comparable_question_classes": ["survey-support"],
+                "out_of_sample_case_count": 10,
+                "in_sample_case_count": 0,
+                "rolling_case_count": 0,
+                "holdout_case_count": 0,
+                "benchmark_ids": ["climatology"],
+                "coverage_status": "cohort_metadata_present",
+                "warnings": [],
+            },
             "quality_summary": {
                 "status": "complete",
                 "warnings": [],
@@ -127,6 +197,30 @@ def test_calibration_manager_builds_reliability_bins_and_readiness(
     assert metric_summary["reliability_bins"][0]["observed_frequency"] == 0.0
     assert metric_summary["reliability_bins"][-1]["observed_frequency"] == 1.0
     assert summary["schema_version"] == "probabilistic.calibration.v2"
+    assert summary["quality_summary"]["source_artifacts"] == {
+        "backtest_summary": "backtest_summary.json"
+    }
+    assert summary["quality_summary"]["provenance"] == {
+        "status": "valid",
+        "backtest_artifact_type": "backtest_summary",
+        "backtest_schema_version": "probabilistic.backtest.v2",
+        "backtest_generator_version": "probabilistic.backtest.generator.v2",
+        "backtest_simulation_id": "sim-001",
+        "backtest_ensemble_id": "0001",
+    }
+    assert summary["evaluation_provenance"] == {
+        "status": "cohort_metadata_present",
+        "case_count": 10,
+        "scored_case_count": 10,
+        "split_counts": {"out_of_sample": 10},
+        "question_classes": ["survey-support"],
+        "comparable_question_classes": ["survey-support"],
+        "window_count": 1,
+        "window_ids": ["window-1"],
+        "benchmark_ids": ["climatology"],
+        "benchmark_count": 1,
+        "source_artifacts": {"backtest_summary": "backtest_summary.json"},
+    }
     assert (ensemble_dir / "calibration_summary.json").exists()
 
 
@@ -234,3 +328,35 @@ def test_calibration_manager_marks_single_class_backtests_not_ready(
     assert metric_summary["diagnostics"]["max_calibration_gap"] == 0.15
     assert summary["quality_summary"]["status"] == "partial"
     assert summary["quality_summary"]["not_ready_metric_ids"] == ["simulation.completed"]
+
+
+def test_calibration_manager_load_rejects_invalid_schema_version(
+    simulation_data_dir, monkeypatch
+):
+    calibration_module = _load_calibration_module()
+    monkeypatch.setattr(
+        calibration_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    ensemble_dir = simulation_data_dir / "sim-001" / "ensemble" / "ensemble_0001"
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.prepare.v1",
+            "generator_version": "probabilistic.calibration.generator.v2",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "metric_calibrations": {},
+            "quality_summary": {"status": "complete", "warnings": []},
+        },
+    )
+
+    manager = calibration_module.CalibrationManager(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    with pytest.raises(ValueError, match="schema_version"):
+        manager.load_calibration_summary("sim-001", "0001")

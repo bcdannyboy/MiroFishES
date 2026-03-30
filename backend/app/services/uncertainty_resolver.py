@@ -50,6 +50,17 @@ class UncertaintyResolver:
         rng = random.Random(effective_seed)
         resolved_config = copy.deepcopy(base_config)
         resolved_values = {}
+        design_row_coverage = copy.deepcopy(
+            (experiment_design_row or {}).get("scenario_coverage")
+            or {
+                "coverage_tags": list(
+                    (experiment_design_row or {}).get("scenario_coverage_tags", [])
+                ),
+                "exogenous_event_ids": list(
+                    (experiment_design_row or {}).get("scenario_event_ids", [])
+                ),
+            }
+        )
         assumption_ledger = {
             "design_method": (
                 uncertainty_spec.experiment_design.method
@@ -59,7 +70,19 @@ class UncertaintyResolver:
             "scenario_template_ids": list(
                 (experiment_design_row or {}).get("scenario_template_ids", [])
             ),
+            "applied_templates": [],
+            "scenario_override_fields": [],
+            "scenario_coverage_tags": [],
+            "applied_exogenous_event_ids": [],
+            "activated_template_conditions": [],
             "activated_conditions": [],
+            "scenario_template_labels": [],
+            "scenario_signature": {
+                "template_count": len(
+                    list((experiment_design_row or {}).get("scenario_template_ids", []))
+                ),
+            },
+            "scenario_coverage": design_row_coverage,
             "design_row": copy.deepcopy(experiment_design_row) if experiment_design_row else None,
         }
 
@@ -75,11 +98,34 @@ class UncertaintyResolver:
             self._set_path_value(resolved_config, variable.field_path, sampled_value)
             resolved_values[variable.field_path] = sampled_value
 
-        self._apply_scenario_templates(
+        (
+            applied_templates,
+            scenario_override_fields,
+            scenario_coverage_tags,
+            applied_exogenous_event_ids,
+            activated_template_conditions,
+            scenario_template_labels,
+        ) = self._apply_scenario_templates(
             resolved_config,
             uncertainty_spec,
             assumption_ledger["scenario_template_ids"],
+            rng=rng,
+            experiment_design_row=experiment_design_row,
         )
+        assumption_ledger["applied_templates"] = applied_templates
+        assumption_ledger["scenario_override_fields"] = scenario_override_fields
+        assumption_ledger["scenario_coverage_tags"] = scenario_coverage_tags
+        assumption_ledger["applied_exogenous_event_ids"] = applied_exogenous_event_ids
+        assumption_ledger["activated_template_conditions"] = activated_template_conditions
+        assumption_ledger["scenario_template_labels"] = scenario_template_labels
+        if not assumption_ledger["scenario_coverage"].get("coverage_tags"):
+            assumption_ledger["scenario_coverage"]["coverage_tags"] = list(
+                scenario_coverage_tags
+            )
+        if not assumption_ledger["scenario_coverage"].get("exogenous_event_ids"):
+            assumption_ledger["scenario_coverage"]["exogenous_event_ids"] = list(
+                applied_exogenous_event_ids
+            )
         for conditional in uncertainty_spec.conditional_variables:
             if not self._condition_matches(
                 resolved_config,
@@ -235,19 +281,106 @@ class UncertaintyResolver:
         resolved_config: Dict[str, Any],
         uncertainty_spec: UncertaintySpec,
         scenario_template_ids: List[str],
-    ) -> None:
+        *,
+        rng: random.Random,
+        experiment_design_row: Optional[Dict[str, Any]],
+    ) -> Tuple[List[str], List[str], List[str], List[str], List[str], List[str]]:
         if not scenario_template_ids:
-            return
+            return [], [], [], [], [], []
         templates_by_id = {
             template.template_id: template
             for template in uncertainty_spec.scenario_templates
         }
+        applied_templates: List[str] = []
+        scenario_override_fields: List[str] = []
+        scenario_coverage_tags: List[str] = []
+        applied_exogenous_event_ids: List[str] = []
+        activated_template_conditions: List[str] = []
+        scenario_template_labels: List[str] = []
         for template_id in scenario_template_ids:
             template = templates_by_id.get(template_id)
             if template is None:
                 continue
+            applied_templates.append(template_id)
+            if template.label not in scenario_template_labels:
+                scenario_template_labels.append(template.label)
             for field_path, value in template.field_overrides.items():
                 self._set_path_value(resolved_config, field_path, value)
+                if field_path not in scenario_override_fields:
+                    scenario_override_fields.append(field_path)
+            for coverage_tag in getattr(template, "coverage_tags", []):
+                normalized_tag = str(coverage_tag or "").strip()
+                if normalized_tag and normalized_tag not in scenario_coverage_tags:
+                    scenario_coverage_tags.append(normalized_tag)
+            for event_id in self._merge_exogenous_events(
+                resolved_config,
+                getattr(template, "exogenous_events", []),
+            ):
+                if event_id not in applied_exogenous_event_ids:
+                    applied_exogenous_event_ids.append(event_id)
+            for conditional in getattr(template, "conditional_overrides", []):
+                if not self._condition_matches(
+                    resolved_config,
+                    condition_field_path=conditional.condition_field_path,
+                    operator=conditional.operator,
+                    condition_value=conditional.condition_value,
+                ):
+                    continue
+                sampled_value = self._sample_value(
+                    conditional.variable,
+                    rng,
+                    normalized_coordinate=self._get_design_coordinate(
+                        experiment_design_row,
+                        conditional.variable.field_path,
+                    ),
+                )
+                self._set_path_value(
+                    resolved_config,
+                    conditional.variable.field_path,
+                    sampled_value,
+                )
+                if conditional.variable.field_path not in activated_template_conditions:
+                    activated_template_conditions.append(conditional.variable.field_path)
+        return (
+            applied_templates,
+            sorted(scenario_override_fields),
+            sorted(scenario_coverage_tags),
+            applied_exogenous_event_ids,
+            sorted(activated_template_conditions),
+            sorted(scenario_template_labels),
+        )
+
+    def _merge_exogenous_events(
+        self,
+        resolved_config: Dict[str, Any],
+        exogenous_events: List[Dict[str, Any]],
+    ) -> List[str]:
+        event_config = resolved_config.get("event_config")
+        if not isinstance(event_config, dict):
+            return []
+        scheduled_events = event_config.get("scheduled_events")
+        if not isinstance(scheduled_events, list):
+            scheduled_events = []
+        event_ids: List[str] = []
+        existing_event_ids = {
+            str(item.get("event_id") or "").strip()
+            for item in scheduled_events
+            if isinstance(item, dict)
+        }
+        for item in exogenous_events:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = dict(item)
+            event_id = str(normalized_item.get("event_id") or "").strip()
+            if not event_id:
+                continue
+            if event_id not in existing_event_ids:
+                scheduled_events.append(normalized_item)
+                existing_event_ids.add(event_id)
+            if event_id not in event_ids:
+                event_ids.append(event_id)
+        event_config["scheduled_events"] = scheduled_events
+        return event_ids
 
     def _condition_matches(
         self,

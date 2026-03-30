@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from zep_cloud.client import Zep
 
 from ..config import Config
+from ..models.project import ProjectManager
 from ..utils.logger import get_logger
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
 
@@ -62,10 +63,95 @@ class FilteredEntities:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "entities": [e.to_dict() for e in self.entities],
-            "entity_types": list(self.entity_types),
+            "entity_types": sorted(self.entity_types),
             "total_count": self.total_count,
             "filtered_count": self.filtered_count,
         }
+
+
+def build_filtered_entities_from_payloads(
+    all_nodes: List[Dict[str, Any]],
+    all_edges: Optional[List[Dict[str, Any]]] = None,
+    *,
+    defined_entity_types: Optional[List[str]] = None,
+    enrich_with_edges: bool = True,
+) -> FilteredEntities:
+    """Build one filtered-entity payload from serialized node and edge collections."""
+    total_count = len(all_nodes)
+    serialized_edges = all_edges or []
+    node_map = {n["uuid"]: n for n in all_nodes}
+    filtered_entities: List[EntityNode] = []
+    entity_types_found: Set[str] = set()
+
+    for node in all_nodes:
+        labels = node.get("labels", [])
+        custom_labels = [label for label in labels if label not in ["Entity", "Node"]]
+        if not custom_labels:
+            continue
+
+        if defined_entity_types:
+            matching_labels = [label for label in custom_labels if label in defined_entity_types]
+            if not matching_labels:
+                continue
+            entity_type = matching_labels[0]
+        else:
+            entity_type = custom_labels[0]
+
+        entity_types_found.add(entity_type)
+        entity = EntityNode(
+            uuid=node["uuid"],
+            name=node["name"],
+            labels=labels,
+            summary=node.get("summary", ""),
+            attributes=node.get("attributes", {}),
+        )
+
+        if enrich_with_edges:
+            related_edges = []
+            related_node_uuids = set()
+
+            for edge in serialized_edges:
+                if edge["source_node_uuid"] == node["uuid"]:
+                    related_edges.append(
+                        {
+                            "direction": "outgoing",
+                            "edge_name": edge["name"],
+                            "fact": edge["fact"],
+                            "target_node_uuid": edge["target_node_uuid"],
+                        }
+                    )
+                    related_node_uuids.add(edge["target_node_uuid"])
+                elif edge["target_node_uuid"] == node["uuid"]:
+                    related_edges.append(
+                        {
+                            "direction": "incoming",
+                            "edge_name": edge["name"],
+                            "fact": edge["fact"],
+                            "source_node_uuid": edge["source_node_uuid"],
+                        }
+                    )
+                    related_node_uuids.add(edge["source_node_uuid"])
+
+            entity.related_edges = related_edges
+            entity.related_nodes = [
+                {
+                    "uuid": node_map[related_uuid]["uuid"],
+                    "name": node_map[related_uuid]["name"],
+                    "labels": node_map[related_uuid]["labels"],
+                    "summary": node_map[related_uuid].get("summary", ""),
+                }
+                for related_uuid in sorted(related_node_uuids)
+                if related_uuid in node_map
+            ]
+
+        filtered_entities.append(entity)
+
+    return FilteredEntities(
+        entities=filtered_entities,
+        entity_types=entity_types_found,
+        total_count=total_count,
+        filtered_count=len(filtered_entities),
+    )
 
 
 class ZepEntityReader:
@@ -217,7 +303,8 @@ class ZepEntityReader:
         self, 
         graph_id: str,
         defined_entity_types: Optional[List[str]] = None,
-        enrich_with_edges: bool = True
+        enrich_with_edges: bool = True,
+        project_id: Optional[str] = None,
     ) -> FilteredEntities:
         """
         Filter nodes that match predefined entity types.
@@ -237,99 +324,109 @@ class ZepEntityReader:
         """
         logger.info(f"Starting entity filtering for graph {graph_id}...")
 
+        local_entities = self._load_filtered_entities_from_project_index(
+            project_id=project_id,
+            graph_id=graph_id,
+            defined_entity_types=defined_entity_types,
+            enrich_with_edges=enrich_with_edges,
+        )
+        if local_entities is not None:
+            logger.info(
+                "Loaded entity data from local graph entity index: project_id=%s graph_id=%s matched=%s",
+                project_id,
+                graph_id,
+                local_entities.filtered_count,
+            )
+            return local_entities
+
         # Get all nodes.
         all_nodes = self.get_all_nodes(graph_id)
-        total_count = len(all_nodes)
-
-        # Get all edges for later relationship lookup.
         all_edges = self.get_all_edges(graph_id) if enrich_with_edges else []
+        filtered = build_filtered_entities_from_payloads(
+            all_nodes,
+            all_edges,
+            defined_entity_types=defined_entity_types,
+            enrich_with_edges=enrich_with_edges,
+        )
+        logger.info(
+            "Filtering complete: total nodes %s, matched %s, entity types: %s",
+            filtered.total_count,
+            filtered.filtered_count,
+            filtered.entity_types,
+        )
+        return filtered
 
-        # Build a map from node UUID to node data.
-        node_map = {n["uuid"]: n for n in all_nodes}
+    def _load_filtered_entities_from_project_index(
+        self,
+        *,
+        project_id: Optional[str],
+        graph_id: str,
+        defined_entity_types: Optional[List[str]],
+        enrich_with_edges: bool,
+    ) -> Optional[FilteredEntities]:
+        """Load one filtered-entity collection from the persisted project index."""
+        if not project_id:
+            return None
 
-        # Filter matching entities.
-        filtered_entities = []
-        entity_types_found = set()
-        
-        for node in all_nodes:
-            labels = node.get("labels", [])
-            
-            # Labels must contain something beyond "Entity" and "Node".
-            custom_labels = [l for l in labels if l not in ["Entity", "Node"]]
-
-            if not custom_labels:
-                # Only default labels are present, so skip it.
-                continue
-            
-            # If predefined types were supplied, check for a match.
-            if defined_entity_types:
-                matching_labels = [l for l in custom_labels if l in defined_entity_types]
-                if not matching_labels:
-                    continue
-                entity_type = matching_labels[0]
-            else:
-                entity_type = custom_labels[0]
-            
-            entity_types_found.add(entity_type)
-            
-            # Create the entity node object.
-            entity = EntityNode(
-                uuid=node["uuid"],
-                name=node["name"],
-                labels=labels,
-                summary=node["summary"],
-                attributes=node["attributes"],
+        payload = ProjectManager.get_graph_entity_index(project_id)
+        if not payload:
+            return None
+        if payload.get("artifact_type") != "graph_entity_index":
+            logger.warning(
+                "Ignoring incompatible graph entity index artifact for project %s",
+                project_id,
             )
-            
-            # Get related edges and nodes.
-            if enrich_with_edges:
-                related_edges = []
-                related_node_uuids = set()
-                
-                for edge in all_edges:
-                    if edge["source_node_uuid"] == node["uuid"]:
-                        related_edges.append({
-                            "direction": "outgoing",
-                            "edge_name": edge["name"],
-                            "fact": edge["fact"],
-                            "target_node_uuid": edge["target_node_uuid"],
-                        })
-                        related_node_uuids.add(edge["target_node_uuid"])
-                    elif edge["target_node_uuid"] == node["uuid"]:
-                        related_edges.append({
-                            "direction": "incoming",
-                            "edge_name": edge["name"],
-                            "fact": edge["fact"],
-                            "source_node_uuid": edge["source_node_uuid"],
-                        })
-                        related_node_uuids.add(edge["source_node_uuid"])
-                
-                entity.related_edges = related_edges
-                
-                # Get basic information for related nodes.
-                related_nodes = []
-                for related_uuid in related_node_uuids:
-                    if related_uuid in node_map:
-                        related_node = node_map[related_uuid]
-                        related_nodes.append({
-                            "uuid": related_node["uuid"],
-                            "name": related_node["name"],
-                            "labels": related_node["labels"],
-                            "summary": related_node.get("summary", ""),
-                        })
-                
-                entity.related_nodes = related_nodes
-            
-            filtered_entities.append(entity)
-        
-        logger.info(f"Filtering complete: total nodes {total_count}, matched {len(filtered_entities)}, "
-                   f"entity types: {entity_types_found}")
-        
+            return None
+        if payload.get("graph_id") and payload.get("graph_id") != graph_id:
+            logger.info(
+                "Graph entity index graph_id mismatch for project %s: expected=%s actual=%s",
+                project_id,
+                graph_id,
+                payload.get("graph_id"),
+            )
+            return None
+
+        raw_entities = payload.get("entities")
+        if not isinstance(raw_entities, list):
+            logger.warning(
+                "Ignoring graph entity index with invalid entities payload for project %s",
+                project_id,
+            )
+            return None
+
+        entities: List[EntityNode] = []
+        entity_types_found: Set[str] = set()
+        for raw_entity in raw_entities:
+            labels = raw_entity.get("labels", [])
+            custom_labels = [label for label in labels if label not in ["Entity", "Node"]]
+            if not custom_labels:
+                continue
+            entity_type = custom_labels[0]
+            if defined_entity_types and entity_type not in defined_entity_types:
+                continue
+
+            entity_types_found.add(entity_type)
+            entities.append(
+                EntityNode(
+                    uuid=raw_entity.get("uuid", ""),
+                    name=raw_entity.get("name", ""),
+                    labels=labels,
+                    summary=raw_entity.get("summary", ""),
+                    attributes=raw_entity.get("attributes", {}),
+                    related_edges=raw_entity.get("related_edges", []) if enrich_with_edges else [],
+                    related_nodes=raw_entity.get("related_nodes", []) if enrich_with_edges else [],
+                )
+            )
+
+        total_count = payload.get("total_count")
+        if not isinstance(total_count, int):
+            total_count = len(raw_entities)
+
         return FilteredEntities(
-            entities=filtered_entities,
+            entities=entities,
             entity_types=entity_types_found,
             total_count=total_count,
-            filtered_count=len(filtered_entities),
+            filtered_count=len(entities),
         )
     
     def get_entity_with_context(

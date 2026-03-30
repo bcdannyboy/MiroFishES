@@ -1,4 +1,5 @@
 import csv
+import inspect
 import importlib
 import json
 import sys
@@ -34,6 +35,128 @@ def _load_ensemble_module():
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_forecast_archive(simulation_dir: Path, *, reason: str = "Historical only") -> None:
+    _write_json(
+        simulation_dir / "forecast_archive.json",
+        {
+            "artifact_type": "forecast_archive",
+            "schema_version": "forecast.archive.v1",
+            "archived_at": "2026-03-29T12:00:00",
+            "archive_scope": "historical_read_only",
+            "reason": reason,
+        },
+    )
+
+
+def _write_backtest_summary(ensemble_dir: Path, *, simulation_id: str, ensemble_id: str) -> None:
+    _write_json(
+        ensemble_dir / "backtest_summary.json",
+        {
+            "artifact_type": "backtest_summary",
+            "schema_version": "probabilistic.backtest.v2",
+            "generator_version": "probabilistic.backtest.generator.v2",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "metric_backtests": {
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "value_kind": "binary",
+                    "case_count": 10,
+                    "positive_case_count": 5,
+                    "negative_case_count": 5,
+                    "observed_event_rate": 0.5,
+                    "mean_forecast_probability": 0.44,
+                    "scoring_rules": ["brier_score", "log_score"],
+                    "scores": {
+                        "brier_score": 0.12,
+                        "log_score": 0.41,
+                        "brier_skill_score": 0.52,
+                    },
+                    "case_results": [],
+                    "warnings": [],
+                }
+            },
+            "quality_summary": {
+                "status": "complete",
+                "warnings": [],
+                "total_case_count": 10,
+                "scored_case_count": 10,
+                "skipped_case_count": 0,
+                "supported_metric_ids": ["simulation.completed"],
+                "unscored_metric_ids": [],
+            },
+        },
+    )
+
+
+def _write_calibration_summary(
+    ensemble_dir: Path,
+    *,
+    simulation_id: str,
+    ensemble_id: str,
+    ready: bool = True,
+    metric_warnings=None,
+    quality_warnings=None,
+    gating_reasons=None,
+) -> None:
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.calibration.v2",
+            "generator_version": "probabilistic.calibration.generator.v2",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "metric_calibrations": {
+                "simulation.completed": {
+                    "metric_id": "simulation.completed",
+                    "value_kind": "binary",
+                    "case_count": 10,
+                    "supported_scoring_rules": ["brier_score", "log_score"],
+                    "scores": {"brier_score": 0.12, "log_score": 0.41},
+                    "diagnostics": {
+                        "expected_calibration_error": 0.18,
+                        "max_calibration_gap": 0.25,
+                    },
+                    "reliability_bins": [],
+                    "readiness": {
+                        "ready": ready,
+                        "minimum_case_count": 10,
+                        "actual_case_count": 10,
+                        "minimum_positive_case_count": 3,
+                        "actual_positive_case_count": 5,
+                        "minimum_negative_case_count": 3,
+                        "actual_negative_case_count": 5 if ready else 0,
+                        "non_empty_bin_count": 2,
+                        "supported_bin_count": 2,
+                        "minimum_supported_bin_count": 2,
+                        "gating_reasons": list(gating_reasons or []),
+                        "confidence_label": "limited" if ready else "insufficient",
+                    },
+                    "warnings": list(metric_warnings or []),
+                }
+            },
+            "quality_summary": {
+                "status": "complete" if ready else "partial",
+                "ready_metric_ids": ["simulation.completed"] if ready else [],
+                "not_ready_metric_ids": [] if ready else ["simulation.completed"],
+                "warnings": list(quality_warnings or []),
+                "source_artifacts": {
+                    "backtest_summary": "backtest_summary.json",
+                },
+                "provenance": {
+                    "status": "valid",
+                    "backtest_artifact_type": "backtest_summary",
+                    "backtest_schema_version": "probabilistic.backtest.v2",
+                    "backtest_generator_version": "probabilistic.backtest.generator.v2",
+                    "backtest_simulation_id": simulation_id,
+                    "backtest_ensemble_id": ensemble_id,
+                },
+            },
+        },
+    )
 
 
 def _configure_project_grounding_dir(monkeypatch, project_root: Path):
@@ -128,6 +251,23 @@ def _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_mod
             "SIMULATION_DATA_DIR",
             str(simulation_data_dir),
         )
+
+
+def test_report_agent_prompts_use_bounded_simulation_language():
+    report_agent_module = _load_report_agent_module()
+
+    assert "preview of the future" not in report_agent_module.PLAN_SYSTEM_PROMPT
+    assert "predictions of future human behavior" not in report_agent_module.PLAN_SYSTEM_PROMPT
+    assert "preview of the future" not in report_agent_module.PLAN_USER_PROMPT_TEMPLATE
+    assert "predictions of future human behavior" not in report_agent_module.SECTION_SYSTEM_PROMPT_TEMPLATE
+    assert "simulation report assistant" in report_agent_module.CHAT_SYSTEM_PROMPT_TEMPLATE
+    assert "bounded simulated scenario" in report_agent_module.PLAN_SYSTEM_PROMPT
+    assert "not direct evidence of real human behavior" in report_agent_module.PLAN_SYSTEM_PROMPT
+    assert "Use bounded language" in report_agent_module.SECTION_SYSTEM_PROMPT_TEMPLATE
+
+    plan_outline_source = inspect.getsource(report_agent_module.ReportAgent.plan_outline)
+    assert "Future Forecast Report" not in plan_outline_source
+    assert "Simulation Scenario Report" in plan_outline_source
 
 
 class _FakeProfile:
@@ -617,6 +757,33 @@ def test_report_generate_builds_probabilistic_context_before_agent_execution(
         "cluster_id": "cluster_0001",
         "run_id": "0001",
         "quality_summary": {"warnings": ["thin_sample"]},
+        "forecast_workspace": {
+            "forecast_question": {
+                "question_text": "Will the hybrid system surface honest summaries?",
+                "supported_question_templates": [
+                    {
+                        "template_id": "binary-resolution",
+                        "label": "Binary resolution",
+                        "question_type": "binary",
+                        "prompt_template": "Will {subject} happen by {horizon}?",
+                        "required_fields": ["question_text", "horizon"],
+                        "abstain_guidance": "Abstain if evidence remains sparse.",
+                        "notes": ["Supported as an explicit bounded question."],
+                    }
+                ],
+            },
+            "truthfulness_surface": {
+                "evidence_available": True,
+                "evaluation_available": True,
+                "calibrated_confidence_earned": False,
+                "simulation_only_scenario_exploration": False,
+            },
+            "abstain_state": {
+                "abstain": False,
+                "abstain_reason": "",
+                "summary": "Hybrid answer available",
+            },
+        },
     }
 
     class _FakeContextBuilder:
@@ -777,40 +944,15 @@ def test_report_generate_and_get_exposes_ready_calibration_summary(
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.prepare.v1",
-            "generator_version": "probabilistic.prepare.generator.v1",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": True,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "non_empty_bin_count": 2,
-                        "gating_reasons": [],
-                        "confidence_label": "limited",
-                    },
-                    "warnings": [],
-                }
-            },
-            "quality_summary": {
-                "status": "complete",
-                "ready_metric_ids": ["simulation.completed"],
-                "not_ready_metric_ids": [],
-                "warnings": [],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
     )
 
     class _FakeReportAgent:
@@ -930,50 +1072,19 @@ def test_report_generate_and_get_exposes_not_ready_confidence_without_calibrated
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.calibration.v2",
-            "generator_version": "probabilistic.calibration.generator.v2",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "diagnostics": {
-                        "expected_calibration_error": 0.18,
-                        "max_calibration_gap": 0.25,
-                    },
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": False,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "minimum_positive_case_count": 3,
-                        "actual_positive_case_count": 10,
-                        "minimum_negative_case_count": 3,
-                        "actual_negative_case_count": 0,
-                        "non_empty_bin_count": 2,
-                        "supported_bin_count": 2,
-                        "minimum_supported_bin_count": 2,
-                        "gating_reasons": ["insufficient_negative_case_count"],
-                        "confidence_label": "insufficient",
-                    },
-                    "warnings": ["degenerate_base_rate_baseline"],
-                }
-            },
-            "quality_summary": {
-                "status": "partial",
-                "ready_metric_ids": [],
-                "not_ready_metric_ids": ["simulation.completed"],
-                "warnings": ["not_ready_metrics_present"],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        ready=False,
+        metric_warnings=["degenerate_base_rate_baseline"],
+        quality_warnings=["not_ready_metrics_present"],
+        gating_reasons=["insufficient_negative_case_count"],
     )
 
     class _FakeReportAgent:
@@ -1033,7 +1144,12 @@ def test_report_generate_and_get_exposes_not_ready_confidence_without_calibrated
         "not_ready_metric_ids": ["simulation.completed"],
         "gating_reasons": ["insufficient_negative_case_count"],
         "warnings": ["not_ready_metrics_present", "degenerate_base_rate_baseline"],
-        "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+        "artifact_readiness": {
+            "calibration_summary": {"status": "valid", "reason": ""},
+            "backtest_summary": {"status": "valid", "reason": ""},
+            "provenance": {"status": "valid", "reason": ""},
+        },
+        "boundary_note": "Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.",
     }
     assert "calibrated_summary" not in report_payload["probabilistic_context"]
 
@@ -1123,40 +1239,15 @@ def test_report_generate_and_get_preserve_probabilistic_provenance_fields(
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.prepare.v1",
-            "generator_version": "probabilistic.prepare.generator.v1",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": True,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "non_empty_bin_count": 2,
-                        "gating_reasons": [],
-                        "confidence_label": "limited",
-                    },
-                    "warnings": [],
-                }
-            },
-            "quality_summary": {
-                "status": "complete",
-                "ready_metric_ids": ["simulation.completed"],
-                "not_ready_metric_ids": [],
-                "warnings": [],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
     )
 
     class _FakeReportAgent:
@@ -1613,7 +1704,74 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
                 "not_ready_metric_ids": [],
                 "gating_reasons": ["no_supported_binary_metrics"],
                 "warnings": ["unsupported_confidence_contract"],
-                "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+                "boundary_note": "Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.",
+            },
+            "forecast_workspace": {
+                "forecast_question": {
+                    "question_text": "Will the hybrid system surface honest summaries?",
+                    "supported_question_templates": [
+                        {
+                            "template_id": "binary-resolution",
+                            "label": "Binary resolution",
+                            "question_type": "binary",
+                            "prompt_template": "Will {subject} happen by {horizon}?",
+                            "required_fields": ["question_text", "horizon"],
+                            "abstain_guidance": "Abstain if evidence remains sparse.",
+                            "notes": ["Supported as an explicit bounded question."],
+                        }
+                    ],
+                },
+                "evidence_bundle": {
+                    "status": "ready",
+                    "source_entries": [
+                        {
+                            "source_id": "source-1",
+                            "title": "memo.md",
+                            "provenance": "uploaded_local_artifact",
+                        }
+                    ],
+                },
+                "prediction_ledger": {
+                    "entries": [{"entry_id": "entry-1"}],
+                    "worker_outputs": [{"worker_output_id": "worker-output-1"}],
+                    "final_resolution_state": "pending",
+                },
+                "evaluation_results": {
+                    "status": "available",
+                    "case_count": 1,
+                    "resolved_case_count": 1,
+                    "pending_case_count": 0,
+                },
+                "forecast_answer": {
+                    "answer_type": "hybrid_forecast",
+                    "answer_payload": {
+                        "abstain": False,
+                        "best_estimate": {"value": 0.61, "semantics": "forecast_probability"},
+                        "worker_contribution_trace": [
+                            {"summary": "Simulation remains supporting scenario analysis."}
+                        ],
+                    },
+                },
+                "worker_comparison": {
+                    "worker_count": 2,
+                    "worker_kinds": ["simulation", "base_rate"],
+                    "worker_contribution_trace": [
+                        {"summary": "Simulation remains supporting scenario analysis."}
+                    ],
+                    "abstain": False,
+                    "best_estimate": {"value": 0.61},
+                },
+                "truthfulness_surface": {
+                    "evidence_available": True,
+                    "evaluation_available": True,
+                    "calibrated_confidence_earned": False,
+                    "simulation_only_scenario_exploration": False,
+                },
+                "abstain_state": {
+                    "abstain": False,
+                    "abstain_reason": "",
+                    "summary": "Hybrid answer available",
+                },
             },
         },
     )
@@ -1645,6 +1803,64 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
     assert '"confidence_status"' in system_prompt
     assert '"status": "not_ready"' in system_prompt
     assert '"no_supported_binary_metrics"' in system_prompt
+    assert '"forecast_workspace"' in system_prompt
+    assert '"forecast_workspace_status"' in system_prompt
+    assert '"abstain_state"' in system_prompt
+
+
+def test_report_agent_generate_report_persists_report_phase_timings(
+    tmp_path, monkeypatch
+):
+    report_agent_module = _load_report_agent_module()
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+
+    outline = report_agent_module.ReportOutline(
+        title="Forecast Report",
+        summary="Observed outcomes across the ensemble.",
+        sections=[
+            report_agent_module.ReportSection(title="Executive Summary"),
+            report_agent_module.ReportSection(title="Signals"),
+        ],
+    )
+
+    monkeypatch.setattr(
+        report_agent_module.ReportAgent,
+        "plan_outline",
+        lambda self, progress_callback=None: outline,
+    )
+    monkeypatch.setattr(
+        report_agent_module.ReportAgent,
+        "_generate_section_react",
+        lambda self, section, outline, previous_sections, progress_callback, section_index: (
+            f"Section {section_index} content."
+        ),
+    )
+
+    agent = report_agent_module.ReportAgent(
+        graph_id="graph-1",
+        simulation_id="sim-report",
+        simulation_requirement="Forecast discussion spread",
+        llm_client=object(),
+        zep_tools=object(),
+    )
+
+    report = agent.generate_report(report_id="report-phase-timing")
+
+    assert report.status == report_agent_module.ReportStatus.COMPLETED
+    timing_payload = json.loads(
+        (
+            reports_dir / "report-phase-timing" / "report_phase_timings.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "report"
+    assert timing_payload["scope_id"] == "report-phase-timing"
+    assert "report_synthesis" in timing_payload["phases"]
 
 
 def test_report_chat_endpoint_passes_explicit_report_scope_to_agent(
@@ -2758,7 +2974,7 @@ def test_simulation_history_sorts_newest_records_first(monkeypatch):
     monkeypatch.setattr(
         simulation_module.SimulationManager,
         "list_simulations",
-        lambda self, project_id=None: [older, newer],
+        lambda self, project_id=None, include_archived=False: [older, newer],
     )
     monkeypatch.setattr(
         simulation_module.SimulationManager,
@@ -2803,3 +3019,80 @@ def test_simulation_history_sorts_newest_records_first(monkeypatch):
         newer.simulation_id,
         older.simulation_id,
     ]
+
+
+def test_simulation_history_excludes_archived_simulations_by_default(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    simulation_module = _load_simulation_api_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+
+    active = manager_module.SimulationState(
+        simulation_id="sim-active",
+        project_id="proj-active",
+        graph_id="graph-active",
+        created_at="2026-03-29T10:05:00",
+        updated_at="2026-03-29T10:05:00",
+    )
+    archived = manager_module.SimulationState(
+        simulation_id="sim-archived",
+        project_id="proj-archived",
+        graph_id="graph-archived",
+        created_at="2026-03-29T10:06:00",
+        updated_at="2026-03-29T10:06:00",
+    )
+    manager._save_simulation_state(active)
+    manager._save_simulation_state(archived)
+    _write_forecast_archive(
+        Path(simulation_data_dir) / archived.simulation_id,
+        reason="Nonconforming pre-contract probabilistic artifacts.",
+    )
+
+    monkeypatch.setattr(
+        simulation_module.ProjectManager,
+        "get_project",
+        lambda _project_id: type("Project", (), {"files": []})(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        simulation_module.SimulationRunner,
+        "get_run_state",
+        lambda _simulation_id: None,
+    )
+    monkeypatch.setattr(
+        simulation_module,
+        "_get_latest_report_summary_for_simulation",
+        lambda simulation_id: None,
+    )
+    monkeypatch.setattr(
+        simulation_module,
+        "_get_latest_probabilistic_runtime_summary_for_simulation",
+        lambda simulation_id: None,
+    )
+
+    client = _build_simulation_test_client(simulation_module)
+
+    response = client.get("/api/simulation/history?limit=5")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert [item["simulation_id"] for item in payload] == ["sim-active"]
+
+    archived_response = client.get("/api/simulation/history?limit=5&include_archived=true")
+
+    assert archived_response.status_code == 200
+    archived_payload = archived_response.get_json()["data"]
+    assert [item["simulation_id"] for item in archived_payload] == [
+        "sim-archived",
+        "sim-active",
+    ]
+    assert archived_payload[0]["forecast_archive"] == {
+        "artifact_type": "forecast_archive",
+        "schema_version": "forecast.archive.v1",
+        "archived_at": "2026-03-29T12:00:00",
+        "archive_scope": "historical_read_only",
+        "reason": "Nonconforming pre-contract probabilistic artifacts.",
+    }

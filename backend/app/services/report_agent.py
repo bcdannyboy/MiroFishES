@@ -21,6 +21,7 @@ from enum import Enum
 from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
+from .phase_timing import PhaseTimingRecorder
 from .zep_tools import (
     ZepToolsService, 
     SearchResult, 
@@ -576,34 +577,35 @@ Important: the OASIS simulation environment must be running to use this tool."""
 # Outline planning prompt
 
 PLAN_SYSTEM_PROMPT = """\
-You are an expert writer of future forecast reports. You have a god's-eye view of the simulation world, so you can observe every agent's behavior, speech, and interactions.
+You are an expert writer of simulation scenario reports. You can inspect events, speech, and interactions inside the simulation world.
 
 Core idea:
-We created a simulation world and injected a specific simulation requirement into it as the variable. The outcome of that world is a forecast of what could happen in the future. You are not looking at experimental data. You are looking at a preview of the future.
+We created a simulation world and injected a specific simulation requirement as the condition under study. The resulting events are a bounded simulated scenario from this modeled setting. They are not experimental data, not a literal view into the real future, and not direct evidence of real human behavior.
 
 Your task:
-Write a future forecast report that answers:
-1. What happened in the future under the conditions we set?
-2. How did different types of agents or groups react and act?
-3. What future trends and risks did this simulation reveal that deserve attention?
+Write a concise simulation scenario report that answers:
+1. What happened inside this simulated scenario under the conditions we set?
+2. How did different agents or groups react and act within this simulated environment?
+3. What risks, tensions, or possible implications emerged within this scenario and deserve attention?
 
 Report positioning:
-- This is a simulation-based future forecast report that reveals what the future could look like under these conditions
-- Focus on the forecast itself: event trajectories, group reactions, emergent phenomena, and potential risks
-- Agent behavior and statements in the simulation are predictions of future human behavior
-- Do not write it as an analysis of the current real world
+- This is a simulation-based scenario report about a scoped modeled setting
+- Focus on event trajectories, group reactions, emergent phenomena, uncertainties, and possible implications within the simulation
+- Agent behavior and statements are simulated outputs, not direct stand-ins for real human behavior outside the model
+- Do not write it as a literal forecast, certainty claim, or analysis of the current real world
 - Do not write it as a generic public-opinion summary
+- Use bounded language such as "in this simulation", "within this scenario", "may", "could", or "suggests"
 
 Section count limits:
 - Minimum 2 sections, maximum 5 sections
 - No subsections are needed; each section should contain complete content on its own
-- Keep the content concise and focused on the core forecast findings
-- Design the section structure yourself based on the forecast results
+- Keep the content concise and focused on the core scenario findings
+- Design the section structure yourself based on the simulation results
 
 Output the report outline in JSON using this format:
 {
     "title": "Report title",
-    "summary": "Report summary (one sentence capturing the core forecast finding)",
+    "summary": "Report summary (one sentence capturing the core scenario finding)",
     "sections": [
         {
             "title": "Section title",
@@ -615,8 +617,8 @@ Output the report outline in JSON using this format:
 Important: the `sections` array must contain at least 2 items and at most 5 items."""
 
 PLAN_USER_PROMPT_TEMPLATE = """\
-Forecast scenario:
-The variable injected into the simulation world (simulation requirement): {simulation_requirement}
+Scenario under study:
+The condition injected into the simulation world (simulation requirement): {simulation_requirement}
 
 Simulation world scale:
 - Number of entities in the simulation: {total_nodes}
@@ -624,26 +626,26 @@ Simulation world scale:
 - Entity type distribution: {entity_types}
 - Number of active agents: {total_entities}
 
-Sample future facts predicted by the simulation:
+Sample simulated facts observed in the run:
 {related_facts_json}
 
-Review this future preview from a god's-eye view:
-1. What kind of future state emerged under the conditions we set?
+Review this simulated scenario:
+1. What kind of scenario state emerged under the conditions we set?
 2. How did different groups of people or agents react and act?
-3. What future trends did this simulation reveal that deserve attention?
+3. What risks, tensions, or possible implications deserve attention?
 
-Design the most appropriate report section structure based on the forecast results.
+Design the most appropriate report section structure based on the simulation results.
 
-Reminder: the report must have between 2 and 5 sections, and the content should stay concise and focused on the core forecast findings."""
+Reminder: the report must have between 2 and 5 sections, and the content should stay concise and focused on the core scenario findings."""
 
 # Section generation prompt
 
 SECTION_SYSTEM_PROMPT_TEMPLATE = """\
-You are an expert writer of future forecast reports, and you are writing one section of the report.
+You are an expert writer of simulation scenario reports, and you are writing one section of the report.
 
 Report title: {report_title}
 Report summary: {report_summary}
-Forecast scenario (simulation requirement): {simulation_requirement}
+Scenario under study (simulation requirement): {simulation_requirement}
 
 Current section to write: {section_title}
 
@@ -651,32 +653,32 @@ Current section to write: {section_title}
 Core idea
 ===============================================================
 
-The simulation world is a preview of the future. We injected a specific condition, the simulation requirement, into the world.
-Agent behavior and interactions in the simulation are predictions of future human behavior.
+The simulation world is a bounded simulated scenario. We injected a specific condition, the simulation requirement, into the world.
+Agent behavior and interactions in the simulation are simulated outputs from this modeled setting, not direct evidence of real human behavior.
 
 Your job is to:
-- Reveal what happened in the future under the given conditions
-- Predict how different groups of people or agents reacted and acted
-- Identify future trends, risks, and opportunities that deserve attention
+- Describe what happened inside the simulated scenario under the given conditions
+- Analyze how different groups of people or agents reacted and acted within this scenario
+- Identify risks, tensions, and opportunities that this scenario may suggest
 
 Do not write this as an analysis of the current real world.
-Focus on what the future will look like. The simulation results are the forecast.
+Focus on what the simulation shows within its own scope. Use bounded language and avoid certainty claims about the real future.
 
 ===============================================================
 Most important rules: must follow
 ===============================================================
 
 1. You must call tools to observe the simulation world.
-   - You are observing a preview of the future from a god's-eye view
+   - You are observing a bounded modeled scenario from a global view
    - All content must come from events and agent behavior inside the simulation world
    - Do not use your own knowledge to write the report
-   - Each section must call tools at least 3 times and at most 5 times to observe the simulation world that represents the future
+   - Each section must call tools at least 3 times and at most 5 times to observe the simulation world
 
 2. You must quote original agent behavior and statements.
-   - Agent speech and behavior are predictions of future human behavior
-   - Show those predictions using quote formatting, for example:
+   - Agent speech and behavior are simulated outputs, not direct stand-ins for real human behavior outside the model
+   - Show those outputs using quote formatting, for example:
      > "A certain group of people might say: original quoted content..."
-   - These quotations are the core evidence for the simulation forecast
+   - These quotations are the core evidence for this simulation scenario report
 
 3. Language consistency: quoted content must be translated into the report language.
    - Tool results may contain English or mixed Chinese and English phrasing
@@ -685,10 +687,11 @@ Most important rules: must follow
    - Preserve the original meaning while making the expression natural and smooth
    - This rule applies to both body text and quote blocks using `>` formatting
 
-4. Present forecast results faithfully.
-   - The report content must reflect the simulation results that represent the future
+4. Present scenario results faithfully.
+   - The report content must reflect the simulation results from this modeled setting
    - Do not add information that does not exist in the simulation
    - If there is not enough information about a topic, state that honestly
+   - Use bounded language and avoid certainty claims about the real world
 
 ===============================================================
 Formatting rules: extremely important
@@ -853,7 +856,7 @@ REACT_FORCE_FINAL_MSG = "The tool-call limit has been reached. Output Final Answ
 # Chat prompt
 
 CHAT_SYSTEM_PROMPT_TEMPLATE = """\
-You are a concise and efficient simulation forecasting assistant.
+You are a concise and efficient simulation report assistant.
 
 Background:
 Forecast condition: {simulation_requirement}
@@ -1048,6 +1051,159 @@ class ReportAgent:
         }
 
     @classmethod
+    def _build_prompt_safe_forecast_workspace_context(
+        cls,
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not probabilistic_context:
+            return None
+
+        workspace = probabilistic_context.get("forecast_workspace")
+        if not isinstance(workspace, dict):
+            return None
+
+        forecast_question = workspace.get("forecast_question")
+        if not isinstance(forecast_question, dict):
+            forecast_question = {}
+
+        evidence_bundle = workspace.get("evidence_bundle")
+        if not isinstance(evidence_bundle, dict):
+            evidence_bundle = {}
+
+        prediction_ledger = workspace.get("prediction_ledger")
+        if not isinstance(prediction_ledger, dict):
+            prediction_ledger = {}
+
+        latest_answer = workspace.get("forecast_answer")
+        if not isinstance(latest_answer, dict):
+            latest_answer = {}
+
+        latest_answer_payload = latest_answer.get("answer_payload")
+        if not isinstance(latest_answer_payload, dict):
+            latest_answer_payload = {}
+
+        supported_question_templates = []
+        for template in (forecast_question.get("supported_question_templates") or [])[:3]:
+            if not isinstance(template, dict):
+                continue
+            supported_question_templates.append(
+                {
+                    "template_id": template.get("template_id"),
+                    "label": template.get("label"),
+                    "question_type": template.get("question_type"),
+                    "prompt_template": template.get("prompt_template"),
+                    "required_fields": (template.get("required_fields") or [])[:6],
+                    "abstain_guidance": template.get("abstain_guidance"),
+                    "notes": (template.get("notes") or [])[:3],
+                }
+            )
+
+        worker_comparison = workspace.get("worker_comparison")
+        if not isinstance(worker_comparison, dict):
+            worker_comparison = {}
+
+        abstain_state = workspace.get("abstain_state")
+        if not isinstance(abstain_state, dict):
+            abstain_state = {}
+
+        evaluation_results = workspace.get("evaluation_results")
+        if not isinstance(evaluation_results, dict):
+            evaluation_results = {}
+
+        truthfulness_surface = workspace.get("truthfulness_surface")
+        if not isinstance(truthfulness_surface, dict):
+            truthfulness_surface = {}
+
+        forecast_answer_summary = {
+            "answer_id": latest_answer.get("answer_id"),
+            "answer_type": latest_answer.get("answer_type"),
+            "summary": latest_answer.get("summary"),
+            "confidence_semantics": latest_answer.get("confidence_semantics"),
+            "created_at": latest_answer.get("created_at"),
+            "prediction_entry_ids": (latest_answer.get("prediction_entry_ids") or [])[:4],
+            "worker_ids": (latest_answer.get("worker_ids") or [])[:4],
+            "answer_payload": {
+                "abstain": latest_answer_payload.get("abstain"),
+                "abstain_reason": latest_answer_payload.get("abstain_reason"),
+                "best_estimate": latest_answer_payload.get("best_estimate"),
+                "counterevidence": (latest_answer_payload.get("counterevidence") or [])[:4],
+                "assumption_summary": latest_answer_payload.get("assumption_summary"),
+                "uncertainty_decomposition": latest_answer_payload.get(
+                    "uncertainty_decomposition"
+                ),
+                "evaluation_summary": latest_answer_payload.get("evaluation_summary"),
+                "confidence_basis": latest_answer_payload.get("confidence_basis"),
+                "simulation_context": latest_answer_payload.get("simulation_context"),
+            },
+        }
+
+        return {
+            "forecast_question": {
+                "forecast_id": forecast_question.get("forecast_id"),
+                "title": forecast_question.get("title"),
+                "question_text": forecast_question.get("question_text"),
+                "question_type": forecast_question.get("question_type"),
+                "horizon": forecast_question.get("horizon"),
+                "issue_timestamp": forecast_question.get("issue_timestamp"),
+                "owner": forecast_question.get("owner"),
+                "source": forecast_question.get("source"),
+                "abstention_conditions": (forecast_question.get("abstention_conditions") or [])[:4],
+                "supported_question_templates": supported_question_templates,
+            },
+            "forecast_workspace_status": workspace.get("forecast_workspace_status"),
+            "evidence_bundle": {
+                "bundle_id": evidence_bundle.get("bundle_id"),
+                "status": evidence_bundle.get("status"),
+                "title": evidence_bundle.get("title"),
+                "summary": evidence_bundle.get("summary"),
+                "boundary_note": evidence_bundle.get("boundary_note"),
+                "quality_summary": evidence_bundle.get("quality_summary"),
+                "retrieval_quality": evidence_bundle.get("retrieval_quality"),
+                "freshness_summary": evidence_bundle.get("freshness_summary"),
+                "relevance_summary": evidence_bundle.get("relevance_summary"),
+                "conflict_summary": evidence_bundle.get("conflict_summary"),
+                "missing_evidence_markers": (evidence_bundle.get("missing_evidence_markers") or [])[:4],
+                "uncertainty_summary": evidence_bundle.get("uncertainty_summary"),
+                "source_entries": (evidence_bundle.get("source_entries") or evidence_bundle.get("entries") or [])[:5],
+                "provider_snapshots": (evidence_bundle.get("provider_snapshots") or evidence_bundle.get("providers") or [])[:5],
+            },
+            "prediction_ledger": {
+                "final_resolution_state": prediction_ledger.get("final_resolution_state"),
+                "resolved_at": prediction_ledger.get("resolved_at"),
+                "resolution_note": prediction_ledger.get("resolution_note"),
+                "entry_count": len(prediction_ledger.get("entries") or []),
+                "worker_output_count": len(prediction_ledger.get("worker_outputs") or []),
+                "resolution_history_count": len(prediction_ledger.get("resolution_history") or []),
+                "entries": (prediction_ledger.get("entries") or [])[:5],
+                "worker_outputs": (prediction_ledger.get("worker_outputs") or [])[:5],
+                "resolution_history": (prediction_ledger.get("resolution_history") or [])[:5],
+            },
+            "evaluation_results": {
+                "status": evaluation_results.get("status"),
+                "case_count": evaluation_results.get("case_count"),
+                "resolved_case_count": evaluation_results.get("resolved_case_count"),
+                "pending_case_count": evaluation_results.get("pending_case_count"),
+                "cases": (evaluation_results.get("cases") or [])[:5],
+            },
+            "abstain_state": {
+                "abstain": abstain_state.get("abstain"),
+                "abstain_reason": abstain_state.get("abstain_reason"),
+                "summary": abstain_state.get("summary"),
+            },
+            "forecast_answer": forecast_answer_summary,
+            "worker_comparison": {
+                "worker_count": worker_comparison.get("worker_count"),
+                "worker_kinds": (worker_comparison.get("worker_kinds") or [])[:5],
+                "worker_contribution_trace": (worker_comparison.get("worker_contribution_trace") or [])[:5],
+                "abstain": worker_comparison.get("abstain"),
+                "abstain_reason": worker_comparison.get("abstain_reason"),
+                "best_estimate": worker_comparison.get("best_estimate"),
+                "simulation_context": worker_comparison.get("simulation_context"),
+            },
+            "truthfulness_surface": truthfulness_surface,
+        }
+
+    @classmethod
     def _build_prompt_safe_probabilistic_context(
         cls,
         probabilistic_context: Optional[Dict[str, Any]],
@@ -1067,6 +1223,7 @@ class ReportAgent:
             "confidence_status": context.get("confidence_status"),
             "calibration_provenance": context.get("calibration_provenance"),
             "quality_summary": context.get("quality_summary"),
+            "forecast_workspace": cls._build_prompt_safe_forecast_workspace_context(context),
             "top_outcomes": (context.get("top_outcomes") or [])[:3],
             "scenario_families": (context.get("scenario_families") or [])[:2],
             "selected_cluster": context.get("selected_cluster"),
@@ -1404,12 +1561,12 @@ class ReportAgent:
             logger.error(f"Outline planning failed: {str(e)}")
             # Return a default outline with three sections as a fallback.
             return ReportOutline(
-                title="Future Forecast Report",
-                summary="Future trend and risk analysis based on the simulation forecast",
+                title="Simulation Scenario Report",
+                summary="Observed scenario dynamics and possible risks from the simulation run",
                 sections=[
-                    ReportSection(title="Forecast Scenarios and Key Findings"),
-                    ReportSection(title="Population Behavior Forecast Analysis"),
-                    ReportSection(title="Trend Outlook and Risk Alerts")
+                    ReportSection(title="Scenario Dynamics and Key Findings"),
+                    ReportSection(title="Group Responses Within the Simulation"),
+                    ReportSection(title="Observed Risks and Open Questions")
                 ]
             )
     
@@ -1782,172 +1939,186 @@ class ReportAgent:
             status=ReportStatus.PENDING,
             created_at=datetime.now().isoformat()
         )
-        
+
         # Titles of completed sections for progress tracking.
         completed_section_titles = []
-        
+        phase_timing = PhaseTimingRecorder(
+            artifact_path=os.path.join(
+                ReportManager._get_report_folder(report_id),
+                "report_phase_timings.json",
+            ),
+            scope_kind="report",
+            scope_id=report_id,
+        )
+
         try:
-            # Initialization: create the report folder and save the initial state.
-            ReportManager._ensure_report_folder(report_id)
-            
-            # Initialize the structured logger.
-            self.report_logger = ReportLogger(report_id)
-            self.report_logger.log_start(
-                simulation_id=self.simulation_id,
-                graph_id=self.graph_id,
-                simulation_requirement=self.simulation_requirement
-            )
-            
-            # Initialize the console logger.
-            self.console_logger = ReportConsoleLogger(report_id)
-            
-            ReportManager.update_progress(
-                report_id, "pending", 0, "Initializing report...",
-                completed_sections=[]
-            )
-            ReportManager.save_report(report)
-            
-            # Stage 1: plan the outline.
-            report.status = ReportStatus.PLANNING
-            ReportManager.update_progress(
-                report_id, "planning", 5, "Starting report outline planning...",
-                completed_sections=[]
-            )
-            
-            # Record the start of planning.
-            self.report_logger.log_planning_start()
-            
-            if progress_callback:
-                progress_callback("planning", 0, "Starting report outline planning...")
-            
-            outline = self.plan_outline(
-                progress_callback=lambda stage, prog, msg: 
-                    progress_callback(stage, prog // 5, msg) if progress_callback else None
-            )
-            report.outline = outline
-            
-            # Record planning completion.
-            self.report_logger.log_planning_complete(outline.to_dict())
-            
-            # Save the outline to disk.
-            ReportManager.save_outline(report_id, outline)
-            ReportManager.update_progress(
-                report_id, "planning", 15, f"Outline planning completed: {len(outline.sections)} sections",
-                completed_sections=[]
-            )
-            ReportManager.save_report(report)
-            
-            logger.info(f"Outline saved to file: {report_id}/outline.json")
-            
-            # Stage 2: generate the report section by section and save each section immediately.
-            report.status = ReportStatus.GENERATING
-            
-            total_sections = len(outline.sections)
-            generated_sections = []  # Preserve generated content for later section context.
-            
-            for i, section in enumerate(outline.sections):
-                section_num = i + 1
-                base_progress = 20 + int((i / total_sections) * 70)
+            with phase_timing.measure_phase(
+                "report_synthesis",
+                metadata={"simulation_id": self.simulation_id},
+            ) as phase_metadata:
+                # Initialization: create the report folder and save the initial state.
+                ReportManager._ensure_report_folder(report_id)
                 
-                # Update progress.
+                # Initialize the structured logger.
+                self.report_logger = ReportLogger(report_id)
+                self.report_logger.log_start(
+                    simulation_id=self.simulation_id,
+                    graph_id=self.graph_id,
+                    simulation_requirement=self.simulation_requirement
+                )
+                
+                # Initialize the console logger.
+                self.console_logger = ReportConsoleLogger(report_id)
+                
                 ReportManager.update_progress(
-                    report_id, "generating", base_progress,
-                    f"Generating section: {section.title} ({section_num}/{total_sections})",
-                    current_section=section.title,
+                    report_id, "pending", 0, "Initializing report...",
+                    completed_sections=[]
+                )
+                ReportManager.save_report(report)
+                
+                # Stage 1: plan the outline.
+                report.status = ReportStatus.PLANNING
+                ReportManager.update_progress(
+                    report_id, "planning", 5, "Starting report outline planning...",
+                    completed_sections=[]
+                )
+                
+                # Record the start of planning.
+                self.report_logger.log_planning_start()
+                
+                if progress_callback:
+                    progress_callback("planning", 0, "Starting report outline planning...")
+                
+                outline = self.plan_outline(
+                    progress_callback=lambda stage, prog, msg: 
+                        progress_callback(stage, prog // 5, msg) if progress_callback else None
+                )
+                report.outline = outline
+                phase_metadata["section_count"] = len(outline.sections)
+                
+                # Record planning completion.
+                self.report_logger.log_planning_complete(outline.to_dict())
+                
+                # Save the outline to disk.
+                ReportManager.save_outline(report_id, outline)
+                ReportManager.update_progress(
+                    report_id, "planning", 15, f"Outline planning completed: {len(outline.sections)} sections",
+                    completed_sections=[]
+                )
+                ReportManager.save_report(report)
+                
+                logger.info(f"Outline saved to file: {report_id}/outline.json")
+                
+                # Stage 2: generate the report section by section and save each section immediately.
+                report.status = ReportStatus.GENERATING
+                
+                total_sections = len(outline.sections)
+                generated_sections = []  # Preserve generated content for later section context.
+                
+                for i, section in enumerate(outline.sections):
+                    section_num = i + 1
+                    base_progress = 20 + int((i / total_sections) * 70)
+                    
+                    # Update progress.
+                    ReportManager.update_progress(
+                        report_id, "generating", base_progress,
+                        f"Generating section: {section.title} ({section_num}/{total_sections})",
+                        current_section=section.title,
+                        completed_sections=completed_section_titles
+                    )
+                    
+                    if progress_callback:
+                        progress_callback(
+                            "generating", 
+                            base_progress, 
+                            f"Generating section: {section.title} ({section_num}/{total_sections})"
+                        )
+                    
+                    # Generate the main section content.
+                    section_content = self._generate_section_react(
+                        section=section,
+                        outline=outline,
+                        previous_sections=generated_sections,
+                        progress_callback=lambda stage, prog, msg:
+                            progress_callback(
+                                stage, 
+                                base_progress + int(prog * 0.7 / total_sections),
+                                msg
+                            ) if progress_callback else None,
+                        section_index=section_num
+                    )
+                    
+                    section.content = section_content
+                    generated_sections.append(f"## {section.title}\n\n{section_content}")
+
+                    # Save the section.
+                    ReportManager.save_section(report_id, section_num, section)
+                    completed_section_titles.append(section.title)
+
+                    # Record section completion.
+                    full_section_content = f"## {section.title}\n\n{section_content}"
+
+                    if self.report_logger:
+                        self.report_logger.log_section_full_complete(
+                            section_title=section.title,
+                            section_index=section_num,
+                            full_content=full_section_content.strip()
+                        )
+
+                    logger.info(f"Section saved: {report_id}/section_{section_num:02d}.md")
+                    
+                    # Update progress.
+                    ReportManager.update_progress(
+                        report_id, "generating", 
+                        base_progress + int(70 / total_sections),
+                        f"Section completed: {section.title}",
+                        current_section=None,
+                        completed_sections=completed_section_titles
+                    )
+                
+                # Stage 3: assemble the full report.
+                if progress_callback:
+                    progress_callback("generating", 95, "Assembling the full report...")
+                
+                ReportManager.update_progress(
+                    report_id, "generating", 95, "Assembling the full report...",
+                    completed_sections=completed_section_titles
+                )
+                
+                # Assemble the full report via ReportManager.
+                report.markdown_content = ReportManager.assemble_full_report(report_id, outline)
+                report.status = ReportStatus.COMPLETED
+                report.completed_at = datetime.now().isoformat()
+                
+                # Compute total elapsed time.
+                total_time_seconds = (datetime.now() - start_time).total_seconds()
+                phase_metadata["total_time_seconds"] = round(total_time_seconds, 2)
+                
+                # Record report completion.
+                if self.report_logger:
+                    self.report_logger.log_report_complete(
+                        total_sections=total_sections,
+                        total_time_seconds=total_time_seconds
+                    )
+                
+                # Save the final report.
+                ReportManager.save_report(report)
+                ReportManager.update_progress(
+                    report_id, "completed", 100, "Report generation completed",
                     completed_sections=completed_section_titles
                 )
                 
                 if progress_callback:
-                    progress_callback(
-                        "generating", 
-                        base_progress, 
-                        f"Generating section: {section.title} ({section_num}/{total_sections})"
-                    )
+                    progress_callback("completed", 100, "Report generation completed")
                 
-                # Generate the main section content.
-                section_content = self._generate_section_react(
-                    section=section,
-                    outline=outline,
-                    previous_sections=generated_sections,
-                    progress_callback=lambda stage, prog, msg:
-                        progress_callback(
-                            stage, 
-                            base_progress + int(prog * 0.7 / total_sections),
-                            msg
-                        ) if progress_callback else None,
-                    section_index=section_num
-                )
+                logger.info(f"Report generation completed: {report_id}")
                 
-                section.content = section_content
-                generated_sections.append(f"## {section.title}\n\n{section_content}")
-
-                # Save the section.
-                ReportManager.save_section(report_id, section_num, section)
-                completed_section_titles.append(section.title)
-
-                # Record section completion.
-                full_section_content = f"## {section.title}\n\n{section_content}"
-
-                if self.report_logger:
-                    self.report_logger.log_section_full_complete(
-                        section_title=section.title,
-                        section_index=section_num,
-                        full_content=full_section_content.strip()
-                    )
-
-                logger.info(f"Section saved: {report_id}/section_{section_num:02d}.md")
+                # Close the console logger.
+                if self.console_logger:
+                    self.console_logger.close()
+                    self.console_logger = None
                 
-                # Update progress.
-                ReportManager.update_progress(
-                    report_id, "generating", 
-                    base_progress + int(70 / total_sections),
-                    f"Section completed: {section.title}",
-                    current_section=None,
-                    completed_sections=completed_section_titles
-                )
-            
-            # Stage 3: assemble the full report.
-            if progress_callback:
-                progress_callback("generating", 95, "Assembling the full report...")
-            
-            ReportManager.update_progress(
-                report_id, "generating", 95, "Assembling the full report...",
-                completed_sections=completed_section_titles
-            )
-            
-            # Assemble the full report via ReportManager.
-            report.markdown_content = ReportManager.assemble_full_report(report_id, outline)
-            report.status = ReportStatus.COMPLETED
-            report.completed_at = datetime.now().isoformat()
-            
-            # Compute total elapsed time.
-            total_time_seconds = (datetime.now() - start_time).total_seconds()
-            
-            # Record report completion.
-            if self.report_logger:
-                self.report_logger.log_report_complete(
-                    total_sections=total_sections,
-                    total_time_seconds=total_time_seconds
-                )
-            
-            # Save the final report.
-            ReportManager.save_report(report)
-            ReportManager.update_progress(
-                report_id, "completed", 100, "Report generation completed",
-                completed_sections=completed_section_titles
-            )
-            
-            if progress_callback:
-                progress_callback("completed", 100, "Report generation completed")
-            
-            logger.info(f"Report generation completed: {report_id}")
-            
-            # Close the console logger.
-            if self.console_logger:
-                self.console_logger.close()
-                self.console_logger = None
-            
-            return report
+                return report
             
         except Exception as e:
             logger.error(f"Report generation failed: {str(e)}")

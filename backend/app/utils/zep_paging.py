@@ -173,7 +173,7 @@ def fetch_all_nodes(
     client: Zep,
     graph_id: str,
     page_size: int = _DEFAULT_PAGE_SIZE,
-    max_items: int = _MAX_NODES,
+    max_items: int | None = _MAX_NODES,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     retry_delay: float = _DEFAULT_RETRY_DELAY,
 ) -> list[Any]:
@@ -213,6 +213,7 @@ def fetch_all_edges(
     client: Zep,
     graph_id: str,
     page_size: int = _DEFAULT_PAGE_SIZE,
+    max_items: int | None = None,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     retry_delay: float = _DEFAULT_RETRY_DELAY,
 ) -> list[Any]:
@@ -221,6 +222,7 @@ def fetch_all_edges(
         client,
         graph_id,
         page_size=page_size,
+        max_items=max_items,
         max_retries=max_retries,
         retry_delay=retry_delay,
     ).items

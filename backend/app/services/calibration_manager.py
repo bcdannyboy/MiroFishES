@@ -15,6 +15,7 @@ from typing import Any, Dict, List
 
 from ..config import Config
 from ..models.probabilistic import (
+    CALIBRATION_SCHEMA_VERSION,
     BacktestSummary,
     CalibrationReadiness,
     CalibrationSummary,
@@ -81,7 +82,21 @@ class CalibrationManager:
             raise ValueError(
                 f"Calibration summary does not exist for simulation {simulation_id}, ensemble {ensemble_id}"
             )
-        return self._read_json(summary_path)
+        payload = self._read_json(summary_path)
+        if not isinstance(payload, dict):
+            raise ValueError("Calibration summary must be a JSON object")
+
+        summary = CalibrationSummary.from_dict(payload)
+        normalized_ensemble_id = self._normalize_ensemble_id(ensemble_id)
+        if summary.artifact_type != "calibration_summary":
+            raise ValueError("Invalid calibration summary artifact_type")
+        if summary.schema_version != CALIBRATION_SCHEMA_VERSION:
+            raise ValueError("Invalid calibration summary schema_version")
+        if summary.simulation_id != simulation_id:
+            raise ValueError("Calibration summary simulation_id does not match request")
+        if summary.ensemble_id != normalized_ensemble_id:
+            raise ValueError("Calibration summary ensemble_id does not match request")
+        return summary.to_dict()
 
     def _build_calibration_summary(
         self,
@@ -166,11 +181,54 @@ class CalibrationManager:
             simulation_id=backtest.simulation_id,
             ensemble_id=backtest.ensemble_id,
             metric_calibrations=metric_calibrations,
+            evaluation_provenance={
+                "status": backtest.evaluation_summary.get(
+                    "coverage_status", "unknown"
+                ),
+                "case_count": backtest.evaluation_summary.get("case_count", 0),
+                "scored_case_count": backtest.evaluation_summary.get(
+                    "scored_case_count", 0
+                ),
+                "split_counts": dict(
+                    backtest.evaluation_summary.get("split_counts", {})
+                ),
+                "question_classes": list(
+                    backtest.evaluation_summary.get("question_classes", [])
+                ),
+                "comparable_question_classes": list(
+                    backtest.evaluation_summary.get(
+                        "comparable_question_classes", []
+                    )
+                ),
+                "window_count": backtest.evaluation_summary.get("window_count", 0),
+                "window_ids": list(
+                    backtest.evaluation_summary.get("window_ids", [])
+                ),
+                "benchmark_ids": list(
+                    backtest.evaluation_summary.get("benchmark_ids", [])
+                ),
+                "benchmark_count": len(backtest.benchmark_comparisons),
+                "source_artifacts": {
+                    "backtest_summary": self.BACKTEST_SUMMARY_FILENAME,
+                },
+            },
             quality_summary={
                 "status": "partial" if not_ready_metric_ids else "complete",
+                "supported_metric_ids": sorted(metric_calibrations.keys()),
                 "ready_metric_ids": ready_metric_ids,
                 "not_ready_metric_ids": not_ready_metric_ids,
                 "warnings": warnings,
+                "source_artifacts": {
+                    "backtest_summary": self.BACKTEST_SUMMARY_FILENAME,
+                },
+                "provenance": {
+                    "status": "valid",
+                    "backtest_artifact_type": backtest.artifact_type,
+                    "backtest_schema_version": backtest.schema_version,
+                    "backtest_generator_version": backtest.generator_version,
+                    "backtest_simulation_id": backtest.simulation_id,
+                    "backtest_ensemble_id": backtest.ensemble_id,
+                },
             },
         )
 

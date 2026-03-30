@@ -48,6 +48,7 @@ class Config:
     # OASIS simulation settings.
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
+    FORECAST_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/forecasts')
     PROBABILISTIC_PREPARE_ENABLED = (
         os.environ.get('PROBABILISTIC_PREPARE_ENABLED', 'false').lower() == 'true'
     )

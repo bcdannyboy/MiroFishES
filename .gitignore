@@ -46,6 +46,10 @@ test-results/
 .playwright-cli/
 output/playwright/report/
 output/playwright/live-operator/operator-pass-*.json
+output/playwright/live-operator/report-pass-*.json
+output/playwright/live-operator/report-latest.json
+output/playwright/fixtures/probabilistic-runtime-categorical.json
+output/playwright/fixtures/probabilistic-runtime-numeric.json
 .worktrees/
 
 # Cursor

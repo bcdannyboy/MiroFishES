@@ -68,7 +68,8 @@ const resolvePythonLauncher = () => {
 
 const seedFixture = ({
   fixtureName,
-  seedCompletedReport = false
+  seedCompletedReport = false,
+  hybridAnswerVariant = 'binary'
 } = {}) => {
   fs.mkdirSync(fixtureOutputDir, { recursive: true })
   const outputFile = path.join(fixtureOutputDir, `${fixtureName}.json`)
@@ -88,7 +89,13 @@ const seedFixture = ({
   ]
 
   if (seedCompletedReport) {
-    args.push('--seed-completed-report', '--report-run-id', '0001')
+    args.push(
+      '--seed-completed-report',
+      '--report-run-id',
+      '0001',
+      '--hybrid-answer-variant',
+      hybridAnswerVariant
+    )
   }
 
   execFileSync(launcher.command, [...launcher.baseArgs, ...args], {
@@ -108,6 +115,8 @@ const formatHistorySimulationId = (simulationId) => {
 test.describe('probabilistic runtime smoke', () => {
   let fixture
   let alternateFixture
+  let categoricalFixture
+  let numericFixture
 
   test.beforeAll(() => {
     fixture = seedFixture({
@@ -117,6 +126,16 @@ test.describe('probabilistic runtime smoke', () => {
     alternateFixture = seedFixture({
       fixtureName: 'probabilistic-runtime-secondary',
       seedCompletedReport: true
+    })
+    categoricalFixture = seedFixture({
+      fixtureName: 'probabilistic-runtime-categorical',
+      seedCompletedReport: true,
+      hybridAnswerVariant: 'categorical'
+    })
+    numericFixture = seedFixture({
+      fixtureName: 'probabilistic-runtime-numeric',
+      seedCompletedReport: true,
+      hybridAnswerVariant: 'numeric'
     })
   })
 
@@ -137,11 +156,10 @@ test.describe('probabilistic runtime smoke', () => {
     await page.goto(`/simulation/${fixture.simulation_id}/start?mode=probabilistic`)
 
     await expect(
-      page.locator('.probabilistic-error').filter({
-        hasText:
-          'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and recreate the stored run shell.'
-      })
-    ).toBeVisible()
+      page.locator('.probabilistic-error')
+    ).toContainText(
+      'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and create or reopen the stored run shell.'
+    )
   })
 
   test('Step 3 loads a stored probabilistic run shell and observed analytics', async ({ page }) => {
@@ -168,30 +186,58 @@ test.describe('probabilistic runtime smoke', () => {
     ).toBeVisible()
   })
 
-  test('Step 4 shows the observed empirical report addendum', async ({ page }) => {
+  test('Step 4 shows the scoped simulation evidence addendum', async ({ page }) => {
     await page.goto(fixture.report.report_route)
 
     await expect(page.getByTestId('probabilistic-report-context')).toBeVisible()
-    await expect(page.getByText('Observed Forecast Context')).toBeVisible()
-    await expect(page.getByText('Empirical report addendum')).toBeVisible()
-    await expect(page.getByText('Upstream Grounding')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-hybrid-status')).toBeVisible()
     await expect(page.getByTestId('probabilistic-compare-workspace')).toBeVisible()
     await page.getByTestId('probabilistic-compare-option').first().click()
     await expect(page.getByTestId('probabilistic-compare-handoff')).toBeVisible()
     await expect(page.getByTestId('probabilistic-compare-scope-identity')).toHaveCount(2)
   })
 
-  test('Step 5 shows scoped probabilistic report-agent support explicitly bounded', async ({ page }) => {
+  test('Step 5 shows scoped report-agent evidence support explicitly bounded', async ({ page }) => {
     await page.goto(fixture.report.interaction_route)
 
     await expect(page.getByTestId('probabilistic-step5-banner')).toBeVisible()
     await expect(
-      page.getByText('Scoped probabilistic context available')
+      page.getByText(/report evidence available$/i)
     ).toBeVisible()
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace').getByText('Hybrid Forecast Workspace')).toBeVisible()
     await expect(page.getByTestId('probabilistic-step5-scope-control')).toBeVisible()
     await expect(
       page.getByTestId('probabilistic-step5-evidence').getByText(/Grounding/i)
     ).toBeVisible()
+  })
+
+  test('Step 4 and Step 5 surface categorical hybrid answers without collapsing them into binary-only copy', async ({ page }) => {
+    await page.goto(categoricalFixture.report.report_route)
+
+    await expect(page.getByTestId('probabilistic-report-context')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-report-context')).toContainText('win (62%)')
+
+    await page.goto(categoricalFixture.report.interaction_route)
+
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Type: categorical.')
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Best estimate win (62%).')
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Simulation as supporting scenario analysis')
+  })
+
+  test('Step 4 and Step 5 surface numeric hybrid answers with interval-aware formatting', async ({ page }) => {
+    await page.goto(numericFixture.report.report_route)
+
+    await expect(page.getByTestId('probabilistic-report-context')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-report-context')).toContainText('42 usd_millions (80% interval 36 to 50)')
+
+    await page.goto(numericFixture.report.interaction_route)
+
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Type: numeric.')
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Best estimate 42 usd_millions (80% interval 36 to 50).')
+    await expect(page.getByTestId('probabilistic-step5-hybrid-workspace')).toContainText('Simulation as supporting scenario analysis')
   })
 
   test('Step 4 compare handoff opens Step 5 with a selected bounded compare', async ({ page }) => {

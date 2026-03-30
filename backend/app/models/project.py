@@ -145,6 +145,20 @@ class ProjectManager:
         return os.path.join(
             cls._get_project_dir(project_id), 'graph_build_summary.json'
         )
+
+    @classmethod
+    def _get_graph_phase_timings_path(cls, project_id: str) -> str:
+        """Return the graph phase-timing artifact path for the project."""
+        return os.path.join(
+            cls._get_project_dir(project_id), 'graph_phase_timings.json'
+        )
+
+    @classmethod
+    def _get_graph_entity_index_path(cls, project_id: str) -> str:
+        """Return the graph entity-index artifact path for the project."""
+        return os.path.join(
+            cls._get_project_dir(project_id), 'graph_entity_index.json'
+        )
     
     @classmethod
     def create_project(cls, name: str = "Unnamed Project") -> Project:
@@ -331,6 +345,40 @@ class ProjectManager:
             os.remove(path)
 
     @classmethod
+    def save_graph_phase_timings(cls, project_id: str, payload: Dict[str, Any]) -> None:
+        """Persist the graph phase timing artifact."""
+        cls._write_json(cls._get_graph_phase_timings_path(project_id), payload)
+
+    @classmethod
+    def get_graph_phase_timings(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load the graph phase timing artifact when present."""
+        return cls._read_json_if_exists(cls._get_graph_phase_timings_path(project_id))
+
+    @classmethod
+    def delete_graph_phase_timings(cls, project_id: str) -> None:
+        """Remove a stale graph timing artifact when the graph scope resets."""
+        path = cls._get_graph_phase_timings_path(project_id)
+        if os.path.exists(path):
+            os.remove(path)
+
+    @classmethod
+    def save_graph_entity_index(cls, project_id: str, payload: Dict[str, Any]) -> None:
+        """Persist the graph entity index artifact."""
+        cls._write_json(cls._get_graph_entity_index_path(project_id), payload)
+
+    @classmethod
+    def get_graph_entity_index(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load the graph entity index artifact when present."""
+        return cls._read_json_if_exists(cls._get_graph_entity_index_path(project_id))
+
+    @classmethod
+    def delete_graph_entity_index(cls, project_id: str) -> None:
+        """Remove a stale graph entity index artifact when the graph scope resets."""
+        path = cls._get_graph_entity_index_path(project_id)
+        if os.path.exists(path):
+            os.remove(path)
+
+    @classmethod
     def describe_grounding_artifacts(cls, project_id: str) -> Dict[str, Dict[str, Any]]:
         """Return compact artifact metadata without inlining full grounding payloads."""
         project_dir = cls._get_project_dir(project_id)
@@ -344,6 +392,16 @@ class ProjectManager:
                 cls._get_graph_build_summary_path(project_id),
                 project_dir=project_dir,
                 artifact_name="graph_build_summary",
+            ),
+            "graph_phase_timings": cls._describe_json_artifact(
+                cls._get_graph_phase_timings_path(project_id),
+                project_dir=project_dir,
+                artifact_name="graph_phase_timings",
+            ),
+            "graph_entity_index": cls._describe_json_artifact(
+                cls._get_graph_entity_index_path(project_id),
+                project_dir=project_dir,
+                artifact_name="graph_entity_index",
             ),
         }
 

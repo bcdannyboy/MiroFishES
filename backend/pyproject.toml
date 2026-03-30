@@ -1,7 +1,7 @@
 [project]
 name = "mirofish-backend"
 version = "0.1.0"
-description = "MiroFishES - a concise, general-purpose collective intelligence engine for forecasting anything"
+description = "MiroFishES - a bounded forecasting and simulation workbench with explicit evidence limits"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0" }
 authors = [

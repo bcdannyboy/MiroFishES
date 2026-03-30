@@ -8,6 +8,7 @@ import uuid
 import time
 import copy
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
@@ -60,6 +61,11 @@ class GraphBuilderService:
     DEFAULT_PREVIEW_MAX_NODES = 180
     DEFAULT_PREVIEW_MAX_EDGES = 320
     PREVIEW_CACHE_TTL_SECONDS = 10
+    DEFAULT_BATCH_SIZE = 3
+    MAX_BATCH_SIZE = 16
+    MAX_INFLIGHT_BATCHES = 4
+    DEFAULT_WAIT_POLL_INTERVAL_SECONDS = 1.0
+    MAX_WAIT_POLL_INTERVAL_SECONDS = 5.0
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or Config.ZEP_API_KEY
@@ -76,7 +82,7 @@ class GraphBuilderService:
         graph_name: str = "MiroFishES Graph",
         chunk_size: int = 500,
         chunk_overlap: int = 50,
-        batch_size: int = 3
+        batch_size: Optional[int] = None
     ) -> str:
         """
         Build a graph asynchronously.
@@ -174,6 +180,7 @@ class GraphBuilderService:
             )
             
             self._wait_for_episodes(
+                graph_id,
                 episode_uuids,
                 lambda msg, prog: self.task_manager.update_task(
                     task_id,
@@ -308,57 +315,110 @@ class GraphBuilderService:
         self,
         graph_id: str,
         chunks: List[str],
-        batch_size: int = 3,
-        progress_callback: Optional[Callable] = None
+        batch_size: Optional[int] = None,
+        progress_callback: Optional[Callable] = None,
+        max_inflight_batches: Optional[int] = None,
     ) -> List[str]:
         """Add text to the graph in batches and return all episode UUIDs."""
-        episode_uuids = []
         total_chunks = len(chunks)
-        
-        for i in range(0, total_chunks, batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            batch_num = i // batch_size + 1
-            total_batches = (total_chunks + batch_size - 1) // batch_size
-            
-            if progress_callback:
-                progress = (i + len(batch_chunks)) / total_chunks
-                progress_callback(
-                    f"Sending batch {batch_num}/{total_batches} ({len(batch_chunks)} chunks)...",
-                    progress
-                )
-            
-            # Build episode payloads
-            episodes = [
-                EpisodeData(data=chunk, type="text")
-                for chunk in batch_chunks
-            ]
-            
-            # Send to Zep
-            try:
-                batch_result = self.client.graph.add_batch(
+        if total_chunks == 0:
+            return []
+
+        batch_plan = self._resolve_batch_plan(total_chunks, requested_batch_size=batch_size)
+        effective_batch_size = batch_plan["batch_size"]
+        effective_max_inflight = min(
+            max_inflight_batches or batch_plan["max_inflight_batches"],
+            self.MAX_INFLIGHT_BATCHES,
+        )
+        batches = [
+            chunks[index:index + effective_batch_size]
+            for index in range(0, total_chunks, effective_batch_size)
+        ]
+        total_batches = len(batches)
+        episode_uuids_by_batch: Dict[int, List[str]] = {}
+        completed_batches = 0
+
+        with ThreadPoolExecutor(max_workers=effective_max_inflight) as executor:
+            future_map = {
+                executor.submit(
+                    self._send_text_batch,
                     graph_id=graph_id,
-                    episodes=episodes
-                )
-                
-                # Collect returned episode UUIDs
-                if batch_result and isinstance(batch_result, list):
-                    for ep in batch_result:
-                        ep_uuid = getattr(ep, 'uuid_', None) or getattr(ep, 'uuid', None)
-                        if ep_uuid:
-                            episode_uuids.append(ep_uuid)
-                
-                # Avoid sending requests too quickly
-                time.sleep(1)
-                
-            except Exception as e:
+                    batch_index=batch_index,
+                    batch_chunks=batch_chunks,
+                ): batch_index
+                for batch_index, batch_chunks in enumerate(batches, start=1)
+            }
+            for future in as_completed(future_map):
+                batch_index = future_map[future]
+                try:
+                    episode_uuids_by_batch[batch_index] = future.result()
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"Batch {batch_index} failed to send: {str(e)}", 0)
+                    raise
+                completed_batches += 1
                 if progress_callback:
-                    progress_callback(f"Batch {batch_num} failed to send: {str(e)}", 0)
-                raise
-        
+                    progress_callback(
+                        (
+                            f"Sent batch {batch_index}/{total_batches} "
+                            f"({len(batches[batch_index - 1])} chunks)..."
+                        ),
+                        completed_batches / total_batches,
+                    )
+
+        episode_uuids: List[str] = []
+        for batch_index in range(1, total_batches + 1):
+            episode_uuids.extend(episode_uuids_by_batch.get(batch_index, []))
+        return episode_uuids
+
+    def _resolve_batch_plan(
+        self,
+        total_chunks: int,
+        *,
+        requested_batch_size: Optional[int] = None,
+    ) -> Dict[str, int]:
+        """Choose one bounded batch plan based on the amount of work."""
+        if total_chunks <= 0:
+            return {"batch_size": self.DEFAULT_BATCH_SIZE, "max_inflight_batches": 1}
+
+        if requested_batch_size is not None:
+            return {
+                "batch_size": max(1, min(int(requested_batch_size), self.MAX_BATCH_SIZE)),
+                "max_inflight_batches": min(
+                    self.MAX_INFLIGHT_BATCHES,
+                    max(1, (total_chunks + max(int(requested_batch_size), 1) - 1) // max(int(requested_batch_size), 1)),
+                ),
+            }
+
+        if total_chunks <= 6:
+            return {"batch_size": self.DEFAULT_BATCH_SIZE, "max_inflight_batches": 1}
+        if total_chunks <= 24:
+            return {"batch_size": 6, "max_inflight_batches": 2}
+        if total_chunks <= 80:
+            return {"batch_size": 10, "max_inflight_batches": 3}
+        return {"batch_size": self.MAX_BATCH_SIZE, "max_inflight_batches": self.MAX_INFLIGHT_BATCHES}
+
+    def _send_text_batch(
+        self,
+        *,
+        graph_id: str,
+        batch_index: int,
+        batch_chunks: List[str],
+    ) -> List[str]:
+        """Send one text batch to Zep and return its episode UUIDs."""
+        episodes = [EpisodeData(data=chunk, type="text") for chunk in batch_chunks]
+        batch_result = self.client.graph.add_batch(graph_id=graph_id, episodes=episodes)
+        episode_uuids = []
+        if batch_result and isinstance(batch_result, list):
+            for episode in batch_result:
+                episode_uuid = getattr(episode, 'uuid_', None) or getattr(episode, 'uuid', None)
+                if episode_uuid:
+                    episode_uuids.append(episode_uuid)
         return episode_uuids
     
     def _wait_for_episodes(
         self,
+        graph_id: str,
         episode_uuids: List[str],
         progress_callback: Optional[Callable] = None,
         timeout: int = 600
@@ -373,6 +433,7 @@ class GraphBuilderService:
         pending_episodes = set(episode_uuids)
         completed_count = 0
         total_episodes = len(episode_uuids)
+        poll_interval = self.DEFAULT_WAIT_POLL_INTERVAL_SECONDS
         
         if progress_callback:
             progress_callback(f"Waiting for {total_episodes} text chunks to be processed...", 0)
@@ -385,20 +446,38 @@ class GraphBuilderService:
                         completed_count / total_episodes
                     )
                 break
-            
-            # Check the processing status of each episode
-            for ep_uuid in list(pending_episodes):
-                try:
-                    episode = self.client.graph.episode.get(uuid_=ep_uuid)
-                    is_processed = getattr(episode, 'processed', False)
-                    
-                    if is_processed:
-                        pending_episodes.remove(ep_uuid)
-                        completed_count += 1
-                        
-                except Exception as e:
-                    # Ignore single-query errors and continue
-                    pass
+
+            processed_uuids = set()
+            try:
+                response = self.client.graph.episode.get_by_graph_id(
+                    graph_id,
+                    lastn=total_episodes,
+                )
+                response_episodes = getattr(response, "episodes", None) or []
+                processed_uuids = {
+                    getattr(episode, 'uuid_', None) or getattr(episode, 'uuid', None)
+                    for episode in response_episodes
+                    if getattr(episode, 'processed', False)
+                }
+                processed_uuids.discard(None)
+            except Exception as e:
+                logger.warning(
+                    "Graph-level episode polling failed for graph %s: %s",
+                    graph_id,
+                    e,
+                )
+                processed_uuids = set()
+
+            before_count = len(pending_episodes)
+            pending_episodes -= processed_uuids
+            completed_count = total_episodes - len(pending_episodes)
+            if len(pending_episodes) < before_count:
+                poll_interval = self.DEFAULT_WAIT_POLL_INTERVAL_SECONDS
+            else:
+                poll_interval = min(
+                    poll_interval * 1.5,
+                    self.MAX_WAIT_POLL_INTERVAL_SECONDS,
+                )
             
             elapsed = int(time.time() - start_time)
             if progress_callback:
@@ -408,33 +487,48 @@ class GraphBuilderService:
                 )
             
             if pending_episodes:
-                time.sleep(3)  # Poll every 3 seconds
+                time.sleep(poll_interval)
         
         if progress_callback:
             progress_callback(f"Processing complete: {completed_count}/{total_episodes}", 1.0)
     
     def _get_graph_info(self, graph_id: str) -> GraphInfo:
         """Fetch graph information."""
-        # Fetch nodes with pagination
-        nodes = fetch_all_nodes(self.client, graph_id)
-
-        # Fetch edges with pagination
-        edges = fetch_all_edges(self.client, graph_id)
-
-        # Count entity types
-        entity_types = set()
-        for node in nodes:
-            if node.labels:
-                for label in node.labels:
-                    if label not in ["Entity", "Node"]:
-                        entity_types.add(label)
-
+        snapshot = self.get_graph_snapshot(graph_id)
         return GraphInfo(
             graph_id=graph_id,
-            node_count=len(nodes),
-            edge_count=len(edges),
-            entity_types=list(entity_types)
+            node_count=snapshot["node_count"],
+            edge_count=snapshot["edge_count"],
+            entity_types=snapshot["entity_types"],
         )
+
+    def get_graph_snapshot(self, graph_id: str) -> Dict[str, Any]:
+        """Fetch an exact graph snapshot for build summaries and local indexes."""
+        nodes = fetch_all_nodes(self.client, graph_id, max_items=None)
+        edges = fetch_all_edges(self.client, graph_id, max_items=None)
+        node_map = {
+            getattr(node, "uuid_", None) or getattr(node, "uuid", None): node.name or ""
+            for node in nodes
+        }
+        entity_types = sorted(
+            {
+                label
+                for node in nodes
+                for label in (node.labels or [])
+                if label not in ["Entity", "Node"]
+            }
+        )
+        return {
+            "graph_id": graph_id,
+            "node_count": len(nodes),
+            "edge_count": len(edges),
+            "entity_types": entity_types,
+            "nodes": [self._serialize_node(node, preview=False) for node in nodes],
+            "edges": [
+                self._serialize_edge(edge, node_map=node_map, preview=False)
+                for edge in edges
+            ],
+        }
     
     def _get_graph_data_with_mode(
         self,

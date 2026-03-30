@@ -48,6 +48,141 @@ def _build_service(module):
     return service
 
 
+class _FakeEpisode:
+    def __init__(self, uuid_, processed):
+        self.uuid_ = uuid_
+        self.processed = processed
+
+
+def test_resolve_batch_plan_scales_batch_size_and_caps_concurrency():
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+
+    small = service._resolve_batch_plan(total_chunks=3)
+    medium = service._resolve_batch_plan(total_chunks=24)
+    large = service._resolve_batch_plan(total_chunks=120)
+
+    assert small["batch_size"] == 3
+    assert medium["batch_size"] > small["batch_size"]
+    assert large["batch_size"] >= medium["batch_size"]
+    assert large["batch_size"] <= service.MAX_BATCH_SIZE
+    assert small["max_inflight_batches"] >= 1
+    assert large["max_inflight_batches"] <= service.MAX_INFLIGHT_BATCHES
+
+
+def test_add_text_batches_does_not_use_fixed_post_batch_sleep(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+    add_batch_calls = []
+
+    class _FakeBatchEpisode:
+        def __init__(self, uuid_):
+            self.uuid_ = uuid_
+
+    class _FakeGraph:
+        def add_batch(self, graph_id, episodes):
+            add_batch_calls.append((graph_id, len(episodes)))
+            start = len(add_batch_calls)
+            return [_FakeBatchEpisode(f"ep-{start}-{idx}") for idx, _ in enumerate(episodes)]
+
+    service.client = type("Client", (), {"graph": _FakeGraph()})()
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("fixed sleep should not be used")),
+    )
+
+    episode_uuids = service.add_text_batches(
+        "graph-1",
+        ["a", "b", "c", "d", "e", "f"],
+        batch_size=3,
+    )
+
+    assert len(episode_uuids) == 6
+    assert add_batch_calls == [("graph-1", 3), ("graph-1", 3)]
+
+
+def test_wait_for_episodes_uses_graph_level_polling(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+    get_by_graph_id_calls = []
+
+    class _FakeEpisodeClient:
+        def get(self, uuid_=None):  # pragma: no cover - current implementation should not use this
+            raise AssertionError("episode.get(uuid_=...) should not be used for graph wait")
+
+        def get_by_graph_id(self, graph_id, lastn=None):
+            get_by_graph_id_calls.append((graph_id, lastn))
+            return type(
+                "EpisodeResponse",
+                (),
+                {
+                    "episodes": [
+                        _FakeEpisode("ep-1", True),
+                        _FakeEpisode("ep-2", True),
+                    ]
+                },
+            )()
+
+    service.client = type(
+        "Client",
+        (),
+        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
+    )()
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("graph-level wait should not sleep in this test")),
+    )
+
+    service._wait_for_episodes(
+        "graph-1",
+        ["ep-1", "ep-2"],
+    )
+
+    assert get_by_graph_id_calls == [("graph-1", 2)]
+
+
+def test_get_graph_snapshot_returns_exact_counts_and_entity_types(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+
+    monkeypatch.setattr(
+        module,
+        "fetch_all_nodes",
+        lambda client, graph_id, max_items=None: [
+            _FakeNode("node-1", "Analyst", ["Entity", "Person"], summary="summary"),
+            _FakeNode("node-2", "Desk", ["Entity", "Organization"], summary="summary"),
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_all_edges",
+        lambda client, graph_id, max_items=None: [
+            _FakeEdge(
+                "edge-1",
+                "MENTIONS",
+                "Analyst mentions Desk",
+                "node-1",
+                "node-2",
+            )
+        ],
+        raising=False,
+    )
+
+    snapshot = service.get_graph_snapshot("graph-1")
+
+    assert snapshot["graph_id"] == "graph-1"
+    assert snapshot["node_count"] == 2
+    assert snapshot["edge_count"] == 1
+    assert snapshot["entity_types"] == ["Organization", "Person"]
+    assert snapshot["nodes"][0]["uuid"] == "node-1"
+    assert snapshot["edges"][0]["uuid"] == "edge-1"
+    assert snapshot["edges"][0]["source_node_uuid"] == "node-1"
+    assert snapshot["edges"][0]["target_node_uuid"] == "node-2"
+
+
 def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation(monkeypatch):
     module = importlib.import_module("app.services.graph_builder")
     service = _build_service(module)
@@ -187,4 +322,3 @@ def test_get_graph_data_full_mode_keeps_rich_fields(monkeypatch):
     assert payload["edges"][0]["attributes"] == {"weight": 2}
     assert payload["edges"][0]["valid_at"] == "2026-03-12T09:01:00"
     assert payload["edges"][0]["episodes"] == ["ep-1"]
-

@@ -247,15 +247,15 @@ def test_get_aggregate_summary_supports_binary_and_categorical_metrics(
 
     assert binary_summary["distribution_kind"] == "binary"
     assert binary_summary["sample_count"] == 3
-    assert binary_summary["empirical_probability"] == 2 / 3
+    assert binary_summary["observed_true_share"] == 2 / 3
     assert binary_summary["counts"] == {"false": 1, "true": 2}
     assert binary_summary["dominant_value"] is True
-    assert binary_summary["dominant_probability"] == 2 / 3
+    assert binary_summary["dominant_observed_share"] == 2 / 3
 
     assert categorical_summary["distribution_kind"] == "categorical"
     assert categorical_summary["sample_count"] == 3
     assert categorical_summary["category_counts"] == {"alpha": 2, "beta": 1}
-    assert categorical_summary["category_probabilities"] == {
+    assert categorical_summary["category_observed_shares"] == {
         "alpha": 2 / 3,
         "beta": 1 / 3,
     }
@@ -403,11 +403,11 @@ def test_get_aggregate_summary_ignores_missing_numeric_samples_but_preserves_oth
     completion_window_summary = summary["metric_summaries"]["simulation.observed_completion_window_seconds"]
 
     assert completion_summary["distribution_kind"] == "binary"
-    assert completion_summary["empirical_probability"] == pytest.approx(2 / 3)
+    assert completion_summary["observed_true_share"] == pytest.approx(2 / 3)
     assert platform_summary["distribution_kind"] == "categorical"
     assert platform_summary["category_counts"] == {"reddit": 1, "twitter": 2}
     assert platform_summary["dominant_value"] == "twitter"
-    assert platform_summary["dominant_probability"] == pytest.approx(2 / 3)
+    assert platform_summary["dominant_observed_share"] == pytest.approx(2 / 3)
     assert completion_window_summary["distribution_kind"] == "continuous"
     assert completion_window_summary["sample_count"] == 2
     assert completion_window_summary["missing_sample_count"] == 0
@@ -632,7 +632,7 @@ def test_get_aggregate_summary_preserves_richer_metric_warnings_and_null_samples
     assert transfer_summary["distribution_kind"] == "binary"
     assert transfer_summary["sample_count"] == 2
     assert transfer_summary["null_sample_count"] == 1
-    assert transfer_summary["empirical_probability"] == 1.0
+    assert transfer_summary["observed_true_share"] == 1.0
     assert "undefined_samples_present" in transfer_summary["warnings"]
     assert "insufficient_cross_platform_topic_transfer_evidence" in transfer_summary["warnings"]
 

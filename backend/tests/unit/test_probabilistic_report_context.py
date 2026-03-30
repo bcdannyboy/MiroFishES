@@ -2,6 +2,7 @@ import csv
 import importlib
 import json
 from pathlib import Path
+from typing import List, Optional
 
 
 def _load_manager_module():
@@ -16,9 +17,158 @@ def _load_context_module():
     return importlib.import_module("app.services.probabilistic_report_context")
 
 
+def test_workspace_calibrated_confidence_earned_requires_resolved_backtest_basis():
+    context_module = _load_context_module()
+    assert (
+        context_module.ProbabilisticReportContextBuilder._workspace_calibrated_confidence_earned(
+            latest_answer={"confidence_semantics": "calibrated"},
+            confidence_basis={
+                "status": "available",
+                "resolved_case_count": 0,
+                "benchmark_status": "available",
+                "backtest_status": "not_run",
+            },
+            calibration_summary={"status": "ready"},
+        )
+        is False
+    )
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_backtest_summary(
+    ensemble_dir: Path,
+    *,
+    simulation_id: str,
+    ensemble_id: str,
+    metric_id: str = "simulation.completed",
+    value_kind: str = "binary",
+    warnings: Optional[List[str]] = None,
+) -> None:
+    _write_json(
+        ensemble_dir / "backtest_summary.json",
+        {
+            "artifact_type": "backtest_summary",
+            "schema_version": "probabilistic.backtest.v2",
+            "generator_version": "probabilistic.backtest.generator.v2",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "metric_backtests": {
+                metric_id: {
+                    "metric_id": metric_id,
+                    "value_kind": value_kind,
+                    "case_count": 10,
+                    "positive_case_count": 5,
+                    "negative_case_count": 5,
+                    "observed_event_rate": 0.5,
+                    "mean_forecast_probability": 0.44,
+                    "scoring_rules": ["brier_score", "log_score"]
+                    if value_kind == "binary"
+                    else [],
+                    "scores": {
+                        "brier_score": 0.12,
+                        "log_score": 0.41,
+                        "brier_skill_score": 0.52,
+                    }
+                    if value_kind == "binary"
+                    else {},
+                    "case_results": [],
+                    "warnings": warnings or [],
+                }
+            },
+            "quality_summary": {
+                "status": "complete",
+                "warnings": [],
+                "total_case_count": 10,
+                "scored_case_count": 10 if value_kind == "binary" else 0,
+                "skipped_case_count": 0,
+                "supported_metric_ids": [metric_id] if value_kind == "binary" else [],
+                "unscored_metric_ids": [] if value_kind == "binary" else [metric_id],
+            },
+        },
+    )
+
+
+def _write_calibration_summary(
+    ensemble_dir: Path,
+    *,
+    simulation_id: str,
+    ensemble_id: str,
+    metric_id: str = "simulation.completed",
+    value_kind: str = "binary",
+    ready: bool = True,
+    schema_version: str = "probabilistic.calibration.v2",
+    metric_warnings: Optional[List[str]] = None,
+    quality_warnings: Optional[List[str]] = None,
+    gating_reasons: Optional[List[str]] = None,
+    include_provenance: bool = True,
+) -> None:
+    quality_summary = {
+        "status": "complete" if ready else "partial",
+        "ready_metric_ids": [metric_id] if ready else [],
+        "not_ready_metric_ids": [] if ready else [metric_id],
+        "warnings": list(quality_warnings or []),
+    }
+    if include_provenance:
+        quality_summary["source_artifacts"] = {
+            "backtest_summary": "backtest_summary.json"
+        }
+        quality_summary["provenance"] = {
+            "status": "valid",
+            "backtest_artifact_type": "backtest_summary",
+            "backtest_schema_version": "probabilistic.backtest.v2",
+            "backtest_generator_version": "probabilistic.backtest.generator.v2",
+            "backtest_simulation_id": simulation_id,
+            "backtest_ensemble_id": ensemble_id,
+        }
+
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": schema_version,
+            "generator_version": "probabilistic.calibration.generator.v2",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "metric_calibrations": {
+                metric_id: {
+                    "metric_id": metric_id,
+                    "value_kind": value_kind,
+                    "case_count": 10,
+                    "supported_scoring_rules": ["brier_score", "log_score"]
+                    if value_kind == "binary"
+                    else [],
+                    "scores": {"brier_score": 0.12, "log_score": 0.41}
+                    if value_kind == "binary"
+                    else {},
+                    "diagnostics": {
+                        "expected_calibration_error": 0.18,
+                        "max_calibration_gap": 0.25,
+                    },
+                    "reliability_bins": [],
+                    "readiness": {
+                        "ready": ready,
+                        "minimum_case_count": 10,
+                        "actual_case_count": 10,
+                        "minimum_positive_case_count": 3,
+                        "actual_positive_case_count": 5,
+                        "minimum_negative_case_count": 3,
+                        "actual_negative_case_count": 5 if ready else 0,
+                        "non_empty_bin_count": 2,
+                        "supported_bin_count": 2,
+                        "minimum_supported_bin_count": 2,
+                        "gating_reasons": list(gating_reasons or []),
+                        "confidence_label": "limited" if ready else "insufficient",
+                    },
+                    "warnings": list(metric_warnings or []),
+                }
+            },
+            "quality_summary": quality_summary,
+        },
+    )
 
 
 def _configure_project_grounding_dir(monkeypatch, project_root: Path):
@@ -434,7 +584,43 @@ def test_build_context_assembles_prepare_run_and_empirical_analytics(
     assert artifact["run_id"] == "0001"
     assert artifact["probability_semantics"]["summary"] == "empirical"
     assert artifact["probability_semantics"]["sensitivity"] == "observational"
+    assert artifact["probability_semantics"]["cluster_share"] == "observed_run_share"
+    assert artifact["simulation_role"] == {
+        "worker": "simulation",
+        "mode": "worker_composed",
+        "summary": "Simulation contributes scenario evidence as one forecast worker. Saved artifacts define scope and evidence boundaries; they do not turn simulation frequencies into earned real-world probabilities.",
+    }
     assert artifact["prepared_artifact_summary"]["probabilistic_mode"] is True
+    assert artifact["prepared_artifact_summary"]["artifact_completeness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "missing_artifacts": [],
+    }
+    assert artifact["prepared_artifact_summary"]["grounding_readiness"] == {
+        "ready": False,
+        "status": "unavailable",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+    }
+    assert artifact["prepared_artifact_summary"]["forecast_readiness"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+    }
+    assert artifact["prepared_artifact_summary"]["workflow_handoff_status"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+        "semantics": "workflow_handoff_status",
+    }
     assert artifact["analytics_semantics"]["aggregate"]["analysis_mode"] == "aggregate"
     assert artifact["analytics_semantics"]["scenario"]["analysis_mode"] == "scenario"
     assert artifact["analytics_semantics"]["sensitivity"]["analysis_mode"] == "sensitivity"
@@ -463,8 +649,22 @@ def test_build_context_assembles_prepare_run_and_empirical_analytics(
         "twitter_config.echo_chamber_strength"
     )
     assert artifact["confidence_status"]["status"] == "absent"
+    assert artifact["confidence_status"]["artifact_readiness"] == {
+        "calibration_summary": {
+            "status": "absent",
+            "reason": "No calibration summary artifact is attached to this ensemble.",
+        },
+        "backtest_summary": {
+            "status": "absent",
+            "reason": "No backtest summary artifact is attached to this ensemble.",
+        },
+        "provenance": {
+            "status": "absent",
+            "reason": "Calibration provenance cannot be verified without a valid calibration summary artifact.",
+        },
+    }
     assert artifact["confidence_status"]["boundary_note"].startswith(
-        "Calibration in this repo is binary-only"
+        "Ensemble calibration artifacts apply only to named simulation metrics"
     )
     assert "observational_only" in artifact["sensitivity"]["quality_summary"]["warnings"]
 
@@ -491,9 +691,15 @@ def test_build_context_allows_ensemble_scope_without_selected_run(
     assert artifact["scope"]["level"] == "ensemble"
     assert artifact["selected_run"] is None
     assert artifact["aggregate_summary"]["artifact_type"] == "aggregate_summary"
+    assert artifact["scenario_families"][0]["share_semantics"] == "observed_run_share"
+    assert any(
+        "observed run share" in option["prompt"]
+        for option in artifact["compare_options"]
+        if option["left"]["level"] == "cluster"
+    )
     assert any(
         outcome["metric_id"] == "simulation.completed"
-        and outcome["value_summary"]["empirical_probability"] == 2 / 3
+        and outcome["value_summary"]["observed_true_share"] == 2 / 3
         for outcome in artifact["top_outcomes"]
     )
 
@@ -623,6 +829,17 @@ def test_build_context_exposes_grounding_context_separately_from_downstream_anal
     assert artifact["grounding_context"]["evidence_items"][1]["citation_id"] == "[G1]"
     assert artifact["source_artifacts"]["grounding_bundle"] == "grounding_bundle.json"
     assert artifact["probability_semantics"]["summary"] == "empirical"
+    assert artifact["prepared_artifact_summary"]["grounding_readiness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+    }
+    assert artifact["prepared_artifact_summary"]["forecast_readiness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "blocking_stage": None,
+    }
 
 
 def test_build_context_surfaces_ready_calibration_summary_when_enabled(
@@ -640,59 +857,15 @@ def test_build_context_surfaces_ready_calibration_summary_when_enabled(
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.prepare.v1",
-            "generator_version": "probabilistic.prepare.generator.v1",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "reliability_bins": [
-                        {
-                            "bin_index": 0,
-                            "lower_bound": 0.0,
-                            "upper_bound": 0.2,
-                            "case_count": 2,
-                            "mean_forecast_probability": 0.1,
-                            "observed_frequency": 0.0,
-                            "observed_minus_forecast": -0.1,
-                        },
-                        {
-                            "bin_index": 4,
-                            "lower_bound": 0.8,
-                            "upper_bound": 1.0,
-                            "case_count": 2,
-                            "mean_forecast_probability": 0.9,
-                            "observed_frequency": 1.0,
-                            "observed_minus_forecast": 0.1,
-                        },
-                    ],
-                    "readiness": {
-                        "ready": True,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "non_empty_bin_count": 2,
-                        "gating_reasons": [],
-                        "confidence_label": "limited",
-                    },
-                    "warnings": [],
-                }
-            },
-            "quality_summary": {
-                "status": "complete",
-                "ready_metric_ids": ["simulation.completed"],
-                "not_ready_metric_ids": [],
-                "warnings": [],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
     )
     context_module = _load_context_module()
     monkeypatch.setattr(
@@ -717,7 +890,12 @@ def test_build_context_surfaces_ready_calibration_summary_when_enabled(
         "not_ready_metric_ids": [],
         "gating_reasons": [],
         "warnings": [],
-        "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+        "artifact_readiness": {
+            "calibration_summary": {"status": "valid", "reason": ""},
+            "backtest_summary": {"status": "valid", "reason": ""},
+            "provenance": {"status": "valid", "reason": ""},
+        },
+        "boundary_note": "Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.",
     }
     assert artifact["calibrated_summary"]["artifact_type"] == "calibration_summary"
     assert artifact["calibrated_summary"]["metrics"][0]["metric_id"] == "simulation.completed"
@@ -739,50 +917,19 @@ def test_build_context_surfaces_not_ready_confidence_without_calibrated_summary(
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.calibration.v2",
-            "generator_version": "probabilistic.calibration.generator.v2",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "diagnostics": {
-                        "expected_calibration_error": 0.18,
-                        "max_calibration_gap": 0.25,
-                    },
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": False,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "minimum_positive_case_count": 3,
-                        "actual_positive_case_count": 10,
-                        "minimum_negative_case_count": 3,
-                        "actual_negative_case_count": 0,
-                        "non_empty_bin_count": 2,
-                        "supported_bin_count": 2,
-                        "minimum_supported_bin_count": 2,
-                        "gating_reasons": ["insufficient_negative_case_count"],
-                        "confidence_label": "insufficient",
-                    },
-                    "warnings": ["degenerate_base_rate_baseline"],
-                }
-            },
-            "quality_summary": {
-                "status": "partial",
-                "ready_metric_ids": [],
-                "not_ready_metric_ids": ["simulation.completed"],
-                "warnings": ["not_ready_metrics_present"],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        ready=False,
+        metric_warnings=["degenerate_base_rate_baseline"],
+        quality_warnings=["not_ready_metrics_present"],
+        gating_reasons=["insufficient_negative_case_count"],
     )
     context_module = _load_context_module()
     monkeypatch.setattr(
@@ -807,7 +954,12 @@ def test_build_context_surfaces_not_ready_confidence_without_calibrated_summary(
         "not_ready_metric_ids": ["simulation.completed"],
         "gating_reasons": ["insufficient_negative_case_count"],
         "warnings": ["not_ready_metrics_present", "degenerate_base_rate_baseline"],
-        "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+        "artifact_readiness": {
+            "calibration_summary": {"status": "valid", "reason": ""},
+            "backtest_summary": {"status": "valid", "reason": ""},
+            "provenance": {"status": "valid", "reason": ""},
+        },
+        "boundary_note": "Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.",
     }
     assert "calibrated_summary" not in artifact
     assert "calibration_provenance" not in artifact
@@ -828,47 +980,20 @@ def test_build_context_keeps_unsupported_calibration_artifacts_not_ready(
         / "ensemble"
         / f"ensemble_{created['ensemble_id']}"
     )
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.calibration.v2",
-            "generator_version": "probabilistic.calibration.generator.v2",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "platform.leading_platform": {
-                    "metric_id": "platform.leading_platform",
-                    "value_kind": "categorical",
-                    "case_count": 12,
-                    "supported_scoring_rules": [],
-                    "scores": {},
-                    "diagnostics": {},
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": True,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 12,
-                        "minimum_positive_case_count": 3,
-                        "actual_positive_case_count": 6,
-                        "minimum_negative_case_count": 3,
-                        "actual_negative_case_count": 6,
-                        "non_empty_bin_count": 3,
-                        "supported_bin_count": 3,
-                        "minimum_supported_bin_count": 2,
-                        "gating_reasons": [],
-                        "confidence_label": "limited",
-                    },
-                    "warnings": [],
-                }
-            },
-            "quality_summary": {
-                "status": "complete",
-                "ready_metric_ids": ["platform.leading_platform"],
-                "not_ready_metric_ids": [],
-                "warnings": [],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        metric_id="platform.leading_platform",
+        value_kind="categorical",
+        warnings=["unsupported_confidence_contract"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        metric_id="platform.leading_platform",
+        value_kind="categorical",
     )
     context_module = _load_context_module()
     monkeypatch.setattr(
@@ -893,9 +1018,127 @@ def test_build_context_keeps_unsupported_calibration_artifacts_not_ready(
         "not_ready_metric_ids": [],
         "gating_reasons": ["no_supported_binary_metrics"],
         "warnings": ["unsupported_confidence_contract"],
-        "boundary_note": "Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.",
+        "artifact_readiness": {
+            "calibration_summary": {"status": "valid", "reason": ""},
+            "backtest_summary": {"status": "valid", "reason": ""},
+            "provenance": {"status": "valid", "reason": ""},
+        },
+        "boundary_note": "Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.",
     }
     assert artifact["source_artifacts"]["calibration_summary"] == "calibration_summary.json"
+    assert artifact["source_artifacts"]["backtest_summary"] == "backtest_summary.json"
+    assert "calibrated_summary" not in artifact
+    assert "calibration_provenance" not in artifact
+
+
+def test_build_context_keeps_invalid_calibration_artifacts_out_of_ready_confidence(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_json(
+        ensemble_dir / "calibration_summary.json",
+        {
+            "artifact_type": "calibration_summary",
+            "schema_version": "probabilistic.prepare.v1",
+            "generator_version": "probabilistic.calibration.generator.v2",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "metric_calibrations": {},
+            "quality_summary": {"status": "complete", "warnings": []},
+        },
+    )
+
+    context_module = _load_context_module()
+    builder = context_module.ProbabilisticReportContextBuilder(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = builder.build_context(
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+
+    assert artifact["confidence_status"]["status"] == "not_ready"
+    assert artifact["confidence_status"]["gating_reasons"] == [
+        "invalid_calibration_artifact"
+    ]
+    assert artifact["confidence_status"]["artifact_readiness"] == {
+        "calibration_summary": {
+            "status": "invalid",
+            "reason": "Calibration summary failed validation and cannot support confidence surfaces.",
+        },
+        "backtest_summary": {
+            "status": "absent",
+            "reason": "No backtest summary artifact is attached to this ensemble.",
+        },
+        "provenance": {
+            "status": "invalid",
+            "reason": "Calibration provenance cannot be trusted until the calibration summary validates.",
+        },
+    }
+    assert artifact["source_artifacts"]["calibration_summary"] == "calibration_summary.json"
+    assert "calibrated_summary" not in artifact
+    assert "calibration_provenance" not in artifact
+
+
+def test_build_context_requires_backtest_provenance_before_ready_confidence(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        include_provenance=False,
+    )
+
+    context_module = _load_context_module()
+    builder = context_module.ProbabilisticReportContextBuilder(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = builder.build_context(
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+
+    assert artifact["confidence_status"]["status"] == "not_ready"
+    assert artifact["confidence_status"]["gating_reasons"] == [
+        "missing_backtest_provenance"
+    ]
+    assert artifact["confidence_status"]["artifact_readiness"] == {
+        "calibration_summary": {"status": "valid", "reason": ""},
+        "backtest_summary": {"status": "valid", "reason": ""},
+        "provenance": {
+            "status": "absent",
+            "reason": "Calibration summary is missing explicit provenance back to backtest_summary.json.",
+        },
+    }
     assert "calibrated_summary" not in artifact
     assert "calibration_provenance" not in artifact
 
@@ -925,40 +1168,15 @@ def test_build_context_exposes_assumption_ledgers_and_calibration_provenance(
         }
         _write_json(manifest_path, manifest)
 
-    _write_json(
-        ensemble_dir / "calibration_summary.json",
-        {
-            "artifact_type": "calibration_summary",
-            "schema_version": "probabilistic.prepare.v1",
-            "generator_version": "probabilistic.prepare.generator.v1",
-            "simulation_id": state.simulation_id,
-            "ensemble_id": created["ensemble_id"],
-            "metric_calibrations": {
-                "simulation.completed": {
-                    "metric_id": "simulation.completed",
-                    "value_kind": "binary",
-                    "case_count": 10,
-                    "supported_scoring_rules": ["brier_score", "log_score"],
-                    "scores": {"brier_score": 0.12, "log_score": 0.41},
-                    "reliability_bins": [],
-                    "readiness": {
-                        "ready": True,
-                        "minimum_case_count": 10,
-                        "actual_case_count": 10,
-                        "non_empty_bin_count": 2,
-                        "gating_reasons": [],
-                        "confidence_label": "limited",
-                    },
-                    "warnings": [],
-                }
-            },
-            "quality_summary": {
-                "status": "complete",
-                "ready_metric_ids": ["simulation.completed"],
-                "not_ready_metric_ids": [],
-                "warnings": [],
-            },
-        },
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
     )
 
     context_module = _load_context_module()
@@ -990,3 +1208,596 @@ def test_build_context_exposes_assumption_ledgers_and_calibration_provenance(
     assert artifact["calibration_provenance"]["ready_metric_ids"] == [
         "simulation.completed"
     ]
+
+
+def test_build_context_surfaces_hybrid_forecast_workspace_payload(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    ensemble_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+    )
+    _write_backtest_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    _write_calibration_summary(
+        ensemble_dir,
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+    context_module = _load_context_module()
+    monkeypatch.setattr(
+        context_module.Config,
+        "CALIBRATED_PROBABILITY_ENABLED",
+        True,
+        raising=False,
+    )
+
+    forecast_manager_module = importlib.import_module("app.services.forecast_manager")
+
+    class _FakeRecord:
+        def __init__(self, payload):
+            self.__dict__.update(payload)
+
+        def to_dict(self):
+            return json.loads(json.dumps(self.__dict__))
+
+    class _FakeForecastWorkspace:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def to_dict(self):
+            return json.loads(json.dumps(self.payload))
+
+    class _FakeForecastManager:
+            def __init__(self, *args, **kwargs):
+                self._workspace = _FakeForecastWorkspace(
+                {
+                    "forecast_question": {
+                        "forecast_id": "forecast-001",
+                        "project_id": "proj-1",
+                        "title": "Policy support outlook",
+                        "question": "Will support exceed 55% by June 30, 2026?",
+                        "question_text": "Will support exceed 55% by June 30, 2026?",
+                        "question_type": "binary",
+                        "status": "active",
+                        "horizon": {
+                            "type": "date",
+                            "value": "2026-06-30",
+                        },
+                        "issue_timestamp": "2026-03-30T09:00:00",
+                        "owner": "forecasting-team",
+                        "source": "manual-entry",
+                        "decomposition_support": [
+                            {
+                                "template_id": "north-region",
+                                "label": "North region split",
+                                "question_text": "Will north-region support exceed 55%?",
+                                "resolution_criteria_ids": ["criteria-1"],
+                            }
+                        ],
+                        "abstention_conditions": [
+                            "Do not issue if no named resolution source is available.",
+                        ],
+                        "resolution_criteria_ids": ["criteria-1"],
+                        "supported_question_templates": [
+                            {
+                                "template_id": "north-region",
+                                "label": "North region split",
+                                "question_text": "Will north-region support exceed 55%?",
+                                "resolution_criteria_ids": ["criteria-1"],
+                                "abstention_conditions": [
+                                    "Do not issue if no named resolution source is available.",
+                                ],
+                            }
+                        ],
+                    },
+                    "evidence_bundle": {
+                        "bundle_id": "bundle-1",
+                        "forecast_id": "forecast-001",
+                        "title": "Forecast evidence",
+                        "summary": "Evidence bundle with local and evaluation-backed support.",
+                        "status": "ready",
+                        "source_entries": [
+                            {
+                                "entry_id": "source-1",
+                                "provider_id": "uploaded_local_artifact",
+                                "provider_kind": "uploaded_local_artifact",
+                                "title": "Memo",
+                                "summary": "Uploaded grounding notes.",
+                            }
+                        ],
+                        "provider_snapshots": [
+                            {
+                                "provider_id": "uploaded_local_artifact",
+                                "provider_kind": "uploaded_local_artifact",
+                                "status": "ready",
+                            }
+                        ],
+                        "quality_summary": {"status": "complete"},
+                        "retrieval_quality": {"status": "bounded_local_only"},
+                        "freshness_summary": {"status": "fresh"},
+                        "relevance_summary": {"status": "relevant"},
+                        "conflict_summary": {"status": "clear"},
+                        "missing_evidence_markers": [],
+                        "uncertainty_summary": {
+                            "status": "bounded",
+                            "causes": [],
+                            "drivers": [],
+                        },
+                    },
+                    "prediction_ledger": {
+                        "forecast_id": "forecast-001",
+                        "entries": [
+                            {
+                                "entry_id": "entry-1",
+                                "prediction_id": "prediction-1",
+                                "worker_id": "worker-base-rate",
+                                "recorded_at": "2026-03-30T09:10:00",
+                                "value_type": "probability",
+                                "value": 0.58,
+                                "prediction": 0.58,
+                                "value_semantics": "forecast_probability",
+                                "entry_kind": "issue",
+                                "revision_number": 1,
+                                "worker_output_ids": ["worker-output-1"],
+                                "calibration_state": "uncalibrated",
+                                "evidence_bundle_ids": ["bundle-1"],
+                                "notes": ["Base-rate worker issued an initial estimate."],
+                                "metadata": {"generated_by_engine": True},
+                                "final_resolution_state": "pending",
+                            }
+                        ],
+                        "worker_outputs": [
+                            {
+                                "worker_id": "worker-base-rate",
+                                "output_id": "worker-output-1",
+                                "summary": "Base-rate comparison output",
+                            }
+                        ],
+                        "resolution_history": [],
+                        "final_resolution_state": "pending",
+                        "resolved_at": None,
+                        "resolution_note": "",
+                    },
+                    "evaluation_cases": [
+                        {
+                            "case_id": "case-1",
+                            "forecast_id": "forecast-001",
+                            "criteria_id": "criteria-1",
+                            "status": "resolved",
+                            "issued_at": "2026-03-30T09:30:00",
+                            "question_class": "binary",
+                            "comparable_question_class": "binary",
+                            "source": "manual-entry",
+                            "prediction_entry_id": "entry-1",
+                            "forecast_probability": 0.58,
+                            "observed_value": True,
+                            "evaluation_split": "rolling-1",
+                            "window_id": "window-1",
+                            "benchmark_id": "benchmark-1",
+                            "observed_outcome": True,
+                            "resolved_at": "2026-07-01T10:00:00",
+                            "answer_id": "answer-1",
+                            "evidence_bundle_id": "bundle-1",
+                            "resolution_note": "Resolved yes.",
+                            "confidence_basis": {"status": "resolved"},
+                            "notes": ["Comparable binary case."],
+                        }
+                    ],
+                    "forecast_answers": [
+                        {
+                            "answer_id": "answer-1",
+                            "forecast_id": "forecast-001",
+                            "answer_type": "hybrid_forecast",
+                            "summary": "Hybrid estimate with simulation as supporting scenario analysis.",
+                            "worker_ids": ["worker-base-rate", "worker-simulation"],
+                            "prediction_entry_ids": ["entry-1"],
+                            "confidence_semantics": "uncalibrated",
+                            "created_at": "2026-03-30T10:00:00",
+                            "answer_payload": {
+                                "abstain": False,
+                                "abstain_reason": None,
+                                "best_estimate": {
+                                    "value": 0.63,
+                                    "value_semantics": "forecast_probability",
+                                    "why": "Base-rate and reference-class support converge.",
+                                },
+                                "counterevidence": [
+                                    "Simulation run share remains descriptive only.",
+                                ],
+                                "assumption_summary": {
+                                    "items": [
+                                        "Base-rate worker is weighted more heavily than simulation."
+                                    ],
+                                    "summary": "Base-rate worker is weighted more heavily than simulation.",
+                                },
+                                "uncertainty_decomposition": {
+                                    "drivers": ["stale_evidence"],
+                                    "components": [
+                                        {
+                                            "code": "stale_evidence",
+                                            "summary": "One supporting signal is stale.",
+                                        }
+                                    ],
+                                    "disagreement_range": 0.07,
+                                },
+                                "worker_contribution_trace": [
+                                    {
+                                        "worker_id": "worker-base-rate",
+                                        "worker_kind": "base_rate",
+                                        "status": "completed",
+                                        "estimate": 0.61,
+                                        "summary": "Base-rate worker contributed the estimate.",
+                                    },
+                                    {
+                                        "worker_id": "worker-simulation",
+                                        "worker_kind": "simulation",
+                                        "status": "completed",
+                                        "estimate": 0.72,
+                                        "summary": "Simulation remained supporting scenario analysis.",
+                                    },
+                                ],
+                                "evaluation_summary": {
+                                    "status": "available",
+                                    "case_count": 1,
+                                    "resolved_case_count": 1,
+                                    "pending_case_count": 0,
+                                },
+                                "benchmark_summary": {"status": "available"},
+                                "backtest_summary": {"status": "not_run"},
+                                "calibration_summary": {"status": "not_applicable"},
+                                "confidence_basis": {
+                                    "status": "available",
+                                    "benchmark_status": "available",
+                                    "backtest_status": "not_run",
+                                    "calibration_status": "not_applicable",
+                                },
+                                "simulation_context": {
+                                    "included": True,
+                                    "observed_run_share": 0.72,
+                                    "contribution_role": "supporting_scenario_analysis",
+                                },
+                            },
+                        }
+                    ],
+                    "forecast_workers": [
+                        {
+                            "worker_id": "worker-base-rate",
+                            "forecast_id": "forecast-001",
+                            "kind": "base_rate",
+                            "label": "Base-rate worker",
+                            "status": "ready",
+                            "capabilities": ["historical_reference"],
+                            "primary_output_semantics": "forecast_probability",
+                        },
+                        {
+                            "worker_id": "worker-simulation",
+                            "forecast_id": "forecast-001",
+                            "kind": "simulation",
+                            "label": "Simulation worker",
+                            "status": "ready",
+                            "capabilities": ["scenario_generation"],
+                            "primary_output_semantics": "scenario_evidence",
+                        },
+                    ],
+                    "simulation_worker_contract": {
+                        "worker_id": "worker-simulation",
+                        "forecast_id": "forecast-001",
+                        "simulation_id": state.simulation_id,
+                        "prepare_artifact_paths": [
+                            "uploads/simulations/sim-001/prepared_snapshot.json"
+                        ],
+                        "probability_interpretation": "do_not_treat_as_real_world_probability",
+                    },
+                    "forecast_workspace_status": "available",
+                }
+                )
+                self._workspace_record = _FakeRecord(
+                    {
+                        "forecast_question": _FakeRecord(
+                            {
+                                "forecast_id": "forecast-001",
+                                "primary_simulation_id": state.simulation_id,
+                                "title": "Policy support outlook",
+                                "question_text": "Will support exceed 55% by June 30, 2026?",
+                                "question_type": "binary",
+                                "status": "active",
+                                "horizon": {
+                                    "type": "date",
+                                    "value": "2026-06-30",
+                                },
+                                "issue_timestamp": "2026-03-30T09:00:00",
+                                "owner": "forecasting-team",
+                                "source": "manual-entry",
+                                "abstention_conditions": [
+                                    "Do not issue if no named resolution source is available.",
+                                ],
+                                "decomposition_support": [
+                                    {
+                                        "template_id": "north-region",
+                                        "label": "North region split",
+                                        "question_text": "Will north-region support exceed 55%?",
+                                        "resolution_criteria_ids": ["criteria-1"],
+                                    }
+                                ],
+                                "decomposition": {
+                                    "subquestion_ids": ["north-region"],
+                                },
+                            }
+                        ),
+                        "title": "Policy support outlook",
+                        "question_text": "Will support exceed 55% by June 30, 2026?",
+                        "question_status": "active",
+                        "issue_timestamp": "2026-03-30T09:00:00",
+                        "resolution_status": "pending",
+                        "forecast_id": "forecast-001",
+                        "worker_kinds": ["base_rate", "simulation"],
+                        "evidence_bundle": _FakeRecord(
+                            {
+                                "bundle_id": "bundle-1",
+                                "status": "ready",
+                                "title": "Forecast evidence",
+                                "summary": "Evidence bundle with local and evaluation-backed support.",
+                                "source_entries": [
+                                    _FakeRecord(
+                                        {
+                                            "entry_id": "source-1",
+                                            "provider_id": "uploaded_local_artifact",
+                                            "provider_kind": "uploaded_local_artifact",
+                                            "title": "Memo",
+                                            "summary": "Uploaded grounding notes.",
+                                        }
+                                    )
+                                ],
+                                "provider_snapshots": [
+                                    _FakeRecord(
+                                        {
+                                            "provider_id": "uploaded_local_artifact",
+                                            "provider_kind": "uploaded_local_artifact",
+                                            "status": "ready",
+                                        }
+                                    )
+                                ],
+                                "retrieval_quality": {"status": "bounded_local_only"},
+                                "conflict_markers": [],
+                                "missing_evidence_markers": [],
+                                "uncertainty_summary": {
+                                    "status": "bounded",
+                                    "causes": [],
+                                },
+                                "boundary_note": "Evidence bundle with local and evaluation-backed support.",
+                            }
+                        ),
+                        "prediction_ledger": _FakeRecord(
+                            {
+                                "resolution_status": "pending",
+                                "entries": [
+                                    _FakeRecord(
+                                        {
+                                            "entry_id": "entry-1",
+                                            "prediction_id": "prediction-1",
+                                            "worker_id": "worker-base-rate",
+                                            "recorded_at": "2026-03-30T09:10:00",
+                                            "value_type": "probability",
+                                            "value": 0.58,
+                                            "prediction": 0.58,
+                                            "value_semantics": "forecast_probability",
+                                            "entry_kind": "issue",
+                                            "revision_number": 1,
+                                            "worker_output_ids": ["worker-output-1"],
+                                            "calibration_state": "uncalibrated",
+                                            "evidence_bundle_ids": ["bundle-1"],
+                                            "notes": [
+                                                "Base-rate worker issued an initial estimate."
+                                            ],
+                                            "metadata": {"generated_by_engine": True},
+                                            "final_resolution_state": "pending",
+                                        }
+                                    )
+                                ],
+                                "worker_outputs": [
+                                    {
+                                        "worker_id": "worker-base-rate",
+                                        "output_id": "worker-output-1",
+                                        "summary": "Base-rate comparison output",
+                                        "recorded_at": "2026-03-30T09:09:00",
+                                    }
+                                ],
+                                "resolution_history": [],
+                            }
+                        ),
+                        "evaluation_cases": [
+                            _FakeRecord(
+                                {
+                                    "case_id": "case-1",
+                                    "forecast_id": "forecast-001",
+                                    "criteria_id": "criteria-1",
+                                    "status": "resolved",
+                                    "issued_at": "2026-03-30T09:30:00",
+                                    "question_class": "binary",
+                                    "comparable_question_class": "binary",
+                                    "source": "manual-entry",
+                                    "prediction_entry_id": "entry-1",
+                                    "forecast_probability": 0.58,
+                                    "observed_value": True,
+                                    "evaluation_split": "rolling-1",
+                                    "window_id": "window-1",
+                                    "benchmark_id": "benchmark-1",
+                                    "observed_outcome": True,
+                                    "resolved_at": "2026-07-01T10:00:00",
+                                    "answer_id": "answer-1",
+                                    "evidence_bundle_id": "bundle-1",
+                                    "resolution_note": "Resolved yes.",
+                                    "confidence_basis": {"status": "resolved"},
+                                    "notes": ["Comparable binary case."],
+                                }
+                            )
+                        ],
+                        "forecast_answers": [
+                            _FakeRecord(
+                                {
+                                    "answer_id": "answer-1",
+                                    "forecast_id": "forecast-001",
+                                    "answer_type": "hybrid_forecast",
+                                    "summary": "Hybrid estimate with simulation as supporting scenario analysis.",
+                                    "worker_ids": ["worker-base-rate", "worker-simulation"],
+                                    "prediction_entry_ids": ["entry-1"],
+                                    "confidence_semantics": "uncalibrated",
+                                    "created_at": "2026-03-30T10:00:00",
+                                    "answer_payload": {
+                                        "abstain": False,
+                                        "abstain_reason": None,
+                                        "best_estimate": {
+                                            "value": 0.63,
+                                            "value_semantics": "forecast_probability",
+                                            "why": "Base-rate and reference-class support converge.",
+                                        },
+                                        "counterevidence": [
+                                            "Simulation run share remains descriptive only.",
+                                        ],
+                                        "assumption_summary": {
+                                            "items": [
+                                                "Base-rate worker is weighted more heavily than simulation."
+                                            ],
+                                            "summary": "Base-rate worker is weighted more heavily than simulation.",
+                                        },
+                                        "uncertainty_decomposition": {
+                                            "drivers": ["stale_evidence"],
+                                            "components": [
+                                                {
+                                                    "code": "stale_evidence",
+                                                    "summary": "One supporting signal is stale.",
+                                                }
+                                            ],
+                                            "disagreement_range": 0.07,
+                                        },
+                                        "worker_contribution_trace": [
+                                            {
+                                                "worker_id": "worker-base-rate",
+                                                "worker_kind": "base_rate",
+                                                "status": "completed",
+                                                "estimate": 0.61,
+                                                "summary": "Base-rate worker contributed the estimate.",
+                                            },
+                                            {
+                                                "worker_id": "worker-simulation",
+                                                "worker_kind": "simulation",
+                                                "status": "completed",
+                                                "estimate": 0.72,
+                                                "summary": "Simulation remained supporting scenario analysis.",
+                                            },
+                                        ],
+                                        "evaluation_summary": {
+                                            "status": "available",
+                                            "case_count": 1,
+                                            "resolved_case_count": 1,
+                                            "pending_case_count": 0,
+                                        },
+                                        "benchmark_summary": {"status": "available"},
+                                        "backtest_summary": {"status": "not_run"},
+                                        "calibration_summary": {"status": "not_applicable"},
+                                        "confidence_basis": {
+                                            "status": "available",
+                                            "benchmark_status": "available",
+                                            "backtest_status": "not_run",
+                                            "calibration_status": "not_applicable",
+                                        },
+                                        "simulation_context": {
+                                            "included": True,
+                                            "observed_run_share": 0.72,
+                                            "contribution_role": "supporting_scenario_analysis",
+                                        },
+                                    },
+                                }
+                            )
+                        ],
+                        "forecast_workers": [
+                            _FakeRecord(
+                                {
+                                    "worker_id": "worker-base-rate",
+                                    "forecast_id": "forecast-001",
+                                    "kind": "base_rate",
+                                    "label": "Base-rate worker",
+                                    "status": "ready",
+                                    "capabilities": ["historical_reference"],
+                                    "primary_output_semantics": "forecast_probability",
+                                }
+                            ),
+                            _FakeRecord(
+                                {
+                                    "worker_id": "worker-simulation",
+                                    "forecast_id": "forecast-001",
+                                    "kind": "simulation",
+                                    "label": "Simulation worker",
+                                    "status": "ready",
+                                    "capabilities": ["scenario_generation"],
+                                    "primary_output_semantics": "scenario_evidence",
+                                }
+                            ),
+                        ],
+                    }
+                )
+
+            def list_question_summaries_for_simulation(self, simulation_id):
+                return [
+                    {
+                        "forecast_id": "forecast-001",
+                        "title": "Policy support outlook",
+                        "question_text": "Will support exceed 55% by June 30, 2026?",
+                        "question_status": "active",
+                        "issue_timestamp": "2026-03-30T09:00:00",
+                        "updated_at": "2026-03-30T09:05:00",
+                        "created_at": "2026-03-30T09:00:00",
+                        "primary_simulation_id": simulation_id,
+                    }
+                ]
+
+            def get_workspace(self, forecast_id):
+                if forecast_id != "forecast-001":
+                    return None
+                return self._workspace
+
+            def list_workspaces(self):
+                return [self._workspace_record]
+
+    monkeypatch.setattr(forecast_manager_module, "ForecastManager", _FakeForecastManager)
+
+    builder = context_module.ProbabilisticReportContextBuilder(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = builder.build_context(
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+    )
+
+    workspace = artifact["forecast_workspace"]
+    assert workspace["forecast_question"]["question_text"] == "Will support exceed 55% by June 30, 2026?"
+    assert workspace["forecast_question"]["supported_question_templates"][0]["label"] == "North region split"
+    assert workspace["evidence_bundle"]["status"] == "ready"
+    assert workspace["prediction_ledger"]["entry_count"] == 1
+    assert workspace["evaluation_results"]["resolved_case_count"] == 1
+    assert workspace["forecast_answer"]["answer_type"] == "hybrid_forecast"
+    assert workspace["worker_comparison"]["worker_count"] == 2
+    assert workspace["abstain_state"]["abstain"] is False
+    assert workspace["truthfulness_surface"] == {
+        "evidence_available": True,
+        "evaluation_available": True,
+        "calibrated_confidence_earned": False,
+        "simulation_only_scenario_exploration": False,
+        "boundary_note": (
+            "Calibrated confidence is only earned when a forecast answer is explicitly marked "
+            "calibrated and carries ready backtest and calibration metadata on a supported "
+            "evaluation lane with resolved cases."
+        ),
+    }

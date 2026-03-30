@@ -300,9 +300,450 @@ def test_resolver_consumes_design_rows_and_records_assumption_ledger():
     assert resolved["platform"]["weights"]["recency"] == 0.9
     assert manifest.assumption_ledger["design_method"] == "latin-hypercube"
     assert manifest.assumption_ledger["scenario_template_ids"] == ["crisis_case"]
+    assert manifest.assumption_ledger["applied_templates"] == ["crisis_case"]
     assert manifest.assumption_ledger["activated_conditions"] == [
         "platform.weights.recency"
     ]
     assert manifest.assumption_ledger["design_row"]["normalized_coordinates"][
         "agent_configs[0].activity_level"
     ] == pytest.approx(0.25)
+
+
+def test_resolver_applies_substantive_event_templates_and_conditional_overrides():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["event_config"] = {
+        "hot_topics": ["seed"],
+        "scheduled_events": [],
+        "narrative_direction": "neutral",
+    }
+    base_config["twitter_config"] = {
+        "recency_weight": 0.4,
+        "viral_threshold": 10,
+        "echo_chamber_strength": 0.5,
+    }
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        random_variables=[
+            models.RandomVariableSpec(
+                field_path="twitter_config.echo_chamber_strength",
+                distribution="fixed",
+                parameters={"value": 0.82},
+            ),
+        ],
+        conditional_variables=[
+            models.ConditionalVariableSpec(
+                variable=models.RandomVariableSpec(
+                    field_path="twitter_config.viral_threshold",
+                    distribution="fixed",
+                    parameters={"value": 7},
+                ),
+                condition_field_path="twitter_config.echo_chamber_strength",
+                operator="gte",
+                condition_value=0.75,
+            ),
+            models.ConditionalVariableSpec(
+                variable=models.RandomVariableSpec(
+                    field_path="twitter_config.recency_weight",
+                    distribution="fixed",
+                    parameters={"value": 0.55},
+                ),
+                condition_field_path="event_config.narrative_direction",
+                operator="eq",
+                condition_value="viral_spike",
+            ),
+        ],
+        scenario_templates=[
+            models.ScenarioTemplateSpec(
+                template_id="viral_spike",
+                label="Viral Spike",
+                field_overrides={
+                    "event_config.narrative_direction": "viral_spike",
+                    "event_config.hot_topics": ["seed", "attention_surge"],
+                    "event_config.scheduled_events": [
+                        {
+                            "offset_hours": 2,
+                            "event_type": "exogenous_spike",
+                            "topic": "attention_surge",
+                            "intensity": "high",
+                        }
+                    ],
+                },
+            )
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            scenario_template_ids=["viral_spike"],
+        ),
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-001",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=91,
+        experiment_design_row={
+            "row_index": 0,
+            "normalized_coordinates": {},
+            "stratum_indices": {},
+            "scenario_template_ids": ["viral_spike"],
+            "coverage_signature": {
+                "template_count": 1,
+                "override_field_count": 3,
+            },
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["event_config"]["narrative_direction"] == "viral_spike"
+    assert resolved["event_config"]["hot_topics"] == ["seed", "attention_surge"]
+    assert resolved["event_config"]["scheduled_events"] == [
+        {
+            "offset_hours": 2,
+            "event_type": "exogenous_spike",
+            "topic": "attention_surge",
+            "intensity": "high",
+        }
+    ]
+    assert resolved["twitter_config"]["echo_chamber_strength"] == 0.82
+    assert resolved["twitter_config"]["viral_threshold"] == 7
+    assert resolved["twitter_config"]["recency_weight"] == 0.55
+    assert manifest.assumption_ledger["activated_conditions"] == [
+        "twitter_config.viral_threshold",
+        "twitter_config.recency_weight",
+    ]
+    assert manifest.assumption_ledger["design_row"]["coverage_signature"] == {
+        "template_count": 1,
+        "override_field_count": 3,
+    }
+
+
+def test_resolver_applies_template_exogenous_events_and_template_conditionals():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["event_config"] = {
+        "narrative_direction": "neutral",
+        "hot_topics": ["seed"],
+        "scheduled_events": [],
+    }
+    base_config["twitter_config"] = {"viral_threshold": 10}
+    base_config["reddit_config"] = {"viral_threshold": 10}
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        random_variables=[
+            models.RandomVariableSpec(
+                field_path="agent_configs[0].activity_level",
+                distribution="uniform",
+                parameters={"low": 0.1, "high": 0.9},
+            ),
+        ],
+        scenario_templates=[
+            models.ScenarioTemplateSpec(
+                template_id="crisis_spike",
+                label="Crisis Spike",
+                field_overrides={
+                    "event_config.narrative_direction": "crisis",
+                    "event_config.hot_topics": ["seed", "shock"],
+                },
+                coverage_tags=["shock", "amplification"],
+                exogenous_events=[
+                    {
+                        "event_id": "shock-wave",
+                        "kind": "breaking_news",
+                        "hour": 2,
+                    }
+                ],
+                conditional_overrides=[
+                    models.ConditionalVariableSpec(
+                        variable=models.RandomVariableSpec(
+                            field_path="twitter_config.viral_threshold",
+                            distribution="fixed",
+                            parameters={"value": 6},
+                        ),
+                        condition_field_path="event_config.narrative_direction",
+                        operator="eq",
+                        condition_value="crisis",
+                    )
+                ],
+            ),
+            models.ScenarioTemplateSpec(
+                template_id="bridge_response",
+                label="Bridge Response",
+                field_overrides={
+                    "reddit_config.viral_threshold": 12,
+                },
+                coverage_tags=["bridge", "response"],
+                exogenous_events=[
+                    {
+                        "event_id": "bridge-briefing",
+                        "kind": "community_response",
+                        "hour": 5,
+                    }
+                ],
+            ),
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            numeric_dimensions=["agent_configs[0].activity_level"],
+            scenario_template_ids=["crisis_spike", "bridge_response"],
+            max_templates_per_run=2,
+            template_combination_policy="pairwise",
+        ),
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-002",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=12,
+        experiment_design_row={
+            "row_index": 1,
+            "normalized_coordinates": {
+                "agent_configs[0].activity_level": 0.5,
+            },
+            "stratum_indices": {
+                "agent_configs[0].activity_level": 1,
+            },
+            "scenario_template_ids": ["crisis_spike", "bridge_response"],
+            "scenario_coverage": {
+                "coverage_tags": ["shock", "bridge", "response"],
+                "exogenous_event_ids": ["shock-wave", "bridge-briefing"],
+            },
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["event_config"]["narrative_direction"] == "crisis"
+    assert resolved["event_config"]["hot_topics"] == ["seed", "shock"]
+    assert [item["event_id"] for item in resolved["event_config"]["scheduled_events"]] == [
+        "shock-wave",
+        "bridge-briefing",
+    ]
+    assert resolved["twitter_config"]["viral_threshold"] == 6
+    assert resolved["reddit_config"]["viral_threshold"] == 12
+    assert manifest.assumption_ledger["applied_templates"] == [
+        "crisis_spike",
+        "bridge_response",
+    ]
+    assert manifest.assumption_ledger["applied_exogenous_event_ids"] == [
+        "shock-wave",
+        "bridge-briefing",
+    ]
+    assert manifest.assumption_ledger["scenario_coverage"]["coverage_tags"] == [
+        "shock",
+        "bridge",
+        "response",
+    ]
+    assert manifest.assumption_ledger["activated_conditions"] == [
+        "twitter_config.viral_threshold"
+    ]
+
+
+def test_resolver_applies_multi_template_event_overrides_and_records_diversity_metadata():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["event_config"] = {
+        "narrative_direction": "neutral",
+        "hot_topics": ["seed"],
+        "scheduled_events": [],
+    }
+    base_config["time_config"]["peak_activity_multiplier"] = 1.5
+    base_config["time_config"]["work_activity_multiplier"] = 0.7
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        conditional_variables=[
+            models.ConditionalVariableSpec(
+                variable=models.RandomVariableSpec(
+                    field_path="time_config.work_activity_multiplier",
+                    distribution="fixed",
+                    parameters={"value": 0.95},
+                ),
+                condition_field_path="event_config.narrative_direction",
+                operator="eq",
+                condition_value="consensus",
+            )
+        ],
+        scenario_templates=[
+            models.ScenarioTemplateSpec(
+                template_id="shock_spike",
+                label="Shock Spike",
+                field_overrides={
+                    "event_config.narrative_direction": "shock",
+                    "event_config.hot_topics": ["seed", "shockwave"],
+                    "event_config.scheduled_events": [
+                        {"hour": 2, "event_type": "amplification_wave", "intensity": "high"}
+                    ],
+                },
+                coverage_tags=["shock", "amplification"],
+            ),
+            models.ScenarioTemplateSpec(
+                template_id="consensus_bridge",
+                label="Consensus Bridge",
+                field_overrides={
+                    "event_config.narrative_direction": "consensus",
+                    "time_config.peak_activity_multiplier": 1.9,
+                },
+                coverage_tags=["bridge", "coordination"],
+            ),
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            scenario_template_ids=["shock_spike", "consensus_bridge"],
+            max_templates_per_run=2,
+            diversity_axes=["scenario_template", "coverage_tags"],
+        ),
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-009",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=42,
+        experiment_design_row={
+            "row_index": 0,
+            "normalized_coordinates": {},
+            "stratum_indices": {},
+            "scenario_template_ids": ["shock_spike", "consensus_bridge"],
+            "scenario_coverage_tags": [
+                "amplification",
+                "bridge",
+                "coordination",
+                "shock",
+            ],
+            "scenario_override_fields": [
+                "event_config.hot_topics",
+                "event_config.narrative_direction",
+                "event_config.scheduled_events",
+                "time_config.peak_activity_multiplier",
+            ],
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["event_config"]["hot_topics"] == ["seed", "shockwave"]
+    assert resolved["event_config"]["scheduled_events"] == [
+        {"hour": 2, "event_type": "amplification_wave", "intensity": "high"}
+    ]
+    assert resolved["time_config"]["peak_activity_multiplier"] == 1.9
+    assert resolved["time_config"]["work_activity_multiplier"] == 0.95
+    assert manifest.assumption_ledger["scenario_template_ids"] == [
+        "shock_spike",
+        "consensus_bridge",
+    ]
+    assert manifest.assumption_ledger["scenario_coverage_tags"] == [
+        "amplification",
+        "bridge",
+        "coordination",
+        "shock",
+    ]
+    assert manifest.assumption_ledger["scenario_template_labels"] == [
+        "Consensus Bridge",
+        "Shock Spike",
+    ]
+    assert manifest.assumption_ledger["scenario_signature"]["template_count"] == 2
+
+
+def test_resolver_applies_template_exogenous_events_and_template_conditionals():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["event_config"] = {
+        "narrative_direction": "neutral",
+        "hot_topics": ["seed"],
+        "scheduled_events": [],
+    }
+    base_config["twitter_config"] = {"viral_threshold": 10}
+    base_config["reddit_config"] = {"viral_threshold": 10}
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        scenario_templates=[
+            models.ScenarioTemplateSpec(
+                template_id="crisis_case",
+                label="Crisis Case",
+                field_overrides={
+                    "event_config.narrative_direction": "crisis",
+                    "event_config.hot_topics": ["seed", "crisis"],
+                    "event_config.scheduled_events": [
+                        {"event_id": "briefing", "kind": "briefing"}
+                    ],
+                },
+                coverage_tags=["trajectory:shock", "attention:elevated"],
+                exogenous_events=[
+                    {
+                        "event_id": "policy_reversal",
+                        "kind": "policy_reversal",
+                        "timing_window": "mid",
+                    }
+                ],
+                conditional_overrides=[
+                    models.ConditionalVariableSpec(
+                        variable=models.RandomVariableSpec(
+                            field_path="twitter_config.viral_threshold",
+                            distribution="fixed",
+                            parameters={"value": 6},
+                        ),
+                        condition_field_path="event_config.narrative_direction",
+                        operator="eq",
+                        condition_value="crisis",
+                    )
+                ],
+            )
+        ],
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-001",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=31,
+        experiment_design_row={
+            "row_index": 0,
+            "normalized_coordinates": {},
+            "stratum_indices": {},
+            "scenario_template_ids": ["crisis_case"],
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["event_config"]["narrative_direction"] == "crisis"
+    assert resolved["twitter_config"]["viral_threshold"] == 6
+    assert {
+        item["event_id"] for item in resolved["event_config"]["scheduled_events"]
+    } == {"briefing", "policy_reversal"}
+    assert manifest.assumption_ledger["scenario_coverage_tags"] == [
+        "attention:elevated",
+        "trajectory:shock",
+    ]
+    assert manifest.assumption_ledger["applied_exogenous_event_ids"] == [
+        "policy_reversal"
+    ]
+    assert manifest.assumption_ledger["activated_template_conditions"] == [
+        "twitter_config.viral_threshold"
+    ]

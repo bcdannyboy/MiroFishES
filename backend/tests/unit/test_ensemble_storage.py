@@ -399,6 +399,27 @@ def test_create_ensemble_persists_experiment_design_and_assumption_ledgers(
     assert run_one["resolved_config"]["assumption_ledger"] == run_one["run_manifest"]["assumption_ledger"]
     assert run_one["run_manifest"]["assumption_ledger"]["scenario_template_ids"] == ["base_case"]
     assert run_two["run_manifest"]["assumption_ledger"]["scenario_template_ids"] == ["viral_spike"]
+    assert run_one["run_manifest"]["assumption_ledger"]["applied_templates"] == ["base_case"]
+    assert run_two["run_manifest"]["assumption_ledger"]["applied_templates"] == ["viral_spike"]
+    assert run_one["run_manifest"]["assumption_ledger"]["scenario_override_fields"] == [
+        "event_config.narrative_direction"
+    ]
+    assert run_two["run_manifest"]["assumption_ledger"]["scenario_override_fields"] == [
+        "agent_configs[0].activity_level",
+        "agent_configs[0].comments_per_hour",
+        "agent_configs[0].influence_weight",
+        "agent_configs[0].posts_per_hour",
+        "event_config.narrative_direction",
+        "reddit_config.echo_chamber_strength",
+        "twitter_config.echo_chamber_strength",
+    ]
+    assert run_one["resolved_config"]["event_config"]["narrative_direction"] == "baseline"
+    assert run_two["resolved_config"]["event_config"]["narrative_direction"] == "viral_spike"
+    assert run_two["resolved_config"]["twitter_config"]["echo_chamber_strength"] == 0.8
+    assert run_two["resolved_config"]["reddit_config"]["echo_chamber_strength"] == 0.75
+    assert run_one["resolved_config"]["event_config"]["narrative_direction"] != (
+        run_two["resolved_config"]["event_config"]["narrative_direction"]
+    )
 
 
 def test_load_helpers_normalize_prefixed_public_ids(

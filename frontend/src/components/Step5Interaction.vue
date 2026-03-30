@@ -8,7 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">Prediction Report</span>
+              <span class="report-tag">{{ reportTagLabel }}</span>
               <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
@@ -156,6 +156,159 @@
         </div>
 
         <div
+          v-if="hybridWorkspace?.available"
+          class="report-agent-tools-card probabilistic-hybrid-card"
+          data-testid="probabilistic-step5-hybrid-workspace"
+        >
+          <div class="tools-card-header">
+            <div class="tools-card-avatar">H</div>
+            <div class="tools-card-info">
+              <div class="tools-card-name">Hybrid Forecast Workspace</div>
+              <div class="tools-card-subtitle">
+                The report can show the forecast question, evidence bundle, prediction ledger, evaluation results, and worker comparison when those artifacts exist. Calibration is only earned on supported evaluated question lanes with type-correct evidence, and simulation remains supporting scenario analysis only.
+              </div>
+            </div>
+          </div>
+
+          <div class="tools-grid hybrid-grid">
+            <div class="tool-item tool-purple">
+              <div class="tool-content">
+                <div class="tool-name">Forecast question</div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.forecastQuestion.questionText || 'Question unavailable' }}
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.forecastQuestion.questionType || hybridWorkspace.forecastQuestion.questionHorizon">
+                  <span v-if="hybridWorkspace.forecastQuestion.questionType">Type: {{ hybridWorkspace.forecastQuestion.questionType }}.</span>
+                  <span v-if="hybridWorkspace.forecastQuestion.questionHorizon">Horizon: {{ hybridWorkspace.forecastQuestion.questionHorizon }}.</span>
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.forecastQuestion.abstentionConditions.length">
+                  Abstention: {{ hybridWorkspace.forecastQuestion.abstentionConditions.join('; ') }}.
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-blue">
+              <div class="tool-content">
+                <div class="tool-name">Hybrid answer</div>
+                <div class="tool-desc">
+                  <span v-if="hybridWorkspace.latestAnswer.abstain">
+                    Abstained because {{ hybridWorkspace.latestAnswer.abstainReason || 'support is insufficient' }}.
+                  </span>
+                  <span v-else>
+                    Best estimate {{ hybridWorkspace.latestAnswer.bestEstimateDisplay || formatForecastBestEstimate(hybridWorkspace.latestAnswer.bestEstimate, hybridWorkspace.latestAnswer.bestEstimateSemantics) }}.
+                  </span>
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.latestAnswer.bestEstimateWhy">
+                  Why: {{ hybridWorkspace.latestAnswer.bestEstimateWhy }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.latestAnswer.counterevidence.length">
+                  Counterevidence: {{ hybridWorkspace.latestAnswer.counterevidence.join('; ') }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.latestAnswer.assumptionLedger.items.length">
+                  Assumption ledger: {{ hybridWorkspace.latestAnswer.assumptionLedger.items.join('; ') }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.latestAnswer.uncertaintyDecomposition.components.length">
+                  Uncertainty: {{ hybridWorkspace.latestAnswer.uncertaintyDecomposition.components.map((item) => item.summary || item.code).filter(Boolean).join('; ') }}.
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-orange">
+              <div class="tool-content">
+                <div class="tool-name">Evidence bundle</div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.evidenceBundle.summary || 'Evidence bundle available' }}
+                </div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.evidenceBundle.sourceEntryCount }} source entries, freshness {{ hybridWorkspace.evidenceBundle.freshness }}, relevance {{ hybridWorkspace.evidenceBundle.relevance }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.evidenceBundle.conflictCount || hybridWorkspace.evidenceBundle.missingEvidenceCount">
+                  <span v-if="hybridWorkspace.evidenceBundle.conflictCount">Conflicts: {{ hybridWorkspace.evidenceBundle.conflictCount }}.</span>
+                  <span v-if="hybridWorkspace.evidenceBundle.missingEvidenceCount">Missing: {{ hybridWorkspace.evidenceBundle.missingEvidenceCount }}.</span>
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-green">
+              <div class="tool-content">
+                <div class="tool-name">Prediction ledger</div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.predictionLedger.entryCount }} entries, {{ hybridWorkspace.predictionLedger.workerOutputCount }} worker outputs.
+                </div>
+                <div class="tool-desc">
+                  Final state: {{ hybridWorkspace.predictionLedger.finalResolutionState }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.evaluation.caseCount">
+                  {{ hybridWorkspace.evaluation.caseCount }} evaluation cases, {{ hybridWorkspace.evaluation.resolvedCaseCount }} resolved.
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-purple">
+              <div class="tool-content">
+                <div class="tool-name">Worker comparison</div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.workerComparison.workerCount }} workers: {{ hybridWorkspace.workerComparison.workerKinds.join(', ') || 'none recorded' }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.workerComparison.simulationIsOnlyWorker">
+                  Simulation is the only worker and stays scenario analysis only.
+                </div>
+                <div class="tool-desc" v-else>
+                  Simulation remains one worker inside the hybrid comparison.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.workerComparison.contributionTrace.length">
+                  Contribution trace: {{ hybridWorkspace.workerComparison.contributionTrace.slice(0, 3).map((item) => item.summary || item.workerId || item.workerKind).filter(Boolean).join('; ') }}.
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-blue">
+              <div class="tool-content">
+                <div class="tool-name">Evaluation and confidence</div>
+                <div class="tool-desc">
+                  Evidence available: {{ hybridWorkspace.statusSurface.evidenceAvailable ? 'yes' : 'no' }}.
+                  Evaluation available: {{ hybridWorkspace.statusSurface.evaluationAvailable ? 'yes' : 'no' }}.
+                </div>
+                <div class="tool-desc">
+                  Calibrated confidence earned: {{ hybridWorkspace.statusSurface.calibratedConfidenceEarned ? 'yes' : 'no' }}.
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.supportedQuestionTemplates.length">
+                  Templates: {{ hybridWorkspace.supportedQuestionTemplates.join(', ') }}.
+                </div>
+              </div>
+            </div>
+            <div class="tool-item tool-orange">
+              <div class="tool-content">
+                <div class="tool-name">Simulation scenario analysis</div>
+                <div class="tool-desc">
+                  {{ hybridWorkspace.simulationScenarioAnalysis.onlyScenarioExploration ? 'Simulation-only scenario exploration.' : 'Simulation remains supporting scenario analysis.' }}
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.simulationScenarioAnalysis.observedRunShare !== null">
+                  Observed run share {{ formatHybridPercent(hybridWorkspace.simulationScenarioAnalysis.observedRunShare) }}.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="probabilistic-step5-chip-row">
+            <span class="probabilistic-step5-chip capability">
+              Evidence {{ hybridWorkspace.statusSurface.evidenceAvailable ? 'available' : 'missing' }}
+            </span>
+            <span class="probabilistic-step5-chip epistemic">
+              Evaluation {{ hybridWorkspace.statusSurface.evaluationAvailable ? 'available' : 'missing' }}
+            </span>
+            <span class="probabilistic-step5-chip epistemic">
+              Calibrated confidence {{ hybridWorkspace.statusSurface.calibratedConfidenceEarned ? 'earned' : 'not earned' }}
+            </span>
+            <span class="probabilistic-step5-chip capability">
+              {{ hybridWorkspace.statusSurface.simulationOnlyScenarioExploration ? 'Simulation-only scenario exploration' : 'Simulation as supporting scenario analysis' }}
+            </span>
+            <span
+              v-for="template in hybridWorkspace.supportedQuestionTemplates"
+              :key="`hybrid-template-${template}`"
+              class="probabilistic-step5-chip capability"
+            >
+              Template {{ template }}
+            </span>
+          </div>
+        </div>
+
+        <div
           v-if="chatTarget === 'report_agent' && probabilisticEvidenceSummary.available"
           class="probabilistic-step5-evidence"
           data-testid="probabilistic-step5-evidence"
@@ -255,32 +408,32 @@
           <div class="probabilistic-step5-chip-row">
             <span
               v-if="probabilisticEvidenceSummary.confidenceStatus"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip epistemic"
             >
-              Confidence {{ probabilisticEvidenceSummary.confidenceStatus.status }}
+              Confidence gate {{ probabilisticEvidenceSummary.confidenceStatus.status }}
             </span>
             <span
               v-if="probabilisticEvidenceSummary.grounding"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip epistemic"
             >
-              Grounding {{ probabilisticEvidenceSummary.grounding.status }}
+              Grounding attachment {{ probabilisticEvidenceSummary.grounding.status }}
             </span>
             <span
               v-if="probabilisticEvidenceSummary.grounding"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip capability"
             >
               S{{ probabilisticEvidenceSummary.grounding.citationCounts.source }} / G{{ probabilisticEvidenceSummary.grounding.citationCounts.graph }}
             </span>
             <span
               v-if="probabilisticEvidenceSummary.selectedCluster?.clusterId"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip capability"
             >
               Family {{ probabilisticEvidenceSummary.selectedCluster.clusterId }}
             </span>
             <span
               v-for="runIdValue in probabilisticEvidenceSummary.scope.representativeRunIds"
               :key="`rep-${runIdValue}`"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip capability"
             >
               Rep {{ runIdValue }}
             </span>
@@ -307,20 +460,20 @@
             </span>
             <span
               v-if="probabilisticEvidenceSummary.selectedRun?.assumptionSummary"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip capability"
             >
               {{ probabilisticEvidenceSummary.selectedRun.assumptionSummary }}
             </span>
             <span
               v-if="probabilisticEvidenceSummary.calibration?.summary"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip epistemic"
             >
               {{ probabilisticEvidenceSummary.calibration.summary }}
             </span>
             <span
               v-for="item in (probabilisticEvidenceSummary.grounding?.evidenceItems || [])"
               :key="`grounding-${item.citationId || item.title}`"
-              class="probabilistic-step5-chip"
+              class="probabilistic-step5-chip epistemic"
             >
               {{ item.citationId || item.title }}
             </span>
@@ -335,8 +488,8 @@
             <div class="tools-card-header">
               <div class="tools-card-avatar">R</div>
               <div class="tools-card-info">
-                <div class="tools-card-name">Report Agent - Chat</div>
-                <div class="tools-card-subtitle">A fast conversational version of the report-generation agent. It can call four specialized tools and has access to the full memory of MiroFishES.</div>
+              <div class="tools-card-name">Report Agent Scope</div>
+                <div class="tools-card-subtitle">This lane reads the saved report plus any scoped evidence attached to this session. When the hybrid workspace is present, it can show the question, ledger, evaluation, and worker comparison directly. It still does not widen scope or turn simulation frequency into a probability claim on its own.</div>
               </div>
               <button class="tools-card-toggle" @click="showToolsDetail = !showToolsDetail">
                 <svg :class="{ 'is-expanded': showToolsDetail }" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -353,8 +506,8 @@
                     </svg>
                   </div>
                   <div class="tool-content">
-                    <div class="tool-name">InsightForge Deep Attribution</div>
-                    <div class="tool-desc">Aligns real-world seed data with simulation state and combines global/local memory to deliver deep cross-time attribution analysis.</div>
+                    <div class="tool-name">Saved Report Body</div>
+                    <div class="tool-desc">Uses the Step 4 report sections as the primary context for answers and follow-up questions.</div>
                   </div>
                 </div>
                 <div class="tool-item tool-blue">
@@ -365,8 +518,8 @@
                     </svg>
                   </div>
                   <div class="tool-content">
-                    <div class="tool-name">PanoramaSearch Panorama Trace</div>
-                    <div class="tool-desc">Uses breadth-first traversal on the graph structure to reconstruct event propagation paths and capture the full topology of information flow.</div>
+                    <div class="tool-name">Scoped Evidence Artifacts</div>
+                    <div class="tool-desc">Can inspect saved ensemble, scenario-family, or run artifacts when that scope is attached to this session.</div>
                   </div>
                 </div>
                 <div class="tool-item tool-orange">
@@ -376,8 +529,8 @@
                     </svg>
                   </div>
                   <div class="tool-content">
-                    <div class="tool-name">QuickSearch Rapid Lookup</div>
-                    <div class="tool-desc">A real-time GraphRAG query interface optimized for fast index access to specific node attributes and discrete facts.</div>
+                    <div class="tool-name">Confidence Boundaries</div>
+                    <div class="tool-desc">Any confidence or calibration language stays limited to the saved artifact readiness and provenance attached to the report context.</div>
                   </div>
                 </div>
                 <div class="tool-item tool-green">
@@ -389,8 +542,8 @@
                     </svg>
                   </div>
                   <div class="tool-content">
-                    <div class="tool-name">InterviewSubAgent Virtual Interview</div>
-                    <div class="tool-desc">Autonomous interviews that can run multi-turn conversations with simulated individuals in parallel to collect unstructured opinions and mental-state signals.</div>
+                    <div class="tool-name">Legacy-Only Lanes</div>
+                    <div class="tool-desc">Interviews and surveys remain on the legacy interaction path and do not inherit probabilistic scope automatically.</div>
                   </div>
                 </div>
               </div>
@@ -431,7 +584,7 @@
                 </svg>
               </div>
               <p class="empty-text">
-                {{ chatTarget === 'report_agent' ? 'Talk with Report Agent to explore the report in more depth' : 'Talk with simulated individuals to understand their perspectives' }}
+                {{ chatTarget === 'report_agent' ? 'Talk with Report Agent to inspect the report and any saved scoped evidence' : 'Talk with simulated individuals to understand their perspectives' }}
               </p>
               <div
                 v-if="chatTarget === 'report_agent' && probabilisticEvidenceSummary.comparePrompts.length"
@@ -610,6 +763,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
 import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
 import { renderSafeMarkdown } from '../utils/safeMarkdown'
+import { formatForecastBestEstimate } from '../utils/forecastRuntime'
 import {
   buildReportAgentChatRequest,
   deriveProbabilisticEvidenceSummary,
@@ -646,6 +800,17 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const reportTagLabel = computed(() => (
+  props.probabilisticContext && typeof props.probabilisticContext === 'object'
+  && (
+    props.probabilisticContext.forecast_workspace
+    || props.probabilisticContext.forecast_question
+    || props.probabilisticContext.prediction_ledger
+    || props.probabilisticContext.forecast_answers
+  )
+    ? 'Hybrid Forecast Report'
+    : 'Simulation Report'
+))
 const normalizeScopeEntry = (entry, fallbackLevel = 'ensemble') => {
   if (!entry || typeof entry !== 'object') {
     return null
@@ -808,6 +973,7 @@ const probabilisticEvidenceSummary = computed(() => deriveProbabilisticEvidenceS
   compareId: activeCompareId.value,
   reportContext: props.probabilisticContext
 }))
+const hybridWorkspace = computed(() => probabilisticEvidenceSummary.value.hybridWorkspace || null)
 const step5InteractionState = computed(() => getStep5InteractionState(
   props.runtimeMode,
   {
@@ -821,6 +987,13 @@ const step5InteractionState = computed(() => getStep5InteractionState(
     )
   }
 ))
+
+const formatHybridPercent = (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '-'
+  }
+  return `${Math.round(value * 100)}%`
+}
 
 const probabilisticScopeLabel = computed(() => {
   const level = probabilisticEvidenceSummary.value.scope?.level || 'ensemble'
@@ -1838,6 +2011,17 @@ watch(
   padding: 7px 12px;
   font-size: 12px;
   color: #4a4137;
+}
+
+.probabilistic-step5-chip.capability {
+  background: rgba(54, 87, 135, 0.1);
+  color: #22466f;
+}
+
+.probabilistic-step5-chip.epistemic {
+  background: rgba(123, 83, 34, 0.12);
+  border: 1px solid rgba(156, 107, 47, 0.14);
+  color: #6c4a23;
 }
 
 .probabilistic-step5-chip.warning {

@@ -203,6 +203,12 @@ def test_start_simulation_preserves_legacy_runtime_root(tmp_path, monkeypatch):
     assert "--no-wait" not in captures["cmd"]
     assert captures["stdout_path"] == str(sim_dir / "simulation.log")
     assert (sim_dir / "run_state.json").exists()
+    timing_payload = json.loads(
+        (sim_dir / "run_phase_timings.json").read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "run"
+    assert timing_payload["scope_id"] == simulation_id
+    assert "run_startup" in timing_payload["phases"]
     assert simulation_id in runner_module.SimulationRunner._processes
 
 
@@ -252,6 +258,12 @@ def test_start_simulation_uses_run_local_runtime_root_for_ensemble_member(
     assert (run_dir / "twitter_profiles.csv").exists()
     assert (run_dir / "reddit_profiles.json").exists()
     assert (run_dir / "run_state.json").exists()
+    timing_payload = json.loads(
+        (run_dir / "run_phase_timings.json").read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "run"
+    assert timing_payload["scope_id"] == f"{simulation_id}::{ensemble_id}::{run_id}"
+    assert "run_startup" in timing_payload["phases"]
     assert state.runtime_key in runner_module.SimulationRunner._processes
 
 
@@ -341,6 +353,7 @@ def test_cleanup_simulation_logs_targets_only_one_run_root(tmp_path, monkeypatch
         (run_dir / "simulation.log").write_text("log", encoding="utf-8")
         (run_dir / "run_state.json").write_text("{}", encoding="utf-8")
         (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+        (run_dir / "run_phase_timings.json").write_text("{}", encoding="utf-8")
         (run_dir / "env_status.json").write_text("{}", encoding="utf-8")
         (run_dir / "twitter_simulation.db").write_text("", encoding="utf-8")
         (run_dir / "reddit_simulation.db").write_text("", encoding="utf-8")
@@ -365,6 +378,7 @@ def test_cleanup_simulation_logs_targets_only_one_run_root(tmp_path, monkeypatch
     assert not (run_one_dir / "twitter" / "actions.jsonl").exists()
     assert not (run_one_dir / "reddit" / "actions.jsonl").exists()
     assert not (run_one_dir / "metrics.json").exists()
+    assert not (run_one_dir / "run_phase_timings.json").exists()
     assert not (run_one_dir / "twitter_simulation.db").exists()
     assert not (run_one_dir / "reddit_simulation.db").exists()
     assert (run_one_dir / "resolved_config.json").exists()
@@ -465,6 +479,12 @@ def test_persist_run_metrics_writes_metrics_json_and_updates_manifest(tmp_path, 
     assert persisted["metric_values"]["platform.twitter.total_actions"]["value"] == 2
     assert persisted["metric_values"]["platform.reddit.total_actions"]["value"] == 1
     assert persisted["quality_checks"]["log_completeness"] == "complete"
+    timing_payload = json.loads(
+        (run_dir / "run_phase_timings.json").read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "run"
+    assert timing_payload["scope_id"] == f"{simulation_id}::{ensemble_id}::{run_id}"
+    assert "metrics_extraction" in timing_payload["phases"]
 
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifact_paths"]["metrics"] == "metrics.json"

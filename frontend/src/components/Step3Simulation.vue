@@ -315,11 +315,11 @@
             data-testid="probabilistic-report-scope-panel"
           >
             <div class="probabilistic-timeline-header">
-              <span class="metric-label">Step 4 Forecast Scope</span>
+              <span class="metric-label">Step 4 Report Scope</span>
               <span class="probabilistic-card-meta mono">{{ reportScopeState.level.toUpperCase() }}</span>
             </div>
             <p class="probabilistic-copy">
-              Forecast mode can now generate Step 4 from ensemble, scenario-family, or run scope. All scopes stay empirical or observational unless stronger artifacts exist.
+              Step 4 can generate a scoped simulation report from ensemble, scenario-family, or run scope. Ensemble and scenario-family summaries stay empirical, selected-run facts stay observed, and sensitivity stays observational unless validated backtest and calibration artifacts explicitly earn stronger language.
             </p>
             <div class="probabilistic-scope-toggle">
               <button
@@ -558,6 +558,7 @@ import {
 import { generateReport } from '../api/report'
 import {
   buildReportGenerationRequest,
+  deriveProbabilisticAnalyticsAvailability,
   buildProbabilisticRunStartRequest,
   buildSimulationRunRouteQuery,
   deriveProbabilisticActionRoundsMeta,
@@ -864,6 +865,19 @@ const scenarioFamilyOptions = computed(() => {
         supportLabel: preparedRunCount > 0
           ? `Observed in ${runCount} of ${preparedRunCount} runs`
           : `Observed in ${runCount} runs`,
+        supportAssessment: cluster.support_assessment && typeof cluster.support_assessment === 'object'
+          ? {
+              status: cluster.support_assessment.status || 'observed_pattern',
+              label: cluster.support_assessment.label || '',
+              downgraded: cluster.support_assessment.downgraded === true,
+              reason: cluster.support_assessment.reason || ''
+            }
+          : {
+              status: 'observed_pattern',
+              label: '',
+              downgraded: false,
+              reason: ''
+            },
         prototypeRunId: normalizeOptionalId(cluster.prototype_run_id),
         memberRunIds: Array.isArray(cluster.member_run_ids) ? cluster.member_run_ids : [],
         comparisonHints: Array.isArray(cluster.comparison_hints) ? cluster.comparison_hints : []
@@ -929,7 +943,11 @@ const reportScopeState = computed(() => {
       runId: null,
       label: cluster?.familyLabel || (clusterId ? `Scenario family ${clusterId}` : 'Scenario family'),
       summary: cluster
-        ? `${cluster.familyLabel} stays at scenario-family scope. ${cluster.supportLabel}. Representative run ${cluster.prototypeRunId || '-'} remains descriptive only.`
+        ? (
+            cluster.supportAssessment?.downgraded
+              ? `${cluster.familyLabel} stays at scenario-family scope. ${cluster.supportLabel}. ${cluster.supportAssessment.label || 'Descriptive only'}: ${cluster.supportAssessment.reason || 'warning-bearing cluster evidence remains read-only.'} Representative run ${cluster.prototypeRunId || '-'} remains descriptive only.`
+              : `${cluster.familyLabel} stays at scenario-family scope. ${cluster.supportLabel}. Representative run ${cluster.prototypeRunId || '-'} remains descriptive only.`
+          )
         : (clusterId
           ? `Scenario family ${clusterId} is selected for Step 4. Family metadata will populate once the cluster artifact is available.`
           : 'Select a scenario family before generating a cluster-scoped report.')
@@ -1021,12 +1039,19 @@ const probabilisticTimelinePreview = computed(() => (
   [...probabilisticTimeline.value].slice(-4).reverse()
 ))
 
+const probabilisticAnalyticsAvailability = computed(() => (
+  deriveProbabilisticAnalyticsAvailability({
+    runSummaries: probabilisticRunSummaries.value
+  })
+))
+
 const probabilisticAnalyticsCards = computed(() => deriveProbabilisticAnalyticsCards({
   summaryArtifact: probabilisticSummaryArtifact.value,
   clustersArtifact: probabilisticClustersArtifact.value,
   sensitivityArtifact: probabilisticSensitivityArtifact.value,
   loadingByKey: probabilisticAnalyticsLoading.value,
-  errorByKey: probabilisticAnalyticsErrors.value
+  errorByKey: probabilisticAnalyticsErrors.value,
+  availabilityByKey: probabilisticAnalyticsAvailability.value
 }))
 
 const probabilisticAnalyticsEntries = computed(() => ([
@@ -1110,7 +1135,7 @@ const probabilisticRunNotice = computed(() => {
       return `Stored run ${runLabel} is running. Step 3 shows raw runtime status, actions, and action-bearing round timeline data only.${timelineSuffix}`
     case 'completed':
       return step3ReportState.value.enabled
-        ? `Stored run ${runLabel} completed. Raw traces stay available here, and Step 4 can add observed empirical ensemble context from stored artifacts.${timelineSuffix}`
+        ? `Stored run ${runLabel} completed. Raw traces stay available here, and Step 4 can add scoped simulation evidence from stored artifacts.${timelineSuffix}`
         : `Stored run ${runLabel} completed. Raw traces stay available here, while Step 4 report generation remains legacy-only for this probabilistic runtime path.${timelineSuffix}`
     case 'stopped':
       return `Stored run ${runLabel} stopped before completion. Raw traces remain visible, and this stored shell can be rerun without changing the original prepared inputs.${timelineSuffix}`
@@ -1850,10 +1875,11 @@ const fetchProbabilisticRunTimeline = async ({ throwOnError = false } = {}) => {
 const fetchProbabilisticAnalytics = async ({ throwOnError = false } = {}) => {
   if (!props.simulationId || !ensembleId.value) return
 
+  const availability = probabilisticAnalyticsAvailability.value
   probabilisticAnalyticsLoading.value = {
     summary: true,
-    clusters: true,
-    sensitivity: true
+    clusters: availability.clusters.ready,
+    sensitivity: availability.sensitivity.ready
   }
 
   const nextErrors = {
@@ -1871,21 +1897,33 @@ const fetchProbabilisticAnalytics = async ({ throwOnError = false } = {}) => {
         probabilisticSummaryArtifact.value = payload
       }
     },
-    {
+    availability.clusters.ready
+      ? {
       key: 'clusters',
       loader: () => getSimulationEnsembleClusters(props.simulationId, ensembleId.value),
       assign: (payload) => {
         probabilisticClustersArtifact.value = payload
       }
-    },
-    {
+      }
+      : null,
+    availability.sensitivity.ready
+      ? {
       key: 'sensitivity',
       loader: () => getSimulationEnsembleSensitivity(props.simulationId, ensembleId.value),
       assign: (payload) => {
         probabilisticSensitivityArtifact.value = payload
       }
-    }
-  ]
+      }
+      : null
+  ].filter(Boolean)
+
+  if (!availability.clusters.ready) {
+    probabilisticClustersArtifact.value = null
+  }
+
+  if (!availability.sensitivity.ready) {
+    probabilisticSensitivityArtifact.value = null
+  }
 
   await Promise.all(requests.map(async ({ key, loader, assign }) => {
     try {
@@ -1895,7 +1933,7 @@ const fetchProbabilisticAnalytics = async ({ throwOnError = false } = {}) => {
       }
       assign(res.data)
     } catch (err) {
-      nextErrors[key] = err.message
+      nextErrors[key] = err?.response?.data?.error || err.message
       if (!firstError) {
         firstError = err
       }
@@ -2108,7 +2146,7 @@ const handleNextStep = async () => {
     const reportScope = reportScopeState.value
     addLog(
       showProbabilisticShell.value
-        ? `Generating a ${reportScope.level}-scoped forecast report from ensemble ${reportScope.ensembleId || '-'}.`
+        ? `Generating a ${reportScope.level}-scoped simulation report with saved empirical, observed, or observational evidence from ensemble ${reportScope.ensembleId || '-'}.`
         : 'Generating the legacy simulation report.'
     )
 
@@ -2159,7 +2197,7 @@ const initializeProbabilisticRun = async () => {
   }
 
   addLog(
-    `Loading probabilistic Step 3 shell for ensemble ${ensembleId.value}, run ${selectedRunId.value}`
+    `Loading probabilistic Step 3 stored run shell for ensemble ${ensembleId.value}, run ${selectedRunId.value}`
   )
 
   try {
@@ -2196,13 +2234,11 @@ const initializeProbabilisticRun = async () => {
 
     if (suppressNextProbabilisticAutoStart.value) {
       suppressNextProbabilisticAutoStart.value = false
-      phase.value = 0
-      emit('update-status', 'ready')
-      addLog(`Stored run shell ${selectedRunId.value} loaded. Launch it manually when ready.`)
-      return
     }
 
-    await startProbabilisticRun()
+    phase.value = 0
+    emit('update-status', 'ready')
+    addLog(probabilisticRuntimeState.value.waitingText)
   } catch (err) {
     probabilisticRuntimeIssue.value = err.message
     addLog(`Probabilistic Step 3 initialization failed: ${err.message}`)

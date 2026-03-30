@@ -13,7 +13,9 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.phase_timing import PhaseTimingRecorder
 from ..services.text_processor import TextProcessor
+from ..services.zep_entity_reader import build_filtered_entities_from_payloads
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
@@ -143,6 +145,8 @@ def reset_project(project_id: str):
     project.graph_build_task_id = None
     project.error = None
     ProjectManager.delete_graph_build_summary(project_id)
+    ProjectManager.delete_graph_entity_index(project_id)
+    ProjectManager.delete_graph_phase_timings(project_id)
     ProjectManager.save_project(project)
     
     return jsonify({
@@ -211,72 +215,92 @@ def generate_ontology():
         project = ProjectManager.create_project(name=project_name)
         project.simulation_requirement = simulation_requirement
         logger.info(f"Created project: {project.project_id}")
-        
+        phase_timing = PhaseTimingRecorder(
+            artifact_path=ProjectManager._get_graph_phase_timings_path(project.project_id),
+            scope_kind="project",
+            scope_id=project.project_id,
+        )
+
         # Save files and extract text
         document_texts = []
         all_text = ""
         source_records = []
-        
-        for source_index, file in enumerate(uploaded_files, start=1):
-            if file and file.filename and allowed_file(file.filename):
-                # Save file to the project directory
-                file_info = ProjectManager.save_file_to_project(
-                    project.project_id, 
-                    file, 
-                    file.filename
-                )
-                project.files.append({
-                    "filename": file_info["original_filename"],
-                    "size": file_info["size"]
-                })
 
-                extracted_text = ""
-                extraction_status = "succeeded"
-                parser_warnings = []
-                try:
-                    extracted_text = FileParser.extract_text(file_info["path"])
-                    extracted_text = TextProcessor.preprocess_text(extracted_text)
-                except Exception as exc:
-                    extraction_status = "failed"
-                    parser_warnings.append(str(exc))
-                    logger.warning(
-                        "File extraction failed for %s: %s",
-                        file_info["original_filename"],
-                        exc,
+        with phase_timing.measure_phase(
+            "upload_parse",
+            metadata={
+                "uploaded_file_count": len(uploaded_files),
+                "parsed_file_count": 0,
+                "failed_file_count": 0,
+                "total_text_length": 0,
+            },
+        ) as upload_metadata:
+            for source_index, file in enumerate(uploaded_files, start=1):
+                if file and file.filename and allowed_file(file.filename):
+                    # Save file to the project directory
+                    file_info = ProjectManager.save_file_to_project(
+                        project.project_id, 
+                        file, 
+                        file.filename
+                    )
+                    project.files.append({
+                        "filename": file_info["original_filename"],
+                        "size": file_info["size"]
+                    })
+
+                    extracted_text = ""
+                    extraction_status = "succeeded"
+                    parser_warnings = []
+                    try:
+                        extracted_text = FileParser.extract_text(file_info["path"])
+                        extracted_text = TextProcessor.preprocess_text(extracted_text)
+                    except Exception as exc:
+                        extraction_status = "failed"
+                        parser_warnings.append(str(exc))
+                        logger.warning(
+                            "File extraction failed for %s: %s",
+                            file_info["original_filename"],
+                            exc,
+                        )
+
+                    combined_text_start = None
+                    combined_text_end = None
+                    if extracted_text:
+                        combined_text_start = len(all_text)
+                        all_text += (
+                            f"\n\n=== {file_info['original_filename']} ===\n{extracted_text}"
+                        )
+                        combined_text_end = len(all_text)
+                        document_texts.append(extracted_text)
+
+                    source_records.append(
+                        {
+                            "source_id": f"src-{source_index}",
+                            "original_filename": file_info["original_filename"],
+                            "saved_filename": file_info["saved_filename"],
+                            "relative_path": os.path.relpath(
+                                file_info["path"],
+                                ProjectManager._get_project_dir(project.project_id),
+                            ),
+                            "size_bytes": file_info["size"],
+                            "sha256": _sha256_file(file_info["path"]),
+                            "content_kind": _classify_content_kind(
+                                file_info["original_filename"]
+                            ),
+                            "extraction_status": extraction_status,
+                            "extracted_text_length": len(extracted_text),
+                            "combined_text_start": combined_text_start,
+                            "combined_text_end": combined_text_end,
+                            "parser_warnings": parser_warnings,
+                            "excerpt": extracted_text[:280],
+                        }
                     )
 
-                combined_text_start = None
-                combined_text_end = None
-                if extracted_text:
-                    combined_text_start = len(all_text)
-                    all_text += (
-                        f"\n\n=== {file_info['original_filename']} ===\n{extracted_text}"
-                    )
-                    combined_text_end = len(all_text)
-                    document_texts.append(extracted_text)
-
-                source_records.append(
-                    {
-                        "source_id": f"src-{source_index}",
-                        "original_filename": file_info["original_filename"],
-                        "saved_filename": file_info["saved_filename"],
-                        "relative_path": os.path.relpath(
-                            file_info["path"],
-                            ProjectManager._get_project_dir(project.project_id),
-                        ),
-                        "size_bytes": file_info["size"],
-                        "sha256": _sha256_file(file_info["path"]),
-                        "content_kind": _classify_content_kind(
-                            file_info["original_filename"]
-                        ),
-                        "extraction_status": extraction_status,
-                        "extracted_text_length": len(extracted_text),
-                        "combined_text_start": combined_text_start,
-                        "combined_text_end": combined_text_end,
-                        "parser_warnings": parser_warnings,
-                        "excerpt": extracted_text[:280],
-                    }
-                )
+            upload_metadata["parsed_file_count"] = len(
+                [item for item in source_records if item["extraction_status"] == "succeeded"]
+            )
+            upload_metadata["failed_file_count"] = len(source_records) - upload_metadata["parsed_file_count"]
+            upload_metadata["total_text_length"] = len(all_text)
         
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
@@ -293,11 +317,17 @@ def generate_ontology():
         # Generate ontology
         logger.info("Calling LLM to generate ontology definition...")
         generator = OntologyGenerator()
-        ontology = generator.generate(
-            document_texts=document_texts,
-            simulation_requirement=simulation_requirement,
-            additional_context=additional_context if additional_context else None
-        )
+        with phase_timing.measure_phase(
+            "ontology_generation",
+            metadata={"entity_type_count": 0, "edge_type_count": 0},
+        ) as ontology_metadata:
+            ontology = generator.generate(
+                document_texts=document_texts,
+                simulation_requirement=simulation_requirement,
+                additional_context=additional_context if additional_context else None
+            )
+            ontology_metadata["entity_type_count"] = len(ontology.get("entity_types", []))
+            ontology_metadata["edge_type_count"] = len(ontology.get("edge_types", []))
         
         # Save ontology to the project
         entity_count = len(ontology.get("entity_types", []))
@@ -431,6 +461,8 @@ def build_graph():
             project.graph_build_task_id = None
             project.error = None
             ProjectManager.delete_graph_build_summary(project_id)
+            ProjectManager.delete_graph_entity_index(project_id)
+            ProjectManager.delete_graph_phase_timings(project_id)
         
         # Get configuration
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
@@ -472,6 +504,11 @@ def build_graph():
             build_logger = get_logger('mirofish.build')
             try:
                 build_logger.info(f"[{task_id}] Starting graph build...")
+                phase_timing = PhaseTimingRecorder(
+                    artifact_path=ProjectManager._get_graph_phase_timings_path(project_id),
+                    scope_kind="project",
+                    scope_id=project_id,
+                )
                 task_manager.update_task(
                     task_id, 
                     status=TaskStatus.PROCESSING,
@@ -528,13 +565,17 @@ def build_graph():
                     message=f"Starting to add {total_chunks} text chunks...",
                     progress=15
                 )
-                
-                episode_uuids = builder.add_text_batches(
-                    graph_id, 
-                    chunks,
-                    batch_size=3,
-                    progress_callback=add_progress_callback
-                )
+
+                with phase_timing.measure_phase(
+                    "graph_batch_send",
+                    metadata={"chunk_count": total_chunks},
+                ) as batch_metadata:
+                    episode_uuids = builder.add_text_batches(
+                        graph_id,
+                        chunks,
+                        progress_callback=add_progress_callback,
+                    )
+                    batch_metadata["episode_count"] = len(episode_uuids)
                 
                 # Wait for Zep processing to finish (check each episode's processed status)
                 task_manager.update_task(
@@ -550,16 +591,29 @@ def build_graph():
                         message=msg,
                         progress=progress
                     )
-                
-                builder._wait_for_episodes(episode_uuids, wait_progress_callback)
-                
-                # Fetch graph data
+
+                with phase_timing.measure_phase(
+                    "graph_wait",
+                    metadata={"episode_count": len(episode_uuids)},
+                ):
+                    builder._wait_for_episodes(
+                        graph_id,
+                        episode_uuids,
+                        wait_progress_callback,
+                    )
+
+                # Fetch graph snapshot
                 task_manager.update_task(
                     task_id,
-                    message="Fetching graph data...",
+                    message="Fetching graph snapshot...",
                     progress=95
                 )
-                graph_data = builder.get_graph_data(graph_id)
+                graph_snapshot = builder.get_graph_snapshot(graph_id)
+                filtered_entities = build_filtered_entities_from_payloads(
+                    graph_snapshot.get("nodes", []),
+                    graph_snapshot.get("edges", []),
+                    enrich_with_edges=True,
+                )
                 
                 # Update project status
                 project.status = ProjectStatus.GRAPH_COMPLETED
@@ -604,16 +658,31 @@ def build_graph():
                         "chunk_overlap": chunk_overlap,
                         "chunk_count": total_chunks,
                         "graph_counts": {
-                            "node_count": graph_data.get("node_count", 0),
-                            "edge_count": graph_data.get("edge_count", 0),
-                            "entity_types": graph_data.get("entity_types", []),
+                            "node_count": graph_snapshot.get("node_count", 0),
+                            "edge_count": graph_snapshot.get("edge_count", 0),
+                            "entity_types": graph_snapshot.get("entity_types", []),
                         },
                         "warnings": graph_summary_warnings,
                     },
                 )
+                ProjectManager.save_graph_entity_index(
+                    project_id,
+                    {
+                        "artifact_type": "graph_entity_index",
+                        "schema_version": GROUNDING_SCHEMA_VERSION,
+                        "generator_version": GROUNDING_GENERATOR_VERSION,
+                        "project_id": project_id,
+                        "graph_id": graph_id,
+                        "generated_at": project.updated_at,
+                        "total_count": filtered_entities.total_count,
+                        "filtered_count": filtered_entities.filtered_count,
+                        "entity_types": sorted(filtered_entities.entity_types),
+                        "entities": [entity.to_dict() for entity in filtered_entities.entities],
+                    },
+                )
                 
-                node_count = graph_data.get("node_count", 0)
-                edge_count = graph_data.get("edge_count", 0)
+                node_count = graph_snapshot.get("node_count", 0)
+                edge_count = graph_snapshot.get("edge_count", 0)
                 build_logger.info(f"[{task_id}] Graph build completed: graph_id={graph_id}, nodes={node_count}, edges={edge_count}")
                 
                 # Complete

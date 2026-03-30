@@ -109,6 +109,7 @@ def test_uncertainty_and_outcome_specs_round_trip():
                 template_id="base_case",
                 label="Base Case",
                 field_overrides={"event_config.narrative_direction": "neutral"},
+                coverage_tags=["baseline", "monitoring"],
             )
         ],
         experiment_design=ExperimentDesignSpec(
@@ -118,6 +119,8 @@ def test_uncertainty_and_outcome_specs_round_trip():
                 "reddit_config.echo_chamber_strength",
             ],
             scenario_template_ids=["base_case"],
+            max_templates_per_run=2,
+            diversity_axes=["scenario_template", "coverage_tags"],
         ),
         notes=["Foundation slice only persists contracts."],
     )
@@ -185,6 +188,60 @@ def test_structured_uncertainty_contracts_reject_unsupported_design_metadata():
 
     with pytest.raises(ValueError, match="field_paths must contain at least two"):
         VariableGroupSpec(group_id="too-small", field_paths=["only.one"])
+
+
+def test_scenario_template_and_experiment_design_round_trip_diversity_metadata():
+    from app.models.probabilistic import (
+        ConditionalVariableSpec,
+        ExperimentDesignSpec,
+        RandomVariableSpec,
+        ScenarioTemplateSpec,
+    )
+
+    template = ScenarioTemplateSpec(
+        template_id="crisis_case",
+        label="Crisis Case",
+        field_overrides={
+            "event_config.narrative_direction": "crisis",
+            "event_config.hot_topics": ["crisis", "labor"],
+        },
+        coverage_tags=["trajectory:shock", "attention:elevated", "platform:cross"],
+        exogenous_events=[
+            {
+                "event_id": "crisis_case_briefing",
+                "kind": "breaking_update",
+                "timing_window": "early",
+            }
+        ],
+        conditional_overrides=[
+            ConditionalVariableSpec(
+                variable=RandomVariableSpec(
+                    field_path="twitter_config.viral_threshold",
+                    distribution="fixed",
+                    parameters={"value": 6},
+                ),
+                condition_field_path="event_config.narrative_direction",
+                operator="eq",
+                condition_value="crisis",
+            )
+        ],
+        notes=["Use a substantive crisis lane rather than a label-only template."],
+    )
+    design = ExperimentDesignSpec(
+        method="latin-hypercube",
+        numeric_dimensions=[
+            "twitter_config.echo_chamber_strength",
+            "reddit_config.echo_chamber_strength",
+        ],
+        scenario_template_ids=["crisis_case"],
+        scenario_assignment="weighted_cycle",
+        scenario_coverage_axes=["attention", "platform", "trajectory"],
+        max_template_reuse_streak=1,
+        notes=["Broaden event-space coverage across explicit scenario axes."],
+    )
+
+    assert ScenarioTemplateSpec.from_dict(template.to_dict()) == template
+    assert ExperimentDesignSpec.from_dict(design.to_dict()) == design
 
 
 def test_forecast_brief_rejects_invalid_resolution_date():

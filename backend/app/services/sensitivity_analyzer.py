@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config import Config
 from .analytics_policy import AnalyticsPolicy
+from .phase_timing import PhaseTimingRecorder
 
 
 SENSITIVITY_SCHEMA_VERSION = "probabilistic.sensitivity.v2"
@@ -40,6 +41,7 @@ class SensitivityAnalyzer:
     RESOLVED_CONFIG_FILENAME = "resolved_config.json"
     METRICS_FILENAME = "metrics.json"
     SENSITIVITY_FILENAME = "sensitivity.json"
+    PHASE_TIMINGS_FILENAME = "ensemble_phase_timings.json"
     THIN_SAMPLE_WARNING_THRESHOLD = 5
 
     _RUN_DIR_RE = re.compile(r"^run_(\d{4})$")
@@ -56,141 +58,170 @@ class SensitivityAnalyzer:
         """Build and persist one observational sensitivity artifact."""
         normalized_ensemble_id = self._normalize_ensemble_id(ensemble_id)
         ensemble_dir = self._get_ensemble_dir(simulation_id, normalized_ensemble_id)
-        state_path = os.path.join(ensemble_dir, self.ENSEMBLE_STATE_FILENAME)
-        if not os.path.exists(state_path):
-            raise ValueError(
-                f"Ensemble does not exist for simulation {simulation_id}: {ensemble_id}"
+        phase_timing = PhaseTimingRecorder(
+            artifact_path=os.path.join(ensemble_dir, self.PHASE_TIMINGS_FILENAME),
+            scope_kind="ensemble",
+            scope_id=f"{simulation_id}::{normalized_ensemble_id}",
+        )
+        with phase_timing.measure_phase("sensitivity", metadata={}) as phase_metadata:
+            state_path = os.path.join(ensemble_dir, self.ENSEMBLE_STATE_FILENAME)
+            if not os.path.exists(state_path):
+                raise ValueError(
+                    f"Ensemble does not exist for simulation {simulation_id}: {ensemble_id}"
+                )
+
+            ensemble_state = self._read_json(state_path)
+            (
+                run_payloads,
+                total_runs,
+                missing_metrics_runs,
+                invalid_metrics_runs,
+                degraded_metrics_runs,
+                invalid_manifest_runs,
+                missing_resolved_value_runs,
+            ) = self._load_run_payloads(ensemble_dir)
+            metric_ids = self._determine_metric_ids(run_payloads)
+
+            eligible_run_payloads = []
+            excluded_runs = []
+            for payload in run_payloads:
+                eligibility = self.analytics_policy.assess_run(
+                    mode="sensitivity",
+                    run_payload={
+                        "run_id": payload["run_id"],
+                        "metrics_payload": payload.get("metrics"),
+                        "manifest_valid": payload.get("manifest_valid", True),
+                        "resolved_values": payload.get("resolved_values"),
+                        "available_numeric_metric_ids": payload.get(
+                            "available_numeric_metric_ids",
+                            [],
+                        ),
+                    },
+                    required_metric_ids=metric_ids,
+                )
+                if eligibility["eligible"]:
+                    eligible_run_payloads.append(payload)
+                else:
+                    excluded_runs.append(
+                        {"run_id": payload["run_id"], "reasons": eligibility["reasons"]}
+                    )
+
+            metric_stats = self._compute_metric_stats(eligible_run_payloads, metric_ids)
+            cluster_membership = self._load_cluster_membership(simulation_id, normalized_ensemble_id)
+            scenario_diversity_context = self._load_scenario_diversity_context(
+                simulation_id,
+                normalized_ensemble_id,
+            )
+            driver_rankings = self._build_driver_rankings(
+                eligible_run_payloads,
+                metric_ids,
+                metric_stats,
+                cluster_membership,
+            )
+            if self._should_withhold_rankings(
+                cluster_membership=cluster_membership,
+                scenario_diversity_context=scenario_diversity_context,
+            ):
+                driver_rankings = []
+            warnings = self._build_quality_warnings(
+                analyzed_runs=len(eligible_run_payloads),
+                missing_metrics_runs=missing_metrics_runs,
+                invalid_metrics_runs=invalid_metrics_runs,
+                degraded_metrics_runs=degraded_metrics_runs,
+                invalid_manifest_runs=invalid_manifest_runs,
+                missing_resolved_value_runs=missing_resolved_value_runs,
+                has_numeric_metrics=bool(metric_ids),
+                has_ranked_drivers=bool(driver_rankings),
+                scenario_diversity_context=scenario_diversity_context,
+            )
+            driver_rankings = self._annotate_driver_rankings(
+                driver_rankings=driver_rankings,
+                quality_warnings=warnings,
+            )
+            support_assessment = self._build_support_assessment(
+                warnings=warnings,
             )
 
-        ensemble_state = self._read_json(state_path)
-        (
-            run_payloads,
-            total_runs,
-            missing_metrics_runs,
-            invalid_metrics_runs,
-            degraded_metrics_runs,
-            invalid_manifest_runs,
-            missing_resolved_value_runs,
-        ) = self._load_run_payloads(ensemble_dir)
-        metric_ids = self._determine_metric_ids(run_payloads)
+            phase_metadata["total_runs"] = total_runs
+            phase_metadata["analyzed_runs"] = len(eligible_run_payloads)
+            phase_metadata["driver_count"] = len(driver_rankings)
 
-        eligible_run_payloads = []
-        excluded_runs = []
-        for payload in run_payloads:
-            eligibility = self.analytics_policy.assess_run(
-                mode="sensitivity",
-                run_payload={
-                    "run_id": payload["run_id"],
-                    "metrics_payload": payload.get("metrics"),
-                    "manifest_valid": payload.get("manifest_valid", True),
-                    "resolved_values": payload.get("resolved_values"),
-                    "available_numeric_metric_ids": payload.get(
-                        "available_numeric_metric_ids",
-                        [],
+            artifact = {
+                "artifact_type": "sensitivity",
+                "schema_version": SENSITIVITY_SCHEMA_VERSION,
+                "generator_version": SENSITIVITY_GENERATOR_VERSION,
+                "simulation_id": simulation_id,
+                "ensemble_id": normalized_ensemble_id,
+                "driver_count": len(driver_rankings),
+                "driver_rankings": driver_rankings,
+                "scenario_diversity_context": scenario_diversity_context,
+                "methodology": {
+                    "analysis_mode": "observational_resolved_values",
+                    "driver_source": (
+                        "run_manifest.resolved_values with resolved_config.sampled_values "
+                        "fallback when available"
                     ),
+                    "outcome_source": "metrics.json numeric metric_values",
+                    "grouping_policy": "support_aware_driver_bands",
+                    "ranking_basis": "support_aware_standardized_effect_sum",
+                    "effect_size_definition": "max_group_mean_minus_min_group_mean",
+                    "minimum_support_count": self.analytics_policy.MINIMUM_SUPPORT_COUNT,
+                    "causal_interpretation": "not_supported",
                 },
-                required_metric_ids=metric_ids,
-            )
-            if eligibility["eligible"]:
-                eligible_run_payloads.append(payload)
-            else:
-                excluded_runs.append(
-                    {"run_id": payload["run_id"], "reasons": eligibility["reasons"]}
-                )
-
-        metric_stats = self._compute_metric_stats(eligible_run_payloads, metric_ids)
-        cluster_membership = self._load_cluster_membership(simulation_id, normalized_ensemble_id)
-        driver_rankings = self._build_driver_rankings(
-            eligible_run_payloads,
-            metric_ids,
-            metric_stats,
-            cluster_membership,
-        )
-        warnings = self._build_quality_warnings(
-            analyzed_runs=len(eligible_run_payloads),
-            missing_metrics_runs=missing_metrics_runs,
-            invalid_metrics_runs=invalid_metrics_runs,
-            degraded_metrics_runs=degraded_metrics_runs,
-            invalid_manifest_runs=invalid_manifest_runs,
-            missing_resolved_value_runs=missing_resolved_value_runs,
-            has_numeric_metrics=bool(metric_ids),
-            has_ranked_drivers=bool(driver_rankings),
-        )
-
-        artifact = {
-            "artifact_type": "sensitivity",
-            "schema_version": SENSITIVITY_SCHEMA_VERSION,
-            "generator_version": SENSITIVITY_GENERATOR_VERSION,
-            "simulation_id": simulation_id,
-            "ensemble_id": normalized_ensemble_id,
-            "driver_count": len(driver_rankings),
-            "driver_rankings": driver_rankings,
-            "methodology": {
-                "analysis_mode": "observational_resolved_values",
-                "driver_source": (
-                    "run_manifest.resolved_values with resolved_config.sampled_values "
-                    "fallback when available"
+                "sample_policy": self.analytics_policy.build_sample_policy(
+                    mode="sensitivity",
+                    total_runs=total_runs,
+                    eligible_run_ids=[payload["run_id"] for payload in eligible_run_payloads],
+                    excluded_runs=excluded_runs,
                 ),
-                "outcome_source": "metrics.json numeric metric_values",
-                "grouping_policy": "support_aware_driver_bands",
-                "ranking_basis": "support_aware_standardized_effect_sum",
-                "effect_size_definition": "max_group_mean_minus_min_group_mean",
-                "minimum_support_count": self.analytics_policy.MINIMUM_SUPPORT_COUNT,
-                "causal_interpretation": "not_supported",
-            },
-            "sample_policy": self.analytics_policy.build_sample_policy(
-                mode="sensitivity",
-                total_runs=total_runs,
-                eligible_run_ids=[payload["run_id"] for payload in eligible_run_payloads],
-                excluded_runs=excluded_runs,
-            ),
-            "quality_summary": {
-                "status": "partial"
-                if (
-                    missing_metrics_runs
-                    or invalid_metrics_runs
-                    or degraded_metrics_runs
-                    or invalid_manifest_runs
-                    or missing_resolved_value_runs
-                    or not metric_ids
-                )
-                else "complete",
-                "total_runs": total_runs,
-                "analyzed_runs": len(eligible_run_payloads),
-                "eligible_run_count": len(eligible_run_payloads),
-                "missing_metrics_runs": missing_metrics_runs,
-                "invalid_metrics_runs": invalid_metrics_runs,
-                "degraded_metrics_runs": degraded_metrics_runs,
-                "invalid_manifest_runs": invalid_manifest_runs,
-                "missing_resolved_value_runs": missing_resolved_value_runs,
-                "warnings": warnings,
-            },
-            "source_artifacts": {
-                "metrics_files": [
-                    payload["metrics_relpath"]
-                    for payload in run_payloads
-                    if payload["metrics_relpath"]
-                ],
-                "run_manifest_files": [
-                    payload["manifest_relpath"]
-                    for payload in run_payloads
-                    if payload["manifest_relpath"]
-                ],
-                "resolved_config_files": [
-                    payload["resolved_config_relpath"]
-                    for payload in run_payloads
-                    if payload["resolved_config_relpath"]
-                ],
-                "outcome_metric_ids": ensemble_state.get("outcome_metric_ids", []),
-            },
-            "generated_at": self._derive_generated_at(run_payloads),
-        }
+                "quality_summary": {
+                    "status": "partial"
+                    if (
+                        missing_metrics_runs
+                        or invalid_metrics_runs
+                        or degraded_metrics_runs
+                        or invalid_manifest_runs
+                        or missing_resolved_value_runs
+                        or not metric_ids
+                    )
+                    else "complete",
+                    "total_runs": total_runs,
+                    "analyzed_runs": len(eligible_run_payloads),
+                    "eligible_run_count": len(eligible_run_payloads),
+                    "missing_metrics_runs": missing_metrics_runs,
+                    "invalid_metrics_runs": invalid_metrics_runs,
+                    "degraded_metrics_runs": degraded_metrics_runs,
+                    "invalid_manifest_runs": invalid_manifest_runs,
+                    "missing_resolved_value_runs": missing_resolved_value_runs,
+                    "warnings": warnings,
+                    "support_assessment": support_assessment,
+                },
+                "source_artifacts": {
+                    "metrics_files": [
+                        payload["metrics_relpath"]
+                        for payload in run_payloads
+                        if payload["metrics_relpath"]
+                    ],
+                    "run_manifest_files": [
+                        payload["manifest_relpath"]
+                        for payload in run_payloads
+                        if payload["manifest_relpath"]
+                    ],
+                    "resolved_config_files": [
+                        payload["resolved_config_relpath"]
+                        for payload in run_payloads
+                        if payload["resolved_config_relpath"]
+                    ],
+                    "outcome_metric_ids": ensemble_state.get("outcome_metric_ids", []),
+                },
+                "generated_at": self._derive_generated_at(run_payloads),
+            }
 
-        self._write_json(
-            os.path.join(ensemble_dir, self.SENSITIVITY_FILENAME),
-            artifact,
-        )
-        return artifact
+            self._write_json(
+                os.path.join(ensemble_dir, self.SENSITIVITY_FILENAME),
+                artifact,
+            )
+            return artifact
 
     def get_sensitivity(
         self,
@@ -428,6 +459,102 @@ class SensitivityAnalyzer:
             "cluster_to_runs": cluster_to_runs,
         }
 
+    def _should_withhold_rankings(
+        self,
+        *,
+        cluster_membership: Dict[str, Dict[str, str]],
+        scenario_diversity_context: Dict[str, Any],
+    ) -> bool:
+        warnings = scenario_diversity_context.get("warnings", [])
+        if not isinstance(warnings, list):
+            return False
+        return (
+            "limited_template_coverage" in warnings
+            and not cluster_membership.get("cluster_to_runs")
+        )
+
+    def _load_scenario_diversity_context(
+        self,
+        simulation_id: str,
+        ensemble_id: str,
+    ) -> Dict[str, Any]:
+        ensemble_dir = self._get_ensemble_dir(simulation_id, ensemble_id)
+        clusters_path = os.path.join(ensemble_dir, "scenario_clusters.json")
+        if not os.path.exists(clusters_path):
+            return {}
+        try:
+            payload = self._read_json(clusters_path)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+        diagnostics = payload.get("diversity_diagnostics", {})
+        if not isinstance(diagnostics, dict) or not diagnostics:
+            return {}
+
+        warnings = diagnostics.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = diagnostics.get("diversity_warnings", [])
+        if not isinstance(warnings, list):
+            warnings = []
+
+        coverage_metrics = diagnostics.get("coverage_metrics", {})
+        if not isinstance(coverage_metrics, dict):
+            coverage_metrics = {}
+
+        distance_metrics = diagnostics.get("scenario_distance_metrics")
+        if not isinstance(distance_metrics, dict):
+            distance_metrics = diagnostics.get("distance_metrics", {})
+        if not isinstance(distance_metrics, dict):
+            distance_metrics = {}
+
+        support_metrics = diagnostics.get("support_metrics", {})
+        if not isinstance(support_metrics, dict):
+            support_metrics = {}
+
+        pairwise_distance_mean = distance_metrics.get("pairwise_distance_mean")
+        if pairwise_distance_mean is None:
+            pairwise_distance_mean = distance_metrics.get("mean_pairwise_distance")
+
+        pairwise_distance_max = distance_metrics.get("pairwise_distance_max")
+        if pairwise_distance_max is None:
+            pairwise_distance_max = distance_metrics.get("max_pairwise_distance")
+        if pairwise_distance_max is None:
+            pairwise_distance_max = distance_metrics.get("max_intercluster_distance")
+
+        minimum_support_count = support_metrics.get("minimum_support_count")
+        if minimum_support_count is None:
+            minimum_support_count = support_metrics.get("minimum_cluster_support")
+        if minimum_support_count is None:
+            minimum_support_count = support_metrics.get("minimum_cluster_support_count")
+
+        template_coverage_ratio = coverage_metrics.get("template_coverage_ratio")
+        if template_coverage_ratio is None:
+            template_coverage_ratio = coverage_metrics.get("template_coverage_fraction")
+
+        if (
+            template_coverage_ratio is not None
+            or pairwise_distance_mean is not None
+            or pairwise_distance_max is not None
+            or minimum_support_count is not None
+        ):
+            context: Dict[str, Any] = {
+                "warnings": warnings,
+            }
+            if template_coverage_ratio is not None:
+                context["template_coverage_ratio"] = template_coverage_ratio
+            if pairwise_distance_mean is not None:
+                context["pairwise_distance_mean"] = pairwise_distance_mean
+            if pairwise_distance_max is not None:
+                context["pairwise_distance_max"] = pairwise_distance_max
+            if minimum_support_count is not None:
+                context["minimum_support_count"] = minimum_support_count
+            return context
+
+        return {
+            "coverage_metrics": coverage_metrics,
+            "warnings": warnings,
+        }
+
     def _build_driver_rankings(
         self,
         run_payloads: List[Dict[str, Any]],
@@ -535,6 +662,31 @@ class SensitivityAnalyzer:
             key=lambda item: (-item["overall_effect_score"], item["field_path"])
         )
         return rankings
+
+    def _annotate_driver_rankings(
+        self,
+        *,
+        driver_rankings: List[Dict[str, Any]],
+        quality_warnings: List[str],
+    ) -> List[Dict[str, Any]]:
+        inherited_warnings = [
+            warning
+            for warning in quality_warnings
+            if warning in {"thin_sample"}
+        ]
+        for driver in driver_rankings:
+            support_assessment = self._build_support_assessment(
+                warnings=[*inherited_warnings, *(driver.get("warnings") or [])],
+            )
+            driver["support_assessment"] = support_assessment
+            driver_summary = driver.get("driver_summary", {})
+            if isinstance(driver_summary, dict):
+                driver_summary["support_assessment"] = support_assessment
+            for impact in driver.get("metric_impacts", []):
+                impact["support_assessment"] = self._build_support_assessment(
+                    warnings=impact.get("warnings") or [],
+                )
+        return driver_rankings
 
     def _group_runs_by_driver_value(
         self,
@@ -713,6 +865,7 @@ class SensitivityAnalyzer:
         missing_resolved_value_runs: List[str],
         has_numeric_metrics: bool,
         has_ranked_drivers: bool,
+        scenario_diversity_context: Dict[str, Any],
     ) -> List[str]:
         warnings = ["observational_only"]
         if analyzed_runs < self.THIN_SAMPLE_WARNING_THRESHOLD:
@@ -731,7 +884,53 @@ class SensitivityAnalyzer:
             warnings.append("no_shared_numeric_metrics")
         if not has_ranked_drivers:
             warnings.append("no_varying_drivers")
+        if scenario_diversity_context.get("warnings"):
+            warnings.append("limited_scenario_diversity")
         return warnings
+
+    def _build_support_assessment(
+        self,
+        *,
+        warnings: List[str],
+    ) -> Dict[str, Any]:
+        relevant_warnings = [
+            warning
+            for warning in self._dedupe_warnings(warnings)
+            if warning in {"thin_sample", "minimum_support_not_met"}
+        ]
+        if "minimum_support_not_met" in relevant_warnings:
+            return {
+                "status": "insufficient_support",
+                "label": "Insufficient support",
+                "downgraded": True,
+                "decision_support_ready": False,
+                "reason": "Minimum support was not met, so this observational ranking cannot support strong driver language.",
+                "warnings": ["minimum_support_not_met"],
+            }
+        if "thin_sample" in relevant_warnings:
+            return {
+                "status": "descriptive_only",
+                "label": "Descriptive only",
+                "downgraded": True,
+                "decision_support_ready": False,
+                "reason": "Thin-sample warnings limit observational rankings to descriptive use only.",
+                "warnings": ["thin_sample"],
+            }
+        return {
+            "status": "observational_only",
+            "label": "Observational only",
+            "downgraded": False,
+            "decision_support_ready": False,
+            "reason": "",
+            "warnings": [],
+        }
+
+    def _dedupe_warnings(self, warnings: List[str]) -> List[str]:
+        deduped: List[str] = []
+        for warning in warnings:
+            if warning and warning not in deduped:
+                deduped.append(warning)
+        return deduped
 
     def _derive_generated_at(self, run_payloads: List[Dict[str, Any]]) -> str:
         timestamps = []

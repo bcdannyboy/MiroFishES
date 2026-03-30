@@ -14,6 +14,7 @@ from enum import Enum
 
 from ..config import Config
 from ..models.probabilistic import (
+    ConditionalVariableSpec,
     DEFAULT_OUTCOME_METRICS,
     ExperimentDesignSpec,
     ForecastBrief,
@@ -35,6 +36,12 @@ from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 from .grounding_bundle_builder import GroundingBundleBuilder
+from .phase_timing import PhaseTimingRecorder
+from forecast_archive import (
+    FORECAST_ARCHIVE_FILENAME,
+    is_forecast_archived,
+    load_forecast_archive_metadata,
+)
 
 logger = get_logger('mirofish.simulation')
 
@@ -165,6 +172,7 @@ class SimulationManager:
         "grounding_bundle": "grounding_bundle.json",
         "uncertainty_spec": "uncertainty_spec.json",
         "outcome_spec": "outcome_spec.json",
+        "prepare_phase_timings": "prepare_phase_timings.json",
         "prepared_snapshot": "prepared_snapshot.json",
     }
     REQUIRED_PROBABILISTIC_ARTIFACT_KEYS = (
@@ -176,6 +184,7 @@ class SimulationManager:
     )
     PREPARE_SCHEMA_VERSION = PROBABILISTIC_SCHEMA_VERSION
     PREPARE_GENERATOR_VERSION = PROBABILISTIC_GENERATOR_VERSION
+    FORECAST_ARCHIVE_FILENAME = FORECAST_ARCHIVE_FILENAME
     UNCERTAINTY_PROFILE_RULES = {
         "deterministic-baseline": {
             "bounded_delta": 0.0,
@@ -237,6 +246,7 @@ class SimulationManager:
             "grounding_bundle",
             "uncertainty_spec",
             "outcome_spec",
+            "prepare_phase_timings",
             "prepared_snapshot",
         ):
             artifact_path = os.path.join(
@@ -275,6 +285,137 @@ class SimulationManager:
                     description[field_name] = artifact_payload[field_name]
 
         return description
+
+    @classmethod
+    def derive_prepare_readiness(
+        cls,
+        *,
+        artifacts: Dict[str, Any],
+        grounding_summary: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Derive explicit readiness signals for artifact completeness and forecast handoff."""
+        missing_probabilistic_artifacts = [
+            cls.PREPARE_ARTIFACT_FILENAMES[name]
+            for name in cls.REQUIRED_PROBABILISTIC_ARTIFACT_KEYS
+            if not (artifacts.get(name, {}) or {}).get("exists")
+        ]
+
+        if not missing_probabilistic_artifacts:
+            artifact_completeness = {
+                "ready": True,
+                "status": "ready",
+                "reason": "",
+                "missing_artifacts": [],
+            }
+        else:
+            artifact_completeness = {
+                "ready": False,
+                "status": (
+                    "missing"
+                    if len(missing_probabilistic_artifacts)
+                    == len(cls.REQUIRED_PROBABILISTIC_ARTIFACT_KEYS)
+                    else "partial"
+                ),
+                "reason": (
+                    "Forecast artifacts are incomplete. Missing files: "
+                    + ", ".join(missing_probabilistic_artifacts)
+                    + "."
+                ),
+                "missing_artifacts": missing_probabilistic_artifacts,
+            }
+
+        grounding_artifact = (artifacts.get("grounding_bundle", {}) or {})
+        grounding_status = str(
+            (grounding_summary or {}).get("status") or "unavailable"
+        ).strip() or "unavailable"
+
+        if not grounding_artifact.get("exists"):
+            missing_artifact_count = len(artifact_completeness["missing_artifacts"])
+            grounding_readiness = {
+                "ready": False,
+                "status": "missing",
+                "reason": (
+                    artifact_completeness["reason"]
+                    if missing_artifact_count > 1
+                    else "Stored-run shell handoff is blocked because grounding_bundle.json is missing."
+                ),
+            }
+        elif grounding_status == "ready":
+            grounding_readiness = {
+                "ready": True,
+                "status": "ready",
+                "reason": "",
+            }
+        elif grounding_status == "partial":
+            grounding_readiness = {
+                "ready": False,
+                "status": "partial",
+                "reason": (
+                    "Stored-run shell handoff is blocked because grounding evidence is partial in grounding_bundle.json."
+                ),
+            }
+        elif grounding_status == "unavailable":
+            grounding_readiness = {
+                "ready": False,
+                "status": "unavailable",
+                "reason": (
+                    "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+                ),
+            }
+        else:
+            grounding_readiness = {
+                "ready": False,
+                "status": grounding_status,
+                "reason": (
+                    "Stored-run shell handoff is blocked because grounding_bundle.json has "
+                    f"status {grounding_status}. Workflow handoff requires status ready."
+                ),
+            }
+
+        if (
+            not grounding_readiness["ready"]
+            and not artifact_completeness["ready"]
+            and len(artifact_completeness["missing_artifacts"]) > 1
+        ):
+            forecast_readiness = {
+                "ready": False,
+                "status": "blocked",
+                "reason": artifact_completeness["reason"],
+                "blocking_stage": "artifacts",
+            }
+        elif not grounding_readiness["ready"]:
+            forecast_readiness = {
+                "ready": False,
+                "status": "blocked",
+                "reason": grounding_readiness["reason"],
+                "blocking_stage": "grounding",
+            }
+        elif not artifact_completeness["ready"]:
+            forecast_readiness = {
+                "ready": False,
+                "status": "blocked",
+                "reason": artifact_completeness["reason"],
+                "blocking_stage": "artifacts",
+            }
+        else:
+            forecast_readiness = {
+                "ready": True,
+                "status": "ready",
+                "reason": "",
+                "blocking_stage": None,
+            }
+
+        workflow_handoff_status = {
+            **forecast_readiness,
+            "semantics": "workflow_handoff_status",
+        }
+
+        return {
+            "artifact_completeness": artifact_completeness,
+            "grounding_readiness": grounding_readiness,
+            "forecast_readiness": forecast_readiness,
+            "workflow_handoff_status": workflow_handoff_status,
+        }
 
     def _normalize_outcome_metrics(
         self, outcome_metrics: Optional[List[Any]]
@@ -341,15 +482,25 @@ class SimulationManager:
             normalized_profile,
         )
         variable_groups = self._build_variable_groups(random_variables)
-        scenario_templates = self._build_scenario_templates(forecast_brief)
+        scenario_templates = self._build_scenario_templates(
+            forecast_brief,
+            config_payload=config_payload,
+        )
+        conditional_variables = self._build_conditional_variables(
+            config_payload=config_payload,
+            scenario_templates=scenario_templates,
+        )
         experiment_design = self._build_experiment_design_spec(
             random_variables=random_variables,
+            variable_groups=variable_groups,
+            conditional_variables=conditional_variables,
             scenario_templates=scenario_templates,
         )
         return UncertaintySpec(
             profile=normalized_profile,
             random_variables=random_variables,
             variable_groups=variable_groups,
+            conditional_variables=conditional_variables,
             scenario_templates=scenario_templates,
             experiment_design=experiment_design,
             seed_policy=SeedPolicy(),
@@ -440,6 +591,40 @@ class SimulationManager:
             )
             if variable is not None:
                 random_variables.append(variable)
+
+        time_config = config_payload.get("time_config") or {}
+        random_variables.extend(
+            item
+            for item in (
+                self._build_positive_scalar_variable(
+                    field_path="time_config.peak_activity_multiplier",
+                    baseline_value=time_config.get("peak_activity_multiplier"),
+                    description="Peak activity multiplier",
+                    relative_delta=profile_rules["rate_relative_delta"],
+                    minimum_delta=0.15,
+                    profile=profile,
+                ),
+                self._build_bounded_scalar_variable(
+                    field_path="time_config.off_peak_activity_multiplier",
+                    baseline_value=time_config.get("off_peak_activity_multiplier"),
+                    description="Off-peak activity multiplier",
+                    lower_bound=0.0,
+                    upper_bound=1.0,
+                    absolute_delta=max(profile_rules["bounded_delta"], 0.05),
+                    profile=profile,
+                ),
+                self._build_bounded_scalar_variable(
+                    field_path="time_config.work_activity_multiplier",
+                    baseline_value=time_config.get("work_activity_multiplier"),
+                    description="Work-hours activity multiplier",
+                    lower_bound=0.0,
+                    upper_bound=2.0,
+                    absolute_delta=max(profile_rules["bounded_delta"], 0.05),
+                    profile=profile,
+                ),
+            )
+            if item is not None
+        )
 
         return random_variables
 
@@ -550,6 +735,7 @@ class SimulationManager:
                     "activity_level",
                     "posts_per_hour",
                     "comments_per_hour",
+                    "sentiment_bias",
                     "influence_weight",
                 }:
                     grouped_field_paths.setdefault(
@@ -564,6 +750,13 @@ class SimulationManager:
                 grouped_field_paths.setdefault("cross-platform-echo-chamber", []).append(
                     field_path
                 )
+                continue
+            if field_path in {
+                "time_config.peak_activity_multiplier",
+                "time_config.off_peak_activity_multiplier",
+                "time_config.work_activity_multiplier",
+            }:
+                grouped_field_paths.setdefault("time-profile", []).append(field_path)
 
         variable_groups: List[VariableGroupSpec] = []
         for group_key, field_paths in sorted(grouped_field_paths.items()):
@@ -581,35 +774,724 @@ class SimulationManager:
             )
         return variable_groups
 
+    def _build_conditional_variables(
+        self,
+        *,
+        config_payload: Dict[str, Any],
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> List[ConditionalVariableSpec]:
+        template_ids = {
+            str(template.template_id or "").strip()
+            for template in scenario_templates
+            if str(template.template_id or "").strip()
+        }
+        conditional_variables: List[ConditionalVariableSpec] = []
+
+        def add_directional_condition(
+            *,
+            field_path: str,
+            value: Any,
+            narrative_direction: str,
+            description: str,
+        ) -> None:
+            if not self._config_path_exists(config_payload, field_path):
+                return
+            conditional_variables.append(
+                ConditionalVariableSpec(
+                    variable=RandomVariableSpec(
+                        field_path=field_path,
+                        distribution="fixed",
+                        parameters={"value": value},
+                        description=description,
+                    ),
+                    condition_field_path="event_config.narrative_direction",
+                    operator="eq",
+                    condition_value=narrative_direction,
+                    description=description,
+                )
+            )
+
+        if "viral_spike" in template_ids:
+            add_directional_condition(
+                field_path="twitter_config.recency_weight",
+                value=0.55,
+                narrative_direction="viral_spike",
+                description="Raise Twitter recency weighting during viral-spike scenarios.",
+            )
+            add_directional_condition(
+                field_path="twitter_config.viral_threshold",
+                value=6,
+                narrative_direction="viral_spike",
+                description="Lower the Twitter viral threshold during viral-spike scenarios.",
+            )
+        if "cooldown_recovery" in template_ids:
+            add_directional_condition(
+                field_path="reddit_config.relevance_weight",
+                value=0.45,
+                narrative_direction="cooldown",
+                description="Shift Reddit relevance weighting during cooldown scenarios.",
+            )
+            add_directional_condition(
+                field_path="reddit_config.viral_threshold",
+                value=12,
+                narrative_direction="cooldown",
+                description="Raise the Reddit viral threshold during cooldown scenarios.",
+            )
+        if "crisis_case" in template_ids or "crisis_spike" in template_ids:
+            add_directional_condition(
+                field_path="twitter_config.viral_threshold",
+                value=6,
+                narrative_direction="crisis",
+                description="Lower the Twitter viral threshold during crisis scenarios.",
+            )
+
+        return conditional_variables
+
     def _build_scenario_templates(
         self,
         forecast_brief: Optional[ForecastBrief],
+        *,
+        config_payload: Optional[Dict[str, Any]] = None,
     ) -> List[ScenarioTemplateSpec]:
-        """Carry declared forecast scenario templates into the uncertainty contract."""
+        """Materialize inspectable scenario templates into concrete config overrides."""
         if forecast_brief is None:
             return []
 
         scenario_templates: List[ScenarioTemplateSpec] = []
+        expand_auto_template_substance = self._should_expand_auto_template_substance(
+            forecast_brief
+        )
+        explicit_specs = {
+            template.template_id: template
+            for template in forecast_brief.scenario_template_specs
+        }
         for template_id in forecast_brief.scenario_templates:
+            explicit_template = explicit_specs.get(template_id)
+            if explicit_template is not None:
+                scenario_templates.append(explicit_template)
+                continue
+            template_payload = self._build_scenario_template_payload(
+                template_id=template_id,
+                config_payload=config_payload or {},
+                expand_substance=expand_auto_template_substance,
+            )
             scenario_templates.append(
-                ScenarioTemplateSpec(
+                self._instantiate_scenario_template_spec(
                     template_id=template_id,
-                    label=template_id.replace("_", " ").title(),
-                    field_overrides={},
-                    notes=[
-                        "Preparation records the scenario name now; later waves may attach richer parameter overrides."
-                    ],
+                    template_payload=template_payload,
                 )
             )
         return scenario_templates
+
+    def _should_expand_auto_template_substance(
+        self,
+        forecast_brief: ForecastBrief,
+    ) -> bool:
+        return len(forecast_brief.scenario_templates) >= 3
+
+    def _instantiate_scenario_template_spec(
+        self,
+        *,
+        template_id: str,
+        template_payload: Dict[str, Any],
+    ) -> ScenarioTemplateSpec:
+        template_kwargs = {
+            "template_id": template_id,
+            "label": template_payload["label"],
+            "field_overrides": template_payload["field_overrides"],
+            "weight": template_payload.get("weight", 1.0),
+            "notes": template_payload["notes"],
+        }
+        supported_fields = getattr(ScenarioTemplateSpec, "__dataclass_fields__", {})
+        for optional_field in (
+            "coverage_tags",
+            "exogenous_events",
+            "conditional_overrides",
+            "correlated_field_paths",
+        ):
+            if optional_field in supported_fields and optional_field in template_payload:
+                template_kwargs[optional_field] = template_payload[optional_field]
+        return ScenarioTemplateSpec(**template_kwargs)
+
+    def _build_scenario_template_payload(
+        self,
+        *,
+        template_id: str,
+        config_payload: Dict[str, Any],
+        expand_substance: bool,
+    ) -> Dict[str, Any]:
+        normalized_template_id = str(template_id or "").strip()
+        template_slug = normalized_template_id.lower().replace("-", "_").replace(" ", "_")
+        template_kind = self._classify_scenario_template_kind(template_slug)
+        field_overrides: Dict[str, Any] = {}
+        coverage_tags: List[str] = []
+        exogenous_events: List[Dict[str, Any]] = []
+        conditional_overrides: List[Dict[str, Any]] = []
+        correlated_field_paths: List[str] = []
+        notes = [
+            "Scenario template overrides create concrete simulation worlds ahead of runtime.",
+            "Template assignments widen scenario coverage for the stored simulation ensemble; they do not create real-world probability claims.",
+        ]
+
+        if self._config_has_event_narrative_direction(config_payload):
+            field_overrides["event_config.narrative_direction"] = (
+                self._get_template_narrative_direction(
+                    template_kind=template_kind,
+                    template_slug=template_slug,
+                )
+            )
+
+        if template_kind == "viral_spike":
+            coverage_tags = [
+                "amplification",
+                "trajectory:shock",
+                "attention:surge",
+                "platform:cross",
+            ]
+            if expand_substance:
+                self._add_event_override(
+                    field_overrides,
+                    config_payload=config_payload,
+                    field_name="hot_topics",
+                    value=["seed", "viral_spike", "attention_surge"],
+                )
+                self._add_event_override(
+                    field_overrides,
+                    config_payload=config_payload,
+                    field_name="scheduled_events",
+                    value=[
+                        {
+                            "offset_hours": 2,
+                            "event_type": "exogenous_spike",
+                            "topic": "viral_spike",
+                            "intensity": "high",
+                        },
+                        {
+                            "offset_hours": 10,
+                            "event_type": "reaction_wave",
+                            "topic": "attention_surge",
+                            "intensity": "medium",
+                        },
+                    ],
+                )
+                self._add_time_override(
+                    field_overrides,
+                    config_payload=config_payload,
+                    field_name="peak_activity_multiplier",
+                    value=1.9,
+                )
+                self._add_time_override(
+                    field_overrides,
+                    config_payload=config_payload,
+                    field_name="off_peak_activity_multiplier",
+                    value=0.15,
+                )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="twitter_config",
+                field_name="echo_chamber_strength",
+                value=0.8,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="reddit_config",
+                field_name="echo_chamber_strength",
+                value=0.75,
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="activity_level",
+                transform=lambda value: min(1.0, value + 0.3),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="posts_per_hour",
+                transform=lambda value: round(max(0.1, value * 1.5), 4),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="comments_per_hour",
+                transform=lambda value: round(max(0.1, value * 1.5), 4),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="influence_weight",
+                transform=lambda value: round(max(0.1, value * 1.35), 4),
+            )
+            exogenous_events = [
+                {
+                    "event_id": "viral_spike_alert",
+                    "kind": "attention_surge",
+                    "timing_window": "early",
+                }
+            ]
+            conditional_overrides = self._build_template_conditional_overrides(
+                {
+                    "twitter_config.viral_threshold": 6,
+                },
+                condition_value="viral_spike",
+            )
+            correlated_field_paths = [
+                "agent_configs[0].activity_level",
+                "agent_configs[0].posts_per_hour",
+                "agent_configs[0].comments_per_hour",
+                "agent_configs[0].influence_weight",
+            ]
+            notes.append(
+                "This template raises engagement and echo-chamber pressure to probe higher-spread simulation paths."
+            )
+        elif template_kind == "crisis":
+            coverage_tags = [
+                "trajectory:crisis",
+                "attention:elevated",
+                "platform:polarized",
+            ]
+            self._add_event_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="hot_topics",
+                value=["seed", "crisis", "breaking_update"],
+            )
+            self._add_event_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="scheduled_events",
+                value=[
+                    {
+                        "offset_hours": 2,
+                        "event_type": "breaking_update",
+                        "topic": "crisis",
+                        "intensity": "high",
+                    }
+                ],
+            )
+            self._add_time_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="peak_activity_multiplier",
+                value=2.0,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="twitter_config",
+                field_name="echo_chamber_strength",
+                value=0.85,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="reddit_config",
+                field_name="echo_chamber_strength",
+                value=0.8,
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="activity_level",
+                transform=lambda value: min(1.0, value + 0.2),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="comments_per_hour",
+                transform=lambda value: round(max(0.1, value * 1.6), 4),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="sentiment_bias",
+                transform=lambda value: max(-1.0, value - 0.35),
+            )
+            exogenous_events = [
+                {
+                    "event_id": "crisis_case_briefing",
+                    "kind": "breaking_update",
+                    "timing_window": "early",
+                }
+            ]
+            conditional_overrides = self._build_template_conditional_overrides(
+                {
+                    "twitter_config.viral_threshold": 6,
+                },
+                condition_value="crisis",
+            )
+            correlated_field_paths = [
+                "agent_configs[0].activity_level",
+                "twitter_config.echo_chamber_strength",
+            ]
+            notes.append(
+                "This template shifts narrative and engagement toward crisis-style simulation stress."
+            )
+        elif template_kind == "high_echo":
+            coverage_tags = [
+                "trajectory:polarized",
+                "attention:volatile",
+                "platform:echo",
+            ]
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="twitter_config",
+                field_name="echo_chamber_strength",
+                value=0.9,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="reddit_config",
+                field_name="echo_chamber_strength",
+                value=0.85,
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="comments_per_hour",
+                transform=lambda value: round(max(0.1, value * 1.25), 4),
+            )
+            notes.append(
+                "This template emphasizes fragmentation and echo-chamber concentration inside the simulation."
+            )
+        elif template_kind == "cooldown":
+            coverage_tags = [
+                "trajectory:recovery",
+                "attention:cooling",
+                "platform:stabilized",
+            ]
+            self._add_event_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="hot_topics",
+                value=["seed", "stabilization", "clarification"],
+            )
+            self._add_event_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="scheduled_events",
+                value=[
+                    {
+                        "offset_hours": 6,
+                        "event_type": "clarification",
+                        "topic": "stabilization",
+                        "intensity": "medium",
+                    }
+                ],
+            )
+            self._add_time_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="peak_activity_multiplier",
+                value=1.1,
+            )
+            self._add_time_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="work_activity_multiplier",
+                value=0.75,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="twitter_config",
+                field_name="echo_chamber_strength",
+                value=0.25,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="reddit_config",
+                field_name="echo_chamber_strength",
+                value=0.2,
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="activity_level",
+                transform=lambda value: max(0.0, value - 0.2),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="posts_per_hour",
+                transform=lambda value: round(max(0.1, value * 0.6), 4),
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="comments_per_hour",
+                transform=lambda value: round(max(0.1, value * 0.6), 4),
+            )
+            exogenous_events = [
+                {
+                    "event_id": "cooldown_recovery_guidance",
+                    "kind": "clarification",
+                    "timing_window": "mid",
+                }
+            ]
+            conditional_overrides = self._build_template_conditional_overrides(
+                {
+                    "reddit_config.viral_threshold": 12,
+                },
+                condition_value="cooldown",
+            )
+            correlated_field_paths = [
+                "agent_configs[0].activity_level",
+                "time_config.work_activity_multiplier",
+            ]
+            notes.append(
+                "This template cools narrative pressure so the simulation can probe stabilization paths."
+            )
+        elif template_kind == "consensus":
+            coverage_tags = [
+                "trajectory:bridge",
+                "attention:coordinated",
+                "platform:bridge",
+            ]
+            self._add_event_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="scheduled_events",
+                value=[
+                    {
+                        "offset_hours": 5,
+                        "event_type": "community_response",
+                        "topic": "coordination",
+                        "intensity": "medium",
+                    }
+                ],
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="twitter_config",
+                field_name="echo_chamber_strength",
+                value=0.2,
+            )
+            self._add_platform_override(
+                field_overrides,
+                config_payload=config_payload,
+                platform_key="reddit_config",
+                field_name="echo_chamber_strength",
+                value=0.2,
+            )
+            self._add_agent_scalar_override(
+                field_overrides,
+                config_payload=config_payload,
+                field_name="sentiment_bias",
+                transform=lambda value: min(1.0, value + 0.2),
+            )
+            exogenous_events = [
+                {
+                    "event_id": "consensus_bridge_briefing",
+                    "kind": "community_response",
+                    "timing_window": "mid",
+                }
+            ]
+            conditional_overrides = self._build_template_conditional_overrides(
+                {
+                    "time_config.work_activity_multiplier": 0.95,
+                },
+                condition_value="consensus",
+            )
+            correlated_field_paths = [
+                "agent_configs[0].activity_level",
+            ]
+            notes.append(
+                "This template dampens echo-chamber effects to probe coordination-heavy simulation paths."
+            )
+        elif template_kind == "baseline":
+            coverage_tags = [
+                "trajectory:baseline",
+                "attention:steady",
+                "platform:reference",
+            ]
+            notes.append(
+                "This template keeps the scenario near the reference shell while still marking the baseline narrative path explicitly."
+            )
+        else:
+            coverage_tags = ["trajectory:custom"]
+            notes.append(
+                "No recognized numeric pattern was found for this template id, so only a narrative-direction override is applied."
+            )
+
+        return {
+            "label": normalized_template_id.replace("_", " ").replace("-", " ").title(),
+            "field_overrides": field_overrides,
+            "coverage_tags": coverage_tags,
+            "exogenous_events": exogenous_events,
+            "conditional_overrides": conditional_overrides,
+            "correlated_field_paths": correlated_field_paths,
+            "notes": notes,
+        }
+
+    def _classify_scenario_template_kind(self, template_slug: str) -> str:
+        if any(token in template_slug for token in ("base", "baseline", "reference", "control", "watch")):
+            return "baseline"
+        if any(token in template_slug for token in ("viral", "spike", "surge", "amplif", "breakout")):
+            return "viral_spike"
+        if any(token in template_slug for token in ("crisis", "panic", "shock", "stress", "backlash")):
+            return "crisis"
+        if any(token in template_slug for token in ("high_echo", "echo", "polar", "fragment")):
+            return "high_echo"
+        if any(token in template_slug for token in ("cool", "contain", "recover", "stabil", "moder")):
+            return "cooldown"
+        if any(token in template_slug for token in ("consensus", "bridge", "coord", "cooper")):
+            return "consensus"
+        return "custom"
+
+    def _get_template_narrative_direction(
+        self,
+        *,
+        template_kind: str,
+        template_slug: str,
+    ) -> str:
+        mapping = {
+            "baseline": "baseline",
+            "viral_spike": "viral_spike",
+            "crisis": "crisis",
+            "high_echo": "high_echo",
+            "cooldown": "cooldown",
+            "consensus": "consensus",
+        }
+        return mapping.get(template_kind, template_slug or "scenario_template")
+
+    def _config_has_event_narrative_direction(
+        self,
+        config_payload: Dict[str, Any],
+    ) -> bool:
+        return isinstance(config_payload.get("event_config"), dict) and (
+            "narrative_direction" in config_payload["event_config"]
+        )
+
+    def _config_path_exists(
+        self,
+        config_payload: Dict[str, Any],
+        field_path: str,
+    ) -> bool:
+        current: Any = config_payload
+        for raw_token in field_path.split("."):
+            if "[" in raw_token and raw_token.endswith("]"):
+                key, raw_index = raw_token[:-1].split("[", 1)
+                if not isinstance(current, dict) or key not in current:
+                    return False
+                current = current[key]
+                try:
+                    index = int(raw_index)
+                except ValueError:
+                    return False
+                if not isinstance(current, list) or index >= len(current):
+                    return False
+                current = current[index]
+                continue
+            if not isinstance(current, dict) or raw_token not in current:
+                return False
+            current = current[raw_token]
+        return True
+
+    def _add_event_override(
+        self,
+        field_overrides: Dict[str, Any],
+        *,
+        config_payload: Dict[str, Any],
+        field_name: str,
+        value: Any,
+    ) -> None:
+        event_payload = config_payload.get("event_config")
+        if not isinstance(event_payload, dict) or field_name not in event_payload:
+            return
+        field_overrides[f"event_config.{field_name}"] = value
+
+    def _add_time_override(
+        self,
+        field_overrides: Dict[str, Any],
+        *,
+        config_payload: Dict[str, Any],
+        field_name: str,
+        value: Any,
+    ) -> None:
+        time_payload = config_payload.get("time_config")
+        if not isinstance(time_payload, dict) or field_name not in time_payload:
+            return
+        field_overrides[f"time_config.{field_name}"] = value
+
+    def _build_template_conditional_overrides(
+        self,
+        field_values: Dict[str, Any],
+        *,
+        condition_value: str,
+    ) -> List[Dict[str, Any]]:
+        overrides: List[Dict[str, Any]] = []
+        for field_path, value in field_values.items():
+            overrides.append(
+                {
+                    "variable": {
+                        "field_path": field_path,
+                        "distribution": "fixed",
+                        "parameters": {"value": value},
+                    },
+                    "condition_field_path": "event_config.narrative_direction",
+                    "operator": "eq",
+                    "condition_value": condition_value,
+                }
+            )
+        return overrides
+
+    def _add_platform_override(
+        self,
+        field_overrides: Dict[str, Any],
+        *,
+        config_payload: Dict[str, Any],
+        platform_key: str,
+        field_name: str,
+        value: Any,
+    ) -> None:
+        platform_payload = config_payload.get(platform_key)
+        if not isinstance(platform_payload, dict) or field_name not in platform_payload:
+            return
+        field_overrides[f"{platform_key}.{field_name}"] = value
+
+    def _add_agent_scalar_override(
+        self,
+        field_overrides: Dict[str, Any],
+        *,
+        config_payload: Dict[str, Any],
+        field_name: str,
+        transform,
+    ) -> None:
+        for index, agent_payload in enumerate(config_payload.get("agent_configs", [])):
+            if not isinstance(agent_payload, dict) or field_name not in agent_payload:
+                continue
+            try:
+                baseline_value = float(agent_payload[field_name])
+            except (TypeError, ValueError):
+                continue
+            field_overrides[f"agent_configs[{index}].{field_name}"] = transform(
+                baseline_value
+            )
 
     def _build_experiment_design_spec(
         self,
         *,
         random_variables: List[RandomVariableSpec],
+        variable_groups: List[VariableGroupSpec],
+        conditional_variables: List[ConditionalVariableSpec],
         scenario_templates: List[ScenarioTemplateSpec],
     ) -> ExperimentDesignSpec:
         """Build the explicit structured design contract used by ensemble planning."""
+        scenario_assignment = (
+            "weighted_cycle"
+            if any(template.weight != 1.0 for template in scenario_templates)
+            else "cyclic"
+        )
+        max_templates_per_run = 2 if len(scenario_templates) >= 3 else 1
+        diversity_axes = self._derive_scenario_diversity_axes(scenario_templates)
+        scenario_coverage_axes = self._derive_scenario_coverage_axes(scenario_templates)
         return ExperimentDesignSpec(
             method="latin-hypercube",
             numeric_dimensions=[
@@ -620,10 +1502,36 @@ class SimulationManager:
             scenario_template_ids=[
                 template.template_id for template in scenario_templates
             ],
-            scenario_assignment="cyclic",
+            scenario_assignment=scenario_assignment,
+            diversity_axes=diversity_axes,
+            scenario_coverage_axes=scenario_coverage_axes,
+            max_templates_per_run=max_templates_per_run,
+            template_combination_policy=(
+                "pairwise" if max_templates_per_run > 1 else "single_template"
+            ),
+            max_template_reuse_streak=1 if max_templates_per_run > 1 else 2,
             notes=[
                 "Numeric uniform variables use deterministic Latin-hypercube coverage.",
-                "Scenario templates are assigned cyclically when declared.",
+                (
+                    "Scenario templates are assigned with deterministic weighted coverage when template weights differ."
+                    if scenario_assignment == "weighted_cycle"
+                    else "Scenario templates are assigned cyclically when declared."
+                ),
+                (
+                    "Pairwise template combinations are allowed so richer scenario packs cover more event-space combinations per run."
+                    if max_templates_per_run > 1
+                    else "Each run receives at most one scenario template in the lean prepare path."
+                ),
+                (
+                    "Conditional template variables are tracked separately so scenario expansion does not hide assumption triggers."
+                    if conditional_variables
+                    else "No conditional template variables were emitted for this prepare-time slice."
+                ),
+                (
+                    "Variable groups preserve shared-rank structure for related fields across the scenario design."
+                    if variable_groups
+                    else "No non-fixed shared-rank variable groups were required in this prepare-time slice."
+                ),
             ],
         )
 
@@ -639,6 +1547,17 @@ class SimulationManager:
             1
             for variable in uncertainty_spec.random_variables
             if variable.distribution != "fixed"
+        )
+        rich_preview_enabled = self._should_include_rich_template_preview(
+            uncertainty_spec.scenario_templates
+        )
+        scenario_template_preview = self._build_scenario_template_preview(
+            uncertainty_spec.scenario_templates,
+            include_rich_fields=rich_preview_enabled,
+        )
+        scenario_template_override_total = sum(
+            len(template.field_overrides)
+            for template in uncertainty_spec.scenario_templates
         )
         return {
             "uncertainty_profile": uncertainty_spec.profile,
@@ -656,7 +1575,165 @@ class SimulationManager:
             "variable_group_count": len(uncertainty_spec.variable_groups),
             "conditional_variable_count": len(uncertainty_spec.conditional_variables),
             "scenario_template_count": len(uncertainty_spec.scenario_templates),
+            "scenario_diversity_enabled": any(
+                bool(template.field_overrides)
+                for template in uncertainty_spec.scenario_templates
+            ),
+            "scenario_diversity_axes": self._derive_scenario_diversity_axes(
+                uncertainty_spec.scenario_templates
+            ),
+            "scenario_coverage_axes": (
+                uncertainty_spec.experiment_design.scenario_coverage_axes
+                if uncertainty_spec.experiment_design is not None
+                else []
+            ),
+            "scenario_diversity_strategy": (
+                uncertainty_spec.experiment_design.scenario_assignment
+                if uncertainty_spec.experiment_design is not None
+                else None
+            ),
+            "scenario_template_override_total": scenario_template_override_total,
+            "scenario_template_substantive_count": len(
+                uncertainty_spec.scenario_templates
+            ),
+            "scenario_template_preview": scenario_template_preview,
+            "scenario_worker": "simulation",
         }
+
+    def _build_scenario_template_preview(
+        self,
+        scenario_templates: List[ScenarioTemplateSpec],
+        *,
+        include_rich_fields: bool,
+    ) -> List[Dict[str, Any]]:
+        preview: List[Dict[str, Any]] = []
+        for template in scenario_templates:
+            item = {
+                "template_id": template.template_id,
+                "label": template.label,
+                "override_field_count": len(template.field_overrides),
+                "override_fields": sorted(template.field_overrides.keys()),
+            }
+            if include_rich_fields:
+                item.update(
+                    {
+                        "coverage_tags": sorted(template.coverage_tags),
+                        "exogenous_event_count": len(template.exogenous_events),
+                        "conditional_override_count": len(
+                            template.conditional_overrides
+                        ),
+                        "correlated_field_count": len(
+                            template.correlated_field_paths
+                        ),
+                        "substantive_override_count": (
+                            len(template.field_overrides)
+                            + len(template.exogenous_events)
+                            + len(template.conditional_overrides)
+                            + len(template.correlated_field_paths)
+                        ),
+                    }
+                )
+            preview.append(item)
+        return preview
+
+    def _should_include_rich_template_preview(
+        self,
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> bool:
+        if any(
+            template.exogenous_events
+            or template.conditional_overrides
+            or template.correlated_field_paths
+            for template in scenario_templates
+            if self._classify_scenario_template_kind(
+                str(template.template_id or "")
+                .lower()
+                .replace("-", "_")
+                .replace(" ", "_")
+            )
+            in {"consensus", "crisis"}
+        ):
+            return True
+        return any(
+            template.weight != 1.0
+            for template in scenario_templates
+        )
+
+    def _derive_scenario_diversity_axes(
+        self,
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> List[str]:
+        axis_order = [
+            ("agent_configs[", "agent_behavior"),
+            ("event_config.", "event_process"),
+            ("twitter_config.", "platform_dynamics"),
+            ("reddit_config.", "platform_dynamics"),
+            ("time_config.", "time_profile"),
+        ]
+        axes: List[str] = []
+        for prefix, axis in axis_order:
+            if any(
+                field_path.startswith(prefix)
+                for template in scenario_templates
+                for field_path in template.field_overrides
+            ) and axis not in axes:
+                axes.append(axis)
+        return axes
+
+    def _derive_scenario_coverage_axes(
+        self,
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> List[str]:
+        axes = set()
+        for template in scenario_templates:
+            for tag in template.coverage_tags:
+                if ":" not in tag:
+                    continue
+                axis, _ = tag.split(":", 1)
+                normalized_axis = str(axis or "").strip()
+                if normalized_axis:
+                    axes.add(normalized_axis)
+        return sorted(axes)
+
+    def _ensure_diversity_ready_config_payload(
+        self,
+        config_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        time_config = config_payload.setdefault("time_config", {})
+        if isinstance(time_config, dict):
+            time_config.setdefault("peak_activity_multiplier", 1.0)
+            time_config.setdefault("off_peak_activity_multiplier", 0.35)
+            time_config.setdefault("work_activity_multiplier", 1.0)
+
+        event_config = config_payload.setdefault("event_config", {})
+        if isinstance(event_config, dict):
+            event_config.setdefault("scheduled_events", [])
+            event_config.setdefault("hot_topics", ["seed"])
+            event_config.setdefault("narrative_direction", "neutral")
+
+        for platform_key in ("twitter_config", "reddit_config"):
+            platform_config = config_payload.setdefault(platform_key, {})
+            if not isinstance(platform_config, dict):
+                continue
+            platform_config.setdefault("echo_chamber_strength", 0.5)
+            platform_config.setdefault("viral_threshold", 10)
+        twitter_config = config_payload.get("twitter_config")
+        if isinstance(twitter_config, dict):
+            twitter_config.setdefault("recency_weight", 0.4)
+        reddit_config = config_payload.get("reddit_config")
+        if isinstance(reddit_config, dict):
+            reddit_config.setdefault("relevance_weight", 0.4)
+
+        for agent_payload in config_payload.get("agent_configs", []):
+            if not isinstance(agent_payload, dict):
+                continue
+            agent_payload.setdefault("activity_level", 0.5)
+            agent_payload.setdefault("posts_per_hour", 1.0)
+            agent_payload.setdefault("comments_per_hour", 1.0)
+            agent_payload.setdefault("influence_weight", 1.0)
+            agent_payload.setdefault("sentiment_bias", 0.0)
+
+        return config_payload
 
     def _build_lineage_context(
         self,
@@ -921,6 +1998,18 @@ class SimulationManager:
             self._save_simulation_state(state)
             
             sim_dir = self._get_simulation_dir(simulation_id)
+            phase_timing = (
+                PhaseTimingRecorder(
+                    artifact_path=os.path.join(
+                        sim_dir,
+                        self.PREPARE_ARTIFACT_FILENAMES["prepare_phase_timings"],
+                    ),
+                    scope_kind="prepare",
+                    scope_id=simulation_id,
+                )
+                if probabilistic_mode
+                else None
+            )
             
             # ========== Stage 1: read and filter entities ==========
             if progress_callback:
@@ -930,12 +2019,27 @@ class SimulationManager:
             
             if progress_callback:
                 progress_callback("reading", 30, "Reading node data...")
-            
-            filtered = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=defined_entity_types,
-                enrich_with_edges=True
-            )
+
+            if phase_timing is not None:
+                with phase_timing.measure_phase(
+                    "entity_read",
+                    metadata={"graph_id": state.graph_id, "project_id": state.project_id},
+                ) as entity_read_metadata:
+                    filtered = reader.filter_defined_entities(
+                        graph_id=state.graph_id,
+                        defined_entity_types=defined_entity_types,
+                        enrich_with_edges=True,
+                        project_id=state.project_id,
+                    )
+                    entity_read_metadata["entity_count"] = filtered.filtered_count
+                    entity_read_metadata["entity_types"] = sorted(filtered.entity_types)
+            else:
+                filtered = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=defined_entity_types,
+                    enrich_with_edges=True,
+                    project_id=state.project_id,
+                )
             
             state.entities_count = filtered.filtered_count
             state.entity_types = list(filtered.entity_types)
@@ -989,15 +2093,31 @@ class SimulationManager:
                 realtime_output_path = os.path.join(sim_dir, "twitter_profiles.csv")
                 realtime_platform = "twitter"
             
-            profiles = generator.generate_profiles_from_entities(
-                entities=filtered.entities,
-                use_llm=use_llm_for_profiles,
-                progress_callback=profile_progress,
-                graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
-                parallel_count=parallel_profile_count,  # Parallel generation count
-                realtime_output_path=realtime_output_path,  # Realtime output path
-                output_platform=realtime_platform  # Output format
-            )
+            if phase_timing is not None:
+                with phase_timing.measure_phase(
+                    "profile_generation",
+                    metadata={"entity_count": total_entities},
+                ) as profile_metadata:
+                    profiles = generator.generate_profiles_from_entities(
+                        entities=filtered.entities,
+                        use_llm=use_llm_for_profiles,
+                        progress_callback=profile_progress,
+                        graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
+                        parallel_count=parallel_profile_count,  # Parallel generation count
+                        realtime_output_path=realtime_output_path,  # Realtime output path
+                        output_platform=realtime_platform  # Output format
+                    )
+                    profile_metadata["profile_count"] = len(profiles)
+            else:
+                profiles = generator.generate_profiles_from_entities(
+                    entities=filtered.entities,
+                    use_llm=use_llm_for_profiles,
+                    progress_callback=profile_progress,
+                    graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
+                    parallel_count=parallel_profile_count,  # Parallel generation count
+                    realtime_output_path=realtime_output_path,  # Realtime output path
+                    output_platform=realtime_platform  # Output format
+                )
             
             state.profiles_count = len(profiles)
             
@@ -1053,16 +2173,35 @@ class SimulationManager:
                     total=3
                 )
             
-            sim_params = config_generator.generate_config(
-                simulation_id=simulation_id,
-                project_id=state.project_id,
-                graph_id=state.graph_id,
-                simulation_requirement=simulation_requirement,
-                document_text=document_text,
-                entities=filtered.entities,
-                enable_twitter=state.enable_twitter,
-                enable_reddit=state.enable_reddit
-            )
+            if phase_timing is not None:
+                with phase_timing.measure_phase(
+                    "config_generation",
+                    metadata={"entity_count": filtered.filtered_count},
+                ) as config_metadata:
+                    sim_params = config_generator.generate_config(
+                        simulation_id=simulation_id,
+                        project_id=state.project_id,
+                        graph_id=state.graph_id,
+                        simulation_requirement=simulation_requirement,
+                        document_text=document_text,
+                        entities=filtered.entities,
+                        enable_twitter=state.enable_twitter,
+                        enable_reddit=state.enable_reddit
+                    )
+                    config_metadata["agent_config_count"] = len(
+                        (sim_params.to_dict() or {}).get("agent_configs", [])
+                    )
+            else:
+                sim_params = config_generator.generate_config(
+                    simulation_id=simulation_id,
+                    project_id=state.project_id,
+                    graph_id=state.graph_id,
+                    simulation_requirement=simulation_requirement,
+                    document_text=document_text,
+                    entities=filtered.entities,
+                    enable_twitter=state.enable_twitter,
+                    enable_reddit=state.enable_reddit
+                )
             
             if progress_callback:
                 progress_callback(
@@ -1072,7 +2211,9 @@ class SimulationManager:
                     total=3
                 )
             
-            config_payload = sim_params.to_dict()
+            config_payload = self._ensure_diversity_ready_config_payload(
+                sim_params.to_dict()
+            )
 
             # Save the legacy-compatible configuration file used by the current runtime.
             config_path = os.path.join(
@@ -1081,7 +2222,8 @@ class SimulationManager:
             self._write_json(config_path, config_payload)
 
             # Clear stale sidecars if the simulation is being prepared in legacy mode.
-            self._clear_probabilistic_artifacts(sim_dir)
+            if not probabilistic_mode:
+                self._clear_probabilistic_artifacts(sim_dir)
 
             if probabilistic_mode:
                 grounding_builder = GroundingBundleBuilder(
@@ -1181,7 +2323,17 @@ class SimulationManager:
         """Get simulation state."""
         return self._load_simulation_state(simulation_id)
     
-    def list_simulations(self, project_id: Optional[str] = None) -> List[SimulationState]:
+    def get_forecast_archive_metadata(self, simulation_id: str) -> Optional[Dict[str, Any]]:
+        """Return read-only archive metadata when this simulation is historical-only."""
+        sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
+        return load_forecast_archive_metadata(sim_dir)
+
+    def list_simulations(
+        self,
+        project_id: Optional[str] = None,
+        *,
+        include_archived: bool = False,
+    ) -> List[SimulationState]:
         """List all simulations."""
         simulations = []
         
@@ -1190,6 +2342,8 @@ class SimulationManager:
                 # Skip hidden files such as .DS_Store and any non-directory entries
                 sim_path = os.path.join(self.SIMULATION_DATA_DIR, sim_id)
                 if sim_id.startswith('.') or not os.path.isdir(sim_path):
+                    continue
+                if not include_archived and is_forecast_archived(sim_path):
                     continue
                 
                 state = self._load_simulation_state(sim_id)
@@ -1228,32 +2382,6 @@ class SimulationManager:
     def get_prepare_artifact_summary(self, simulation_id: str) -> Dict[str, Any]:
         """Summarize preparation artifacts for API responses and verification."""
         sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
-        if not os.path.exists(sim_dir):
-            return {
-                "schema_version": self.PREPARE_SCHEMA_VERSION,
-                "generator_version": self.PREPARE_GENERATOR_VERSION,
-                "simulation_id": simulation_id,
-                "mode": "legacy",
-                "probabilistic_mode": False,
-                "uncertainty_profile": None,
-                "outcome_metrics": [],
-                "forecast_brief": None,
-                "grounding_summary": GroundingBundleBuilder(
-                    simulation_data_dir=self.SIMULATION_DATA_DIR
-                ).build_summary(None),
-                "lineage": {},
-                "feature_metadata": {
-                    "probabilistic_mode": False,
-                    "legacy_config_compatible": False,
-                    "sampling_enabled": False,
-                    "forecast_brief_attached": False,
-                },
-                "artifacts": {
-                    name: self._describe_artifact(sim_dir, name)
-                    for name in self.PREPARE_ARTIFACT_FILENAMES
-                },
-            }
-
         artifacts = {
             name: self._describe_artifact(sim_dir, name)
             for name in self.PREPARE_ARTIFACT_FILENAMES
@@ -1295,6 +2423,10 @@ class SimulationManager:
         grounding_summary = GroundingBundleBuilder(
             simulation_data_dir=self.SIMULATION_DATA_DIR
         ).build_summary(grounding_bundle)
+        readiness = self.derive_prepare_readiness(
+            artifacts=artifacts,
+            grounding_summary=grounding_summary,
+        )
         feature_metadata = {
             "probabilistic_mode": probabilistic_mode,
             "probabilistic_artifacts_complete": probabilistic_mode,
@@ -1303,6 +2435,9 @@ class SimulationManager:
             "legacy_config_compatible": artifacts["legacy_config"]["exists"],
             "sampling_enabled": False,
             "forecast_brief_attached": False,
+            "grounding_ready": readiness["grounding_readiness"]["ready"],
+            "workflow_handoff_ready": readiness["workflow_handoff_status"]["ready"],
+            "scenario_analysis_ready": readiness["forecast_readiness"]["ready"],
         }
         forecast_brief_payload = self._read_json_if_exists(
             os.path.join(sim_dir, self.PREPARE_ARTIFACT_FILENAMES["forecast_brief"])
@@ -1324,23 +2459,39 @@ class SimulationManager:
             feature_metadata.update(prepared_snapshot.get("feature_metadata", {}))
             lineage = prepared_snapshot.get("lineage", {})
 
+        linked_forecast_questions = []
+        try:
+            from .forecast_manager import ForecastManager
+
+            linked_forecast_questions = ForecastManager().list_question_summaries_for_simulation(
+                simulation_id
+            )
+        except Exception:
+            linked_forecast_questions = []
+        feature_metadata["linked_forecast_question_count"] = len(linked_forecast_questions)
+
         return {
             "schema_version": self.PREPARE_SCHEMA_VERSION,
             "generator_version": self.PREPARE_GENERATOR_VERSION,
             "simulation_id": simulation_id,
-            "mode": "probabilistic" if probabilistic_mode else "legacy",
+            "mode": (
+                "probabilistic"
+                if probabilistic_mode or partial_probabilistic_artifacts
+                else "legacy"
+            ),
             "probabilistic_mode": probabilistic_mode,
             "uncertainty_profile": uncertainty_profile,
             "outcome_metrics": outcome_metric_ids,
             "forecast_brief": forecast_brief_payload,
-            "grounding_summary": (
-                prepared_snapshot.get("grounding_summary", grounding_summary)
-                if prepared_snapshot
-                else grounding_summary
-            ),
+            "grounding_summary": grounding_summary,
             "lineage": lineage,
             "feature_metadata": feature_metadata,
             "missing_probabilistic_artifacts": missing_probabilistic_artifacts,
+            "artifact_completeness": readiness["artifact_completeness"],
+            "grounding_readiness": readiness["grounding_readiness"],
+            "forecast_readiness": readiness["forecast_readiness"],
+            "workflow_handoff_status": readiness["workflow_handoff_status"],
+            "linked_forecast_questions": linked_forecast_questions,
             "artifacts": artifacts,
         }
     

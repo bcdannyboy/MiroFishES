@@ -214,6 +214,12 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
 
     assert first == second
     assert (ensemble_dir / "scenario_clusters.json").exists()
+    timing_payload = json.loads(
+        (ensemble_dir / "ensemble_phase_timings.json").read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "ensemble"
+    assert timing_payload["scope_id"] == f"{simulation_id}::{ensemble_id}"
+    assert "clustering" in timing_payload["phases"]
     assert first["cluster_count"] == 2
     assert first["quality_summary"]["status"] == "complete"
     assert "thin_sample" in first["quality_summary"]["warnings"]
@@ -224,6 +230,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
         "platform.twitter.total_actions",
         "simulation.total_actions",
     ]
+    assert first["probability_boundary_note"] == (
+        "Scenario-family share is an observed run share inside this stored ensemble, not a calibrated real-world probability."
+    )
 
     prototypes = {cluster["prototype_run_id"] for cluster in first["clusters"]}
     assert prototypes == {"0001", "0003"}
@@ -231,7 +240,9 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
         tuple(cluster["member_run_ids"])
         for cluster in first["clusters"]
     } == {("0001", "0002"), ("0003", "0004")}
-    assert {cluster["probability_mass"] for cluster in first["clusters"]} == {0.5}
+    assert {cluster["observed_run_share"] for cluster in first["clusters"]} == {0.5}
+    assert all("probability_mass" not in cluster for cluster in first["clusters"])
+    assert all(cluster["share_semantics"] == "observed_run_share" for cluster in first["clusters"])
     assert all(cluster["prototype_resolved_values"] for cluster in first["clusters"])
     assert all(cluster["support_count"] == 2 for cluster in first["clusters"])
     assert all(cluster["minimum_support_count"] == 2 for cluster in first["clusters"])
@@ -256,6 +267,35 @@ def test_get_scenario_clusters_persists_deterministic_clusters_and_prototypes(
         for hint in cluster["comparison_hints"]
         if hint["scope"]["level"] == "cluster"
     } == {"cluster_0001", "cluster_0002"}
+    assert first["diversity_diagnostics"] == {
+        "coverage_metrics": {
+            "numeric_dimension_coverage_ratio": 1.0,
+            "scenario_template_count": 2,
+            "substantive_template_count": 2,
+            "substantive_template_ratio": 1.0,
+            "template_coverage_ratio": 1.0,
+            "template_support_counts": {
+                "baseline-watch": 2,
+                "viral-spike": 2,
+            },
+        },
+        "scenario_distance_metrics": {
+            "distance_metric": "cluster_prototype_euclidean",
+            "max_cluster_prototype_distance": 4.4721,
+            "mean_cluster_prototype_distance": 4.4721,
+            "min_cluster_prototype_distance": 4.4721,
+            "pair_count": 1,
+        },
+        "support_metrics": {
+            "cluster_support_counts": {
+                "cluster_0001": 2,
+                "cluster_0002": 2,
+            },
+            "maximum_cluster_support_count": 2,
+            "minimum_cluster_support_count": 2,
+        },
+        "diversity_warnings": [],
+    }
 
 
 def test_get_scenario_clusters_surfaces_missing_metrics_and_low_confidence(
@@ -327,10 +367,433 @@ def test_get_scenario_clusters_surfaces_missing_metrics_and_low_confidence(
     assert artifact["quality_summary"]["status"] == "partial"
     assert artifact["quality_summary"]["missing_metrics_runs"] == ["0003"]
     assert "missing_run_metrics" in artifact["quality_summary"]["warnings"]
+
+
+def test_get_scenario_clusters_reports_diversity_diagnostics_and_warnings(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-diversity"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 31,
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch", "consensus-bridge"],
+                    "scenario_coverage_tags": ["baseline", "bridge", "coordination"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T12:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 4),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 2
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 32,
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch", "consensus-bridge"],
+                    "scenario_coverage_tags": ["baseline", "bridge", "coordination"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T12:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 5),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 3
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "root_seed": 33,
+                "assumption_ledger": {
+                    "applied_templates": ["shock-spike", "baseline-watch"],
+                    "scenario_coverage_tags": ["amplification", "baseline", "shock"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T12:00:03",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 16),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 10
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "root_seed": 34,
+                "assumption_ledger": {
+                    "applied_templates": ["shock-spike"],
+                    "scenario_coverage_tags": ["amplification", "shock"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T12:00:04",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 17),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 11
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+    _write_json(
+        ensemble_dir / "experiment_design.json",
+        {
+            "artifact_type": "experiment_design",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "scenario_template_ids": [
+                "baseline-watch",
+                "shock-spike",
+                "consensus-bridge",
+            ],
+            "rows": [
+                {
+                    "run_id": "0001",
+                    "scenario_template_ids": ["baseline-watch", "consensus-bridge"],
+                    "scenario_coverage_tags": ["baseline", "bridge", "coordination"],
+                },
+                {
+                    "run_id": "0002",
+                    "scenario_template_ids": ["baseline-watch", "consensus-bridge"],
+                    "scenario_coverage_tags": ["baseline", "bridge", "coordination"],
+                },
+                {
+                    "run_id": "0003",
+                    "scenario_template_ids": ["shock-spike", "baseline-watch"],
+                    "scenario_coverage_tags": ["amplification", "baseline", "shock"],
+                },
+                {
+                    "run_id": "0004",
+                    "scenario_template_ids": ["shock-spike", "consensus-bridge"],
+                    "scenario_coverage_tags": ["amplification", "bridge", "coordination", "shock"],
+                },
+            ],
+            "coverage_metrics": {
+                "planned_template_count": 3,
+                "planned_coverage_tag_count": 5,
+            },
+        },
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    diagnostics = artifact["diversity_diagnostics"]
+    assert diagnostics["coverage_metrics"]["template_coverage_fraction"] == 1.0
+    assert diagnostics["coverage_metrics"]["coverage_tag_fraction"] >= 0.8
+    assert diagnostics["distance_metrics"]["max_pairwise_distance"] > 0
+    assert diagnostics["support_metrics"]["cluster_count"] == 2
+    assert diagnostics["support_metrics"]["minimum_cluster_support"] == 2
+    assert diagnostics["warnings"]
+
+
+def test_get_scenario_clusters_emits_diversity_diagnostics_from_planned_coverage(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-diversity"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 31,
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T12:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 3
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 32,
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T12:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 4
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 2
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "root_seed": 33,
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.85},
+                "assumption_ledger": {
+                    "applied_templates": ["crisis-spike"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T12:00:03",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 20
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 14
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "root_seed": 34,
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.9},
+                "assumption_ledger": {
+                    "applied_templates": ["crisis-spike"],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T12:00:04",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 22
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 16
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+    _write_json(
+        ensemble_dir / "experiment_design.json",
+        {
+            "artifact_type": "experiment_design",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "run_count": 4,
+            "scenario_template_ids": [
+                "baseline-watch",
+                "crisis-spike",
+                "bridge-response",
+            ],
+            "scenario_diversity_plan": {
+                "template_assignment_counts": {
+                    "baseline-watch": 2,
+                    "crisis-spike": 1,
+                    "bridge-response": 1,
+                }
+            },
+            "rows": [
+                {"run_id": "0001", "scenario_template_ids": ["baseline-watch"]},
+                {"run_id": "0002", "scenario_template_ids": ["baseline-watch"]},
+                {"run_id": "0003", "scenario_template_ids": ["crisis-spike"]},
+                {"run_id": "0004", "scenario_template_ids": ["bridge-response"]},
+            ],
+        },
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    assert artifact["diversity_diagnostics"]["coverage_metrics"] == {
+        "planned_template_count": 3,
+        "observed_template_count": 2,
+        "planned_templates_missing_from_observed": ["bridge-response"],
+        "template_coverage_ratio": 2 / 3,
+        "observed_template_counts": {
+            "baseline-watch": 2,
+            "crisis-spike": 2,
+        },
+    }
+    assert artifact["diversity_diagnostics"]["scenario_distance_metrics"][
+        "pairwise_distance_max"
+    ] > 0
+    assert artifact["diversity_diagnostics"]["support_metrics"][
+        "minimum_support_count"
+    ] == 2
+    assert "limited_template_coverage" in artifact["diversity_diagnostics"]["warnings"]
     assert "thin_sample" in artifact["quality_summary"]["warnings"]
     assert "low_confidence" in artifact["quality_summary"]["warnings"]
-    assert artifact["clusters"][0]["probability_mass"] == 2 / 3
+    assert artifact["quality_summary"]["support_assessment"] == {
+        "status": "descriptive_only",
+        "label": "Descriptive only",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Thin-sample or low-confidence warnings limit observed run share to descriptive use only.",
+        "warnings": ["thin_sample", "low_confidence"],
+    }
+    assert artifact["clusters"][0]["observed_run_share"] == 0.5
+    assert artifact["clusters"][0]["planned_template_support_ratio"] == 2 / 3
     assert artifact["clusters"][0]["warnings"] == ["low_metric_variance"]
+    assert artifact["clusters"][0]["support_assessment"] == {
+        "status": "descriptive_only",
+        "label": "Descriptive only",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Thin-sample or low-confidence warnings limit observed run share to descriptive use only.",
+        "warnings": ["thin_sample", "low_confidence", "low_metric_variance"],
+    }
+    assert "descriptive only" in artifact["clusters"][0]["family_summary"].lower()
+
+
+def test_get_scenario_clusters_counts_scenario_template_ids_when_applied_templates_are_absent(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-template-fallback"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "assumption_ledger": {
+                    "scenario_template_ids": ["baseline-watch"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 2
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "assumption_ledger": {
+                    "scenario_template_ids": ["baseline-watch"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 3
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.85},
+                "assumption_ledger": {
+                    "scenario_template_ids": ["viral-spike"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 20
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 12
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.9},
+                "assumption_ledger": {
+                    "scenario_template_ids": ["viral-spike"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 22
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 13
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    assert {
+        tuple(sorted(cluster["assumption_template_counts"].items()))
+        for cluster in artifact["clusters"]
+    } == {
+        (("baseline-watch", 2),),
+        (("viral-spike", 2),),
+    }
 
 
 def test_get_scenario_clusters_marks_singleton_support_warnings(
@@ -396,6 +859,114 @@ def test_get_scenario_clusters_marks_singleton_support_warnings(
     singleton = next(cluster for cluster in artifact["clusters"] if cluster["support_count"] == 1)
     assert singleton["minimum_support_met"] is False
     assert "minimum_support_not_met" in singleton["warnings"]
+    assert singleton["support_assessment"] == {
+        "status": "insufficient_support",
+        "label": "Insufficient support",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Minimum support was not met, so this cluster remains descriptive only.",
+        "warnings": ["minimum_support_not_met"],
+    }
+    assert "insufficient support" in singleton["family_summary"].lower()
+
+
+def test_get_scenario_clusters_reports_diversity_diagnostics(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-diversity"
+    ensemble_id = "0001"
+    artifact_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                    "scenario_coverage_tags": ["trajectory:baseline", "attention:steady"],
+                    "applied_exogenous_event_ids": ["baseline-watch-checkpoint"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 2),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 1),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.3},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                    "scenario_coverage_tags": ["trajectory:baseline", "attention:steady"],
+                    "applied_exogenous_event_ids": ["baseline-watch-checkpoint"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 4),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 2),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.8},
+                "assumption_ledger": {
+                    "applied_templates": ["shock-spike"],
+                    "scenario_coverage_tags": ["trajectory:shock", "attention:surge"],
+                    "applied_exogenous_event_ids": ["shock-spike-alert"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 18),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 12),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.9},
+                "assumption_ledger": {
+                    "applied_templates": ["recovery-lane"],
+                    "scenario_coverage_tags": ["trajectory:recovery", "attention:cooling"],
+                    "applied_exogenous_event_ids": ["recovery-lane-guidance"],
+                },
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 20),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 14),
+                    },
+                },
+            },
+        ],
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    assert (artifact_dir / "scenario_clusters.json").exists()
+    assert artifact["diversity_diagnostics"]["coverage_metrics"]["observed_template_count"] == 3
+    assert artifact["diversity_diagnostics"]["coverage_metrics"]["observed_exogenous_event_count"] == 3
+    assert artifact["diversity_diagnostics"]["coverage_metrics"]["observed_coverage_tag_count"] == 6
+    assert artifact["diversity_diagnostics"]["scenario_distance_metrics"]["max_intercluster_distance"] > 0
+    assert artifact["diversity_diagnostics"]["support_metrics"]["singleton_cluster_count"] >= 1
+    assert "narrow_template_coverage" not in artifact["diversity_diagnostics"]["diversity_warnings"]
 
 
 def test_get_scenario_clusters_excludes_partial_metrics_from_cluster_membership(
@@ -481,7 +1052,7 @@ def test_get_scenario_clusters_excludes_partial_metrics_from_cluster_membership(
     assert {
         cluster["prototype_run_id"] for cluster in artifact["clusters"]
     } == {"0001", "0003"}
-    assert all(cluster["probability_mass"] == 1 / 3 for cluster in artifact["clusters"])
+    assert all(cluster["observed_run_share"] == 1 / 3 for cluster in artifact["clusters"])
 
 
 def test_get_scenario_clusters_reports_no_shared_numeric_metrics(

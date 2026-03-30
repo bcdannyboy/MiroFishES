@@ -1,3 +1,9 @@
+import {
+  formatForecastBestEstimate,
+  hasEarnedCalibratedConfidence,
+  summarizeForecastWorkspace
+} from './forecastRuntime.js'
+
 const LEGACY_RUNTIME_MODE = 'legacy'
 const PROBABILISTIC_RUNTIME_MODE = 'probabilistic'
 const PROBABILISTIC_SCOPE_LEVELS = new Set(['ensemble', 'cluster', 'run'])
@@ -20,6 +26,21 @@ const ANALYTICS_WARNING_LABELS = {
   no_varying_drivers: 'No varying drivers',
   no_shared_numeric_metrics: 'No shared numeric metrics',
   partial_feature_space: 'Partial feature space'
+}
+
+const UNCERTAINTY_PROFILE_DEFINITIONS = {
+  'deterministic-baseline': {
+    summary: 'Locks run-varying fields to their default or fixed values so Step 3 starts from the most stable simulation reference shell.',
+    emphasis: 'Best for a steady simulation baseline, not for exploring spread or claiming probabilities.'
+  },
+  balanced: {
+    summary: 'Applies moderate spread across supported run-varying fields so stored simulation runs can explore plausible variation without leaning too hard into edge cases.',
+    emphasis: 'Best default for exploratory simulation coverage, not a direct probability forecast.'
+  },
+  'stress-test': {
+    summary: 'Pushes supported run-varying fields toward more adverse or extreme settings more often so stored simulation runs can probe fragile paths.',
+    emphasis: 'Useful for downside exploration, not a guaranteed worst-case forecast or probability claim.'
+  }
 }
 
 const normalizeRuntimeMode = (runtimeMode) => {
@@ -92,6 +113,35 @@ const normalizeOptionalString = (value) => {
   return trimmed ? trimmed : null
 }
 
+const normalizeOptionalNumber = (value) => {
+  const normalizedValue = Number(value)
+  return Number.isFinite(normalizedValue) ? normalizedValue : null
+}
+
+export const getUncertaintyProfileDefinition = (profile) => {
+  const normalizedProfile = normalizeOptionalString(profile)
+
+  if (!normalizedProfile) {
+    return {
+      id: '',
+      label: '-',
+      summary: 'Uses the backend-defined sampling stance for this forecast prepare profile.',
+      emphasis: 'Read the backend profile contract before treating it as stronger evidence.'
+    }
+  }
+
+  const definition = UNCERTAINTY_PROFILE_DEFINITIONS[normalizedProfile] || {}
+  return {
+    id: normalizedProfile,
+    label: normalizedProfile
+      .split('-')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' '),
+    summary: definition.summary || 'Uses the backend-defined sampling stance for this forecast prepare profile.',
+    emphasis: definition.emphasis || 'Read the backend profile contract before treating it as stronger evidence.'
+  }
+}
+
 const normalizeTimestamp = (value) => {
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? Number.NEGATIVE_INFINITY : value.getTime()
@@ -126,6 +176,18 @@ const getHistoryIdentityParts = (project = {}) => ({
 })
 
 const getHistoryProbabilisticReplaySource = (project = {}) => {
+  const latestReport = (
+    project?.latest_report
+    && typeof project.latest_report === 'object'
+  )
+    ? project.latest_report
+    : null
+  const reportReplayFields = {
+    reportId: normalizeOptionalString(latestReport?.report_id),
+    ensembleId: normalizeOptionalString(latestReport?.ensemble_id),
+    clusterId: normalizeOptionalString(latestReport?.cluster_id),
+    runId: normalizeOptionalString(latestReport?.run_id)
+  }
   const latestRuntime = (
     project?.latest_probabilistic_runtime
     && typeof project.latest_probabilistic_runtime === 'object'
@@ -134,21 +196,28 @@ const getHistoryProbabilisticReplaySource = (project = {}) => {
     : null
 
   if (latestRuntime) {
-    return {
+    const runtimeReplayFields = {
       source: normalizeOptionalString(latestRuntime.source) || 'report',
       reportId: normalizeOptionalString(latestRuntime.report_id),
       ensembleId: normalizeOptionalString(latestRuntime.ensemble_id),
       clusterId: normalizeOptionalString(latestRuntime.cluster_id),
       runId: normalizeOptionalString(latestRuntime.run_id)
     }
-  }
+    const usesReportScopeFallback = (
+      (!runtimeReplayFields.ensembleId && reportReplayFields.ensembleId)
+      || (!runtimeReplayFields.runId && reportReplayFields.runId)
+    )
 
-  const latestReport = (
-    project?.latest_report
-    && typeof project.latest_report === 'object'
-  )
-    ? project.latest_report
-    : null
+    return {
+      source: usesReportScopeFallback
+        ? 'report'
+        : runtimeReplayFields.source,
+      reportId: runtimeReplayFields.reportId || reportReplayFields.reportId,
+      ensembleId: runtimeReplayFields.ensembleId || reportReplayFields.ensembleId,
+      clusterId: runtimeReplayFields.clusterId || reportReplayFields.clusterId,
+      runId: runtimeReplayFields.runId || reportReplayFields.runId
+    }
+  }
 
   if (!latestReport) {
     return {
@@ -162,10 +231,10 @@ const getHistoryProbabilisticReplaySource = (project = {}) => {
 
   return {
     source: 'report',
-    reportId: normalizeOptionalString(latestReport.report_id),
-    ensembleId: normalizeOptionalString(latestReport.ensemble_id),
-    clusterId: normalizeOptionalString(latestReport.cluster_id),
-    runId: normalizeOptionalString(latestReport.run_id)
+    reportId: reportReplayFields.reportId,
+    ensembleId: reportReplayFields.ensembleId,
+    clusterId: reportReplayFields.clusterId,
+    runId: reportReplayFields.runId
   }
 }
 
@@ -943,8 +1012,8 @@ export const getStep2PrepareBootstrapState = ({
   probabilisticPrepareEnabled = false,
   preparedArtifactSummary = null
 } = {}) => {
-  const hasPreparedForecastArtifacts = hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
-  if (probabilisticPrepareEnabled || hasPreparedForecastArtifacts) {
+  const hasProbabilisticArtifacts = hasProbabilisticArtifactLayer(preparedArtifactSummary)
+  if (probabilisticPrepareEnabled || hasProbabilisticArtifacts) {
     return {
       selectedPrepareMode: PROBABILISTIC_RUNTIME_MODE,
       autoStartMode: null
@@ -957,9 +1026,40 @@ export const getStep2PrepareBootstrapState = ({
   }
 }
 
+const hasProbabilisticArtifactLayer = (preparedArtifactSummary) => {
+  if (!preparedArtifactSummary || typeof preparedArtifactSummary !== 'object') {
+    return false
+  }
+
+  const artifactCompleteness = (
+    preparedArtifactSummary.artifact_completeness
+    && typeof preparedArtifactSummary.artifact_completeness === 'object'
+  )
+    ? preparedArtifactSummary.artifact_completeness
+    : null
+
+  return (
+    preparedArtifactSummary.probabilistic_mode === true
+    || preparedArtifactSummary.mode === PROBABILISTIC_RUNTIME_MODE
+    || artifactCompleteness?.ready === true
+    || artifactCompleteness?.status === 'partial'
+  )
+}
+
 const hasPreparedProbabilisticArtifacts = (preparedArtifactSummary) => {
   if (!preparedArtifactSummary || typeof preparedArtifactSummary !== 'object') {
     return false
+  }
+
+  const artifactCompleteness = (
+    preparedArtifactSummary.artifact_completeness
+    && typeof preparedArtifactSummary.artifact_completeness === 'object'
+  )
+    ? preparedArtifactSummary.artifact_completeness
+    : null
+
+  if (artifactCompleteness) {
+    return artifactCompleteness.ready === true
   }
 
   return (
@@ -968,9 +1068,79 @@ const hasPreparedProbabilisticArtifacts = (preparedArtifactSummary) => {
   )
 }
 
+const getArtifactCompletenessState = (preparedArtifactSummary) => {
+  if (
+    preparedArtifactSummary?.artifact_completeness
+    && typeof preparedArtifactSummary.artifact_completeness === 'object'
+  ) {
+    return {
+      ready: preparedArtifactSummary.artifact_completeness.ready === true,
+      status: normalizeOptionalString(preparedArtifactSummary.artifact_completeness.status) || 'missing',
+      reason: normalizeOptionalString(preparedArtifactSummary.artifact_completeness.reason) || '',
+      missingArtifacts: Array.isArray(preparedArtifactSummary.artifact_completeness.missing_artifacts)
+        ? preparedArtifactSummary.artifact_completeness.missing_artifacts
+        : []
+    }
+  }
+
+  const ready = hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
+  return {
+    ready,
+    status: ready ? 'ready' : 'missing',
+    reason: '',
+    missingArtifacts: []
+  }
+}
+
+const getWorkflowHandoffState = (preparedArtifactSummary) => {
+  if (
+    preparedArtifactSummary?.workflow_handoff_status
+    && typeof preparedArtifactSummary.workflow_handoff_status === 'object'
+  ) {
+    return {
+      ready: preparedArtifactSummary.workflow_handoff_status.ready === true,
+      status: normalizeOptionalString(preparedArtifactSummary.workflow_handoff_status.status) || 'blocked',
+      reason: normalizeOptionalString(preparedArtifactSummary.workflow_handoff_status.reason) || ''
+    }
+  }
+
+  if (
+    preparedArtifactSummary?.forecast_readiness
+    && typeof preparedArtifactSummary.forecast_readiness === 'object'
+  ) {
+    return {
+      ready: preparedArtifactSummary.forecast_readiness.ready === true,
+      status: normalizeOptionalString(preparedArtifactSummary.forecast_readiness.status) || 'blocked',
+      reason: normalizeOptionalString(preparedArtifactSummary.forecast_readiness.reason) || ''
+    }
+  }
+
+  const ready = hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
+  return {
+    ready,
+    status: ready ? 'ready' : 'blocked',
+    reason: ''
+  }
+}
+
 export const shouldLaunchProbabilisticRuntime = ({
   preparedArtifactSummary
-} = {}) => hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
+} = {}) => getWorkflowHandoffState(preparedArtifactSummary).ready === true
+
+export const getStep2HandoffButtonLabel = ({
+  selectedPrepareMode,
+  step3HandoffInFlight = false
+} = {}) => {
+  if (selectedPrepareMode === PROBABILISTIC_RUNTIME_MODE) {
+    return step3HandoffInFlight
+      ? 'Creating Step 3 stored run shell...'
+      : 'Create Step 3 stored run shell ->'
+  }
+
+  return step3HandoffInFlight
+    ? 'Preparing Step 3 runtime...'
+    : 'Start Dual-World Parallel Simulation ->'
+}
 
 export const getStep2StartSimulationState = ({
   simulationId = null,
@@ -983,8 +1153,10 @@ export const getStep2StartSimulationState = ({
 } = {}) => {
   const probabilisticRequested = (
     selectedPrepareMode === PROBABILISTIC_RUNTIME_MODE
-    || hasPreparedProbabilisticArtifacts(preparedArtifactSummary)
+    || hasProbabilisticArtifactLayer(preparedArtifactSummary)
   )
+  const artifactCompleteness = getArtifactCompletenessState(preparedArtifactSummary)
+  const workflowHandoff = getWorkflowHandoffState(preparedArtifactSummary)
   const wantsProbabilisticRuntime = shouldLaunchProbabilisticRuntime({
     preparedArtifactSummary
   })
@@ -1002,19 +1174,27 @@ export const getStep2StartSimulationState = ({
     && hasExplicitRuntimeCapability
     && capabilityState.runtimeEnabled === false
   )
-  const artifactsMissing = probabilisticRequested && !wantsProbabilisticRuntime
+  const handoffBlocked = probabilisticRequested && workflowHandoff.ready !== true
   const readyForHandoff = phase >= 4 && !step3HandoffInFlight && !prepareInFlight
+  const handoffReason = (
+    workflowHandoff.reason
+    || artifactCompleteness.reason
+    || ''
+  )
 
   return {
     enabled: (
       Boolean(normalizeOptionalString(simulationId))
       && readyForHandoff
-      && !artifactsMissing
+      && !handoffBlocked
       && !runtimeBlocked
     ),
     helperText: readyForHandoff
-      ? artifactsMissing
-        ? 'Probabilistic Step 3 requires probabilistic prepare artifacts. Run probabilistic prepare first or return to the legacy path.'
+      ? handoffBlocked
+        ? (
+          handoffReason
+          || 'Probabilistic Step 3 requires stored-run shell artifacts. Run stored-run shell preparation first or return to the legacy path.'
+        )
         : runtimeBlocked
           ? 'Probabilistic Step 3 runtime shells are disabled by backend capabilities. Re-enable probabilistic runtime support or return to the legacy path.'
           : ''
@@ -1060,7 +1240,7 @@ export const getStep3ReportState = (runtimeMode, capabilities = {}) => {
       return {
         enabled: true,
         buttonLabel: 'Start generating the result report',
-        helperText: 'Step 4 will keep the legacy report body and add observed empirical ensemble context for this probabilistic run family.'
+        helperText: 'Step 4 will keep the legacy report body and add scoped evidence cards when available: forecast question, evidence bundle, prediction ledger, evaluation status, and simulation-backed scenario analysis.'
       }
     }
 
@@ -1110,34 +1290,76 @@ export const getStep5InteractionState = (
 
   if (hasScopedProbabilisticContext) {
     const scopeLevel = evidenceSummary.scope?.level || 'ensemble'
-    const scopeLabel = scopeLevel === 'run'
-      ? 'Run-scoped probabilistic context available'
-      : (scopeLevel === 'cluster'
-        ? 'Cluster-scoped probabilistic context available'
-        : 'Ensemble-scoped probabilistic context available')
-    let body = 'Report Agent chat can request ensemble evidence directly for this probabilistic scope.'
+    const hybridWorkspace = evidenceSummary.hybridWorkspace
+    const scopeLabel = hybridWorkspace?.forecastQuestion?.questionText
+      ? 'Hybrid report evidence available'
+      : (
+        scopeLevel === 'run'
+          ? 'Run-scoped report evidence available'
+          : (scopeLevel === 'cluster'
+            ? 'Scenario-family report evidence available'
+            : 'Ensemble report evidence available')
+      )
+    let body = 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope.'
     if (scopeLevel === 'cluster') {
-      body = 'Report Agent chat can request ensemble and scenario-family evidence directly for this probabilistic scope.'
+      body = 'Report Agent chat can inspect the saved report plus ensemble and scenario-family evidence for this selected scope.'
     } else if (scopeLevel === 'run') {
-      body = 'Report Agent chat can request ensemble, scenario-family, and run evidence directly for this probabilistic scope.'
+      body = 'Report Agent chat can inspect the saved report plus ensemble, scenario-family, and run evidence for this selected scope.'
     }
-    if (Array.isArray(evidenceSummary.calibration?.readyMetricIds) && evidenceSummary.calibration.readyMetricIds.length) {
-      body += ` Backtested calibration artifacts are available for ${evidenceSummary.calibration.readyMetricIds.join(', ')}.`
+    if (hybridWorkspace?.available) {
+      const surfaceStatus = hybridWorkspace.statusSurface || {}
+      const surfaceLines = []
+      surfaceLines.push(
+        surfaceStatus.evidenceAvailable
+          ? 'Evidence available.'
+          : 'Evidence is not yet available.'
+      )
+      surfaceLines.push(
+        surfaceStatus.evaluationAvailable
+          ? 'Evaluation available.'
+          : 'Evaluation is not yet available.'
+      )
+      surfaceLines.push(
+        surfaceStatus.calibratedConfidenceEarned
+          ? 'Calibrated confidence earned.'
+          : 'Calibrated confidence not yet earned.'
+      )
+      if (surfaceStatus.simulationOnlyScenarioExploration) {
+        surfaceLines.push('Simulation remains supporting scenario analysis only.')
+      }
+      body = `${body} ${surfaceLines.join(' ')}`
+      if (hybridWorkspace.supportedQuestionTemplates.length) {
+        body += ` Supported question templates: ${hybridWorkspace.supportedQuestionTemplates.join(', ')}.`
+      }
+      if (hybridWorkspace.latestAnswer?.abstain) {
+        body += ` The latest answer abstained because ${hybridWorkspace.latestAnswer.abstainReason || 'support is insufficient'}.`
+      } else if (hybridWorkspace.latestAnswer?.bestEstimateDisplay) {
+        body += ` Best estimate: ${hybridWorkspace.latestAnswer.bestEstimateDisplay}.`
+      }
+      if (Array.isArray(hybridWorkspace.latestAnswer?.counterevidence) && hybridWorkspace.latestAnswer.counterevidence.length) {
+        body += ` Counterevidence is explicitly retained.`
+      }
+    } else if (Array.isArray(evidenceSummary.calibration?.readyMetricIds) && evidenceSummary.calibration.readyMetricIds.length) {
+      body += ` Schema-valid backtest-linked calibration artifacts are attached for ${evidenceSummary.calibration.readyMetricIds.join(', ')}, so only that metric may be described as calibrated.`
     } else if (evidenceSummary.confidenceStatus?.status === 'not_ready') {
-      body += ' Calibration artifacts are present but not ready for calibrated language yet.'
+      body += ` ${buildConfidenceStatusCopy(evidenceSummary.confidenceStatus).body}`
+    } else {
+      body += ' It remains a scoped evidence view only.'
     }
-    body += ' Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+    body += ' Interviews and surveys still use the legacy interaction path.'
     return {
       showNotice: true,
       title: scopeLabel,
-      body
+      body,
+      hybridWorkspaceStatus: hybridWorkspace?.statusSurface || null
     }
   }
 
   return {
     showNotice: true,
-    title: 'Probabilistic interaction context unavailable',
-    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. Interviews and surveys still use the legacy interaction path.'
+    title: 'Scoped report evidence unavailable',
+    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. It can only inspect scoped evidence after Step 4 saves it. Interviews and surveys still use the legacy interaction path.',
+    hybridWorkspaceStatus: null
   }
 }
 
@@ -1162,8 +1384,8 @@ export const deriveProbabilisticCapabilityState = (capabilities = {}) => {
     interactionEnabled,
     calibratedEnabled,
     calibrationSurfaceMode,
-    reportModeLabel: reportEnabled ? 'probabilistic-ready' : 'legacy-only',
-    interactionModeLabel: interactionEnabled ? 'probabilistic-ready' : 'legacy-only',
+    reportModeLabel: reportEnabled ? 'enabled' : 'legacy-only',
+    interactionModeLabel: interactionEnabled ? 'enabled' : 'legacy-only',
     calibrationModeLabel: calibrationSurfaceMode
   }
 }
@@ -1274,7 +1496,7 @@ const buildProbabilisticWaitingText = ({
   lifecycleStatus
 }) => {
   if (requestedProbabilisticMode && !isProbabilisticMode) {
-    return 'Probabilistic Step 3 is waiting for a stored run shell from Step 2.'
+    return 'Probabilistic Step 3 is waiting for Step 2 to create or reopen a stored run shell.'
   }
 
   if (!normalizedRunId) {
@@ -1291,6 +1513,10 @@ const buildProbabilisticWaitingText = ({
 
   if (lifecycleStatus === 'completed') {
     return `Stored run ${normalizedRunId} completed. Raw actions remain available for review.`
+  }
+
+  if (lifecycleStatus === 'prepared' || lifecycleStatus === 'idle') {
+    return `Stored run shell ${normalizedRunId} is prepared. Launch it manually when ready.`
   }
 
   return `Waiting for actions from stored run ${normalizedRunId} (${lifecycleStatus}).`
@@ -1377,7 +1603,7 @@ export const deriveProbabilisticStep3Runtime = ({
   )
   const runtimeError = (
     requestedProbabilisticMode && !isProbabilisticMode
-      ? 'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and recreate the stored run shell.'
+      ? 'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and create or reopen the stored run shell.'
       : ''
   )
 
@@ -1466,7 +1692,7 @@ const normalizeStringList = (values = []) => {
     .filter(Boolean)
 }
 
-const normalizeWarningList = (warnings = []) => {
+const normalizeWarningCodes = (warnings = []) => {
   if (!Array.isArray(warnings)) {
     return []
   }
@@ -1478,13 +1704,17 @@ const normalizeWarningList = (warnings = []) => {
       continue
     }
     seen.add(warning)
-    uniqueWarnings.push(
-      ANALYTICS_WARNING_LABELS[warning]
-      || warning.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
-    )
+    uniqueWarnings.push(warning)
   }
   return uniqueWarnings
 }
+
+const normalizeWarningList = (warnings = []) => (
+  normalizeWarningCodes(warnings).map((warning) => (
+    ANALYTICS_WARNING_LABELS[warning]
+    || warning.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+  ))
+)
 
 const formatAnalyticsNumber = (value) => {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -1527,6 +1757,124 @@ const countNonEmptyReliabilityBins = (bins = []) => {
   }, 0)
 }
 
+const normalizeReadinessEntry = (entry = {}, fallbackStatus = 'absent', fallbackReason = '') => {
+  const normalizedEntry = normalizeAnalyticsRecord(entry) || {}
+  const status = normalizeOptionalString(normalizedEntry.status) || fallbackStatus
+  const explicitReason = normalizeOptionalString(normalizedEntry.reason)
+  return {
+    status,
+    reason: explicitReason || (status === 'valid' ? '' : fallbackReason)
+  }
+}
+
+const normalizeArtifactReadiness = (artifactReadiness = {}) => {
+  const normalizedReadiness = normalizeAnalyticsRecord(artifactReadiness) || {}
+  return {
+    calibrationSummary: normalizeReadinessEntry(
+      normalizedReadiness.calibration_summary,
+      'absent',
+      'No calibration summary artifact is attached to this ensemble.'
+    ),
+    backtestSummary: normalizeReadinessEntry(
+      normalizedReadiness.backtest_summary,
+      'absent',
+      'No backtest summary artifact is attached to this ensemble.'
+    ),
+    provenance: normalizeReadinessEntry(
+      normalizedReadiness.provenance,
+      'absent',
+      'Calibration provenance cannot be verified without a valid calibration summary artifact.'
+    )
+  }
+}
+
+const normalizeSupportAssessment = (supportAssessment = {}, fallbackStatus = 'observed_pattern') => {
+  const normalizedAssessment = normalizeAnalyticsRecord(supportAssessment) || {}
+  return {
+    status: normalizeOptionalString(normalizedAssessment.status) || fallbackStatus,
+    label: normalizeOptionalString(normalizedAssessment.label) || null,
+    downgraded: normalizedAssessment.downgraded === true,
+    decisionSupportReady: normalizedAssessment.decision_support_ready === true,
+    reason: normalizeOptionalString(normalizedAssessment.reason) || '',
+    warnings: normalizeWarningList(normalizedAssessment.warnings),
+    warningCodes: normalizeWarningCodes(normalizedAssessment.warnings)
+  }
+}
+
+const formatConfidenceLabel = (label) => {
+  const normalizedLabel = normalizeOptionalString(label)
+  if (!normalizedLabel) {
+    return null
+  }
+
+  const labels = {
+    limited: 'Artifacts valid, limited empirical support',
+    moderate: 'Artifacts valid, moderate empirical support',
+    insufficient: 'Insufficient support'
+  }
+
+  return labels[normalizedLabel] || normalizedLabel.replace(/_/g, ' ')
+}
+
+const buildConfidenceStatusCopy = (confidenceStatus = {}) => {
+  const status = normalizeOptionalString(confidenceStatus.status) || 'absent'
+  const readyMetricIds = normalizeStringList(confidenceStatus.readyMetricIds)
+  const gatingReasons = normalizeStringList(confidenceStatus.gatingReasons)
+  const artifactReadiness = confidenceStatus.artifactReadiness || normalizeArtifactReadiness()
+  const boundaryNote = normalizeOptionalString(confidenceStatus.boundaryNote) || ''
+
+  if (status === 'ready' && readyMetricIds.length) {
+    return {
+      headline: `Confidence gate passed for ${readyMetricIds.join(', ')}`,
+      body: `Schema-valid calibration and linked backtest artifacts are available for ${readyMetricIds.join(', ')}. Only those metrics may be described as calibrated. ${boundaryNote}`.trim()
+    }
+  }
+
+  if (artifactReadiness.calibrationSummary.status === 'absent') {
+    return {
+      headline: 'No calibration artifact attached',
+      body: 'This saved context has no calibration summary artifact, so confidence stays empirical only.'
+    }
+  }
+
+  if (artifactReadiness.calibrationSummary.status === 'invalid') {
+    return {
+      headline: 'Calibration artifact invalid',
+      body: artifactReadiness.calibrationSummary.reason || 'The saved calibration summary failed validation, so it cannot support confidence claims.'
+    }
+  }
+
+  if (artifactReadiness.backtestSummary.status !== 'valid') {
+    return {
+      headline: artifactReadiness.backtestSummary.status === 'absent'
+        ? 'Backtest artifact missing'
+        : 'Backtest artifact invalid',
+      body: artifactReadiness.backtestSummary.reason || 'A valid backtest summary artifact is required before confidence can be surfaced.'
+    }
+  }
+
+  if (artifactReadiness.provenance.status !== 'valid') {
+    return {
+      headline: artifactReadiness.provenance.status === 'absent'
+        ? 'Calibration provenance missing'
+        : 'Calibration provenance invalid',
+      body: artifactReadiness.provenance.reason || 'Calibration provenance is not trustworthy enough for confidence use.'
+    }
+  }
+
+  if (gatingReasons.length) {
+    return {
+      headline: 'Calibration artifacts valid but gate-blocked',
+      body: `Calibration artifacts are valid but calibrated language is still blocked by ${gatingReasons.join(', ')}.`
+    }
+  }
+
+  return {
+    headline: 'Calibration artifacts present but gate-blocked',
+    body: boundaryNote
+  }
+}
+
 const normalizeConfidenceStatus = (reportContext = null) => {
   const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
   const rawStatus = normalizeAnalyticsRecord(normalizedContext.confidence_status) || {}
@@ -1550,9 +1898,10 @@ const normalizeConfidenceStatus = (reportContext = null) => {
     notReadyMetricIds,
     gatingReasons: normalizeStringList(rawStatus.gating_reasons),
     warnings: normalizeWarningList(rawStatus.warnings),
+    artifactReadiness: normalizeArtifactReadiness(rawStatus.artifact_readiness),
     boundaryNote: (
       normalizeOptionalString(rawStatus.boundary_note)
-      || 'Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.'
+      || 'Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.'
     )
   }
 }
@@ -1745,6 +2094,280 @@ const buildGroundingSummary = (reportContext = null) => {
   }
 }
 
+const buildHybridWorkspaceSummary = (reportContext = null) => {
+  const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
+  const normalizedWorkspace = normalizeAnalyticsRecord(
+    normalizedContext.forecast_workspace || normalizedContext
+  )
+  const workspaceSummary = summarizeForecastWorkspace(normalizedWorkspace)
+  const truthfulnessSurface = normalizeAnalyticsRecord(
+    normalizedWorkspace.truthfulness_surface
+  ) || {}
+
+  if (
+    !workspaceSummary.forecastId
+    && !workspaceSummary.questionText
+    && !workspaceSummary.evidenceEntryCount
+    && !workspaceSummary.predictionEntryCount
+    && !workspaceSummary.answerCount
+  ) {
+    return null
+  }
+
+  const forecastQuestion = normalizeAnalyticsRecord(
+    normalizedWorkspace.forecast_question || normalizedWorkspace.question
+  ) || {}
+  const evidenceBundle = normalizeAnalyticsRecord(
+    normalizedWorkspace.evidence_bundle || normalizedWorkspace.evidence
+  )
+  const predictionLedger = normalizeAnalyticsRecord(
+    normalizedWorkspace.prediction_ledger || normalizedWorkspace.predictionLedger
+  )
+  const latestAnswer = Array.isArray(normalizedWorkspace.forecast_answers)
+    && normalizedWorkspace.forecast_answers.length
+    ? normalizedWorkspace.forecast_answers[normalizedWorkspace.forecast_answers.length - 1]
+    : normalizeAnalyticsRecord(normalizedWorkspace.forecast_answer)
+  const latestAnswerPayload = normalizeAnalyticsRecord(
+    latestAnswer?.answer_payload
+    || latestAnswer?.payload
+    || latestAnswer?.answer
+    || workspaceSummary.latestAnswerPayload
+  )
+  const bestEstimate = normalizeAnalyticsRecord(latestAnswerPayload.best_estimate)
+  const uncertaintyDecomposition = normalizeAnalyticsRecord(latestAnswerPayload.uncertainty_decomposition)
+  const assumptionSummary = normalizeAnalyticsRecord(latestAnswerPayload.assumption_summary)
+  const evaluationSummary = normalizeAnalyticsRecord(
+    latestAnswerPayload.evaluation_summary
+    || predictionLedger?.evaluation_summary
+  )
+  const evaluationResults = normalizeAnalyticsRecord(
+    normalizedWorkspace.evaluation_results
+  ) || {}
+  const confidenceBasis = normalizeAnalyticsRecord(
+    latestAnswerPayload.confidence_basis
+    || predictionLedger?.confidence_basis
+  ) || {}
+  const calibrationSummary = normalizeAnalyticsRecord(
+    latestAnswer?.calibration_summary
+  ) || {}
+  const workerComparison = normalizeAnalyticsRecord(
+    normalizedWorkspace.worker_comparison
+  ) || {}
+  const workerTrace = Array.isArray(workerComparison.worker_contribution_trace)
+    ? workerComparison.worker_contribution_trace
+    : (Array.isArray(latestAnswerPayload.worker_contribution_trace)
+        ? latestAnswerPayload.worker_contribution_trace
+        : [])
+  const workerOutputs = Array.isArray(predictionLedger?.worker_outputs)
+    ? predictionLedger.worker_outputs
+    : []
+  const supportedQuestionTemplates = Array.isArray(forecastQuestion.supported_question_templates)
+    ? forecastQuestion.supported_question_templates
+        .map((item, index) => {
+          if (typeof item === 'string') {
+            const label = item.trim()
+            return label
+              ? {
+                  templateId: label,
+                  label,
+                  questionType: '',
+                  promptTemplate: '',
+                  requiredFields: [],
+                  abstainGuidance: '',
+                  notes: []
+                }
+              : null
+          }
+
+          if (!item || typeof item !== 'object') {
+            return null
+          }
+
+          return {
+            templateId: String(item.template_id || `template-${index + 1}`),
+            label: String(item.label || item.prompt_template || `Template ${index + 1}`),
+            questionType: String(item.question_type || ''),
+            promptTemplate: String(item.prompt_template || ''),
+            requiredFields: normalizeStringList(item.required_fields),
+            abstainGuidance: String(item.abstain_guidance || ''),
+            notes: normalizeStringList(item.notes)
+          }
+        })
+        .filter(Boolean)
+    : (Array.isArray(workspaceSummary.supportedQuestionTemplateDetails)
+        ? workspaceSummary.supportedQuestionTemplateDetails
+        : [])
+  const supportedQuestionTemplateLabels = supportedQuestionTemplates
+    .map((item) => String(item?.label || item?.promptTemplate || item?.templateId || '').trim())
+    .filter(Boolean)
+  const normalizedWorkerTrace = workerTrace
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      workerId: normalizeOptionalString(item.worker_id) || null,
+      workerKind: normalizeOptionalString(item.worker_kind) || 'unknown',
+      status: normalizeOptionalString(item.status) || 'unknown',
+      summary: normalizeOptionalString(item.summary) || 'No worker summary recorded.',
+      contributionRole: normalizeOptionalString(item.contribution_role) || '',
+      influencesBestEstimate: item.influences_best_estimate === true,
+      effectiveWeight: normalizeOptionalNumber(item.effective_weight),
+      estimateValue: normalizeOptionalNumber(item?.estimate?.value ?? item?.estimate?.estimate),
+      estimateSemantics: normalizeOptionalString(item?.estimate?.value_semantics || item?.estimate?.semantics) || '',
+      abstainReason: normalizeOptionalString(item.abstain_reason) || '',
+      notes: normalizeStringList(item.notes),
+      failureModes: normalizeStringList(item.failure_modes)
+    }))
+  const truthfulnessMatrix = {
+    evidenceAvailable: (
+      truthfulnessSurface.evidence_available === true
+      || workspaceSummary.statusSurface.evidenceAvailable
+      || ['available', 'partial', 'ready'].includes(String(evidenceBundle?.status || '').trim())
+    ),
+    evaluationAvailable: (
+      truthfulnessSurface.evaluation_available === true
+      || workspaceSummary.statusSurface.evaluationAvailable
+      || (normalizeNonNegativeInteger(evaluationResults.resolved_case_count) ?? 0) > 0
+      || (normalizeNonNegativeInteger(evaluationSummary?.resolved_case_count) ?? 0) > 0
+    ),
+    calibratedConfidenceEarned: (
+      workspaceSummary.statusSurface.calibratedConfidenceEarned
+      || hasEarnedCalibratedConfidence({
+        latestAnswer,
+        confidenceBasis,
+        calibrationSummary
+      })
+    ),
+    simulationOnlyScenarioExploration: (
+      truthfulnessSurface.simulation_only_scenario_exploration === true
+      || (
+        Boolean(workspaceSummary.latestSimulationContext?.included)
+        && !normalizedWorkerTrace.some((item) => (
+          item.workerKind !== 'simulation' && item.influencesBestEstimate
+        ))
+      )
+    )
+  }
+  const whySummary = normalizeStringList(latestAnswer?.why_summary).length
+    ? normalizeStringList(latestAnswer?.why_summary)
+    : normalizedWorkerTrace
+        .filter((item) => item.influencesBestEstimate)
+        .map((item) => item.summary)
+        .filter(Boolean)
+  const workerKinds = Array.isArray(workerComparison.worker_kinds)
+    ? workerComparison.worker_kinds.map((item) => String(item || '').trim()).filter(Boolean)
+    : normalizedWorkerTrace.map((item) => item.workerKind).filter(Boolean)
+
+  return {
+    available: true,
+    forecastQuestion: {
+      forecastId: workspaceSummary.forecastId,
+      title: workspaceSummary.title,
+      questionText: workspaceSummary.questionText,
+      questionType: workspaceSummary.questionType,
+      questionHorizon: workspaceSummary.questionHorizon,
+      issuedAt: workspaceSummary.issuedAt,
+      owner: workspaceSummary.owner,
+      source: workspaceSummary.source,
+      decompositionSupport: workspaceSummary.decompositionSupport,
+      abstentionConditions: workspaceSummary.abstentionConditions,
+      supportedQuestionTemplates: supportedQuestionTemplateLabels,
+      supportedQuestionTemplateDetails: supportedQuestionTemplates
+    },
+    evidenceBundle: {
+      bundleId: normalizeOptionalString(evidenceBundle.bundle_id) || null,
+      title: normalizeOptionalString(evidenceBundle.title) || '',
+      summary: normalizeOptionalString(evidenceBundle.summary) || '',
+      boundaryNote: normalizeOptionalString(evidenceBundle.boundary_note) || '',
+      status: workspaceSummary.evidenceBundleStatus,
+      sourceEntryCount: workspaceSummary.evidenceEntryCount,
+      freshness: workspaceSummary.evidenceFreshness,
+      relevance: workspaceSummary.evidenceRelevance,
+      qualityScore: workspaceSummary.evidenceQualityScore,
+      conflictCount: workspaceSummary.evidenceConflictCount,
+      missingEvidenceCount: workspaceSummary.missingEvidenceCount,
+      uncertaintyCauses: workspaceSummary.evidenceUncertaintyCauses
+    },
+    predictionLedger: {
+      finalResolutionState: workspaceSummary.finalResolutionState,
+      resolutionNote: workspaceSummary.resolutionNote,
+      entryCount: workspaceSummary.predictionEntryCount || normalizeNonNegativeInteger(predictionLedger.entry_count) || 0,
+      workerOutputCount: workspaceSummary.workerOutputCount || normalizeNonNegativeInteger(predictionLedger.worker_output_count) || 0,
+      evaluationCaseCount: workspaceSummary.evaluationCaseCount || normalizeNonNegativeInteger(evaluationResults.case_count) || 0,
+      resolvedEvaluationCaseCount: workspaceSummary.resolvedEvaluationCaseCount || normalizeNonNegativeInteger(evaluationResults.resolved_case_count) || 0
+    },
+    latestAnswer: {
+      answerType: workspaceSummary.latestAnswerType,
+      abstain: workspaceSummary.latestAnswerAbstained,
+      abstainReason: workspaceSummary.latestAnswerAbstainReason,
+      bestEstimate: workspaceSummary.latestBestEstimate,
+      bestEstimateValueType: workspaceSummary.latestBestEstimateValueType,
+      bestEstimateSemantics: workspaceSummary.latestBestEstimateSemantics,
+      bestEstimateDisplay: workspaceSummary.latestBestEstimateDisplay,
+      bestEstimateTopLabel: workspaceSummary.latestBestEstimateTopLabel,
+      bestEstimateTopLabelShare: workspaceSummary.latestBestEstimateTopLabelShare,
+      bestEstimateDistribution: workspaceSummary.latestBestEstimateDistribution,
+      bestEstimateIntervals: workspaceSummary.latestBestEstimateIntervals,
+      bestEstimateUnit: workspaceSummary.latestBestEstimateUnit,
+      bestEstimateWhy: workspaceSummary.latestBestEstimateWhy || whySummary[0] || '',
+      whySummary,
+      counterevidence: workspaceSummary.latestCounterevidence,
+      assumptionLedger: {
+        items: workspaceSummary.latestAssumptionItems,
+        summary: normalizeOptionalString(assumptionSummary?.summary) || workspaceSummary.latestAssumptionItems[0] || ''
+      },
+      uncertaintyDecomposition: {
+        drivers: Array.isArray(uncertaintyDecomposition?.drivers)
+          ? uncertaintyDecomposition.drivers
+          : [],
+        components: Array.isArray(uncertaintyDecomposition?.components)
+          ? uncertaintyDecomposition.components
+          : [],
+        disagreementRange: normalizeOptionalNumber(
+          uncertaintyDecomposition?.disagreement_range
+        ),
+      },
+      workerContributionTrace: normalizedWorkerTrace,
+      simulationContext: workspaceSummary.latestSimulationContext,
+      evaluationSummary: Object.keys(evaluationSummary || {}).length
+        ? evaluationSummary
+        : evaluationResults,
+      confidenceBasis
+    },
+    workerComparison: {
+      workerCount: normalizeNonNegativeInteger(workerComparison.worker_count) ?? workspaceSummary.workerCount,
+      simulationWorkerCount: normalizeNonNegativeInteger(workerComparison.simulation_worker_count) ?? workerKinds.filter((kind) => kind === 'simulation').length,
+      simulationIsOnlyWorker: truthfulnessMatrix.simulationOnlyScenarioExploration,
+      workerKinds,
+      workerOutputs,
+      contributionTrace: normalizedWorkerTrace,
+      simulationObservedRunShare: workspaceSummary.latestSimulationObservedRunShare
+    },
+    evaluation: {
+      available: truthfulnessMatrix.evaluationAvailable,
+      caseCount: workspaceSummary.evaluationCaseCount || normalizeNonNegativeInteger(evaluationResults.case_count) || 0,
+      resolvedCaseCount: workspaceSummary.resolvedEvaluationCaseCount || normalizeNonNegativeInteger(evaluationResults.resolved_case_count) || 0,
+      summary: Object.keys(evaluationSummary || {}).length
+        ? evaluationSummary
+        : evaluationResults,
+      calibratedConfidenceEarned: truthfulnessMatrix.calibratedConfidenceEarned,
+      confidenceBasis
+    },
+    truthfulnessSurface: {
+      ...truthfulnessMatrix,
+      boundaryNote: normalizeOptionalString(truthfulnessSurface.boundary_note) || ''
+    },
+    forecastWorkspaceStatus: workspaceSummary.forecastWorkspaceStatus || 'available',
+    statusSurface: truthfulnessMatrix,
+    supportedQuestionTemplates: supportedQuestionTemplateLabels,
+    supportedQuestionTemplateDetails: supportedQuestionTemplates,
+    simulationScenarioAnalysis: {
+      available: truthfulnessMatrix.simulationOnlyScenarioExploration || Boolean(workspaceSummary.latestSimulationContext),
+      onlyScenarioExploration: truthfulnessMatrix.simulationOnlyScenarioExploration,
+      observedRunShare: workspaceSummary.latestSimulationObservedRunShare,
+      context: workspaceSummary.latestSimulationContext
+    }
+  }
+}
+
 const normalizeCompareScope = (scope = {}) => {
   const normalizedScope = normalizeAnalyticsRecord(scope) || {}
   return {
@@ -1876,7 +2499,7 @@ const buildComparePrompts = ({
   if (firstFamily?.cluster_id && secondFamily?.cluster_id) {
     prompts.push({
       label: `${firstFamily.cluster_id} vs ${secondFamily.cluster_id}`,
-      prompt: `Compare scenario family ${firstFamily.cluster_id} against ${secondFamily.cluster_id}. Focus on probability mass, support counts, distinguishing metrics, representative runs, and explicit warnings only.`
+      prompt: `Compare scenario family ${firstFamily.cluster_id} against ${secondFamily.cluster_id}. Focus on observed run share, support counts, distinguishing metrics, representative runs, and explicit warnings only.`
     })
   }
 
@@ -1956,6 +2579,8 @@ export const deriveProbabilisticEvidenceSummary = ({
   const selectedRunNotes = normalizeStringList(selectedRunLedger.notes)
   const calibrationSummaryText = buildCalibrationSummary(calibrationMetric)
   const groundingSummary = buildGroundingSummary(normalizedContext)
+  const hybridWorkspace = buildHybridWorkspaceSummary(normalizedContext)
+  const confidenceCopy = buildConfidenceStatusCopy(confidenceStatus)
 
   const compareOptions = normalizeCompareOptions(
     Array.isArray(normalizedContext.compare_options)
@@ -1990,7 +2615,11 @@ export const deriveProbabilisticEvidenceSummary = ({
       ? {
           clusterId: normalizeOptionalString(selectedCluster.cluster_id),
           familyLabel: normalizeOptionalString(selectedCluster.family_label) || null,
-          familySummary: normalizeOptionalString(selectedCluster.family_summary) || null
+          familySummary: normalizeOptionalString(selectedCluster.family_summary) || null,
+          supportAssessment: normalizeSupportAssessment(
+            selectedCluster.support_assessment,
+            'observed_pattern'
+          )
         }
       : null,
     selectedRun: selectedRun
@@ -2005,7 +2634,11 @@ export const deriveProbabilisticEvidenceSummary = ({
             : (selectedRunNotes[0] || 'No assumption ledger details stored')
         }
       : null,
-    confidenceStatus,
+    confidenceStatus: {
+      ...confidenceStatus,
+      headline: confidenceCopy.headline,
+      body: confidenceCopy.body
+    },
     calibration: calibrationProvenance
       ? {
           mode: normalizeOptionalString(calibrationProvenance.mode) || 'calibrated',
@@ -2013,9 +2646,10 @@ export const deriveProbabilisticEvidenceSummary = ({
           qualityStatus: normalizeOptionalString(calibrationProvenance.quality_status) || 'unknown',
           warnings: normalizeWarningList(calibrationProvenance.warnings),
           summary: calibrationSummaryText,
-          confidenceLabel: normalizeOptionalString(calibrationMetric?.readiness?.confidence_label) || null
-        }
+          confidenceLabel: formatConfidenceLabel(calibrationMetric?.readiness?.confidence_label)
+      }
       : null,
+    hybridWorkspace,
     grounding: groundingSummary,
     compareOptions,
     compareCatalog,
@@ -2061,14 +2695,36 @@ const getDominantCategory = (metricSummary = {}) => {
   return ranked[0]?.[0] || null
 }
 
+const getObservedTrueShare = (metricSummary = {}) => (
+  typeof metricSummary?.observed_true_share === 'number'
+    ? metricSummary.observed_true_share
+    : metricSummary?.empirical_probability
+)
+
+const getDominantObservedShare = (metricSummary = {}, dominantCategory = null) => {
+  if (typeof metricSummary?.dominant_observed_share === 'number') {
+    return metricSummary.dominant_observed_share
+  }
+  if (typeof metricSummary?.dominant_probability === 'number') {
+    return metricSummary.dominant_probability
+  }
+  if (dominantCategory && typeof metricSummary?.category_observed_shares?.[dominantCategory] === 'number') {
+    return metricSummary.category_observed_shares[dominantCategory]
+  }
+  if (dominantCategory && typeof metricSummary?.category_probabilities?.[dominantCategory] === 'number') {
+    return metricSummary.category_probabilities[dominantCategory]
+  }
+  return null
+}
+
 const buildSummaryHeadline = (metricSummary, metricLabel) => {
   if (!metricSummary) {
     return 'Aggregate metrics available'
   }
 
   if (metricSummary.distribution_kind === 'binary') {
-    const probability = formatProbabilityMass(metricSummary.empirical_probability)
-    return `${metricLabel}: ${probability || '-'} true`
+    const observedShare = formatProbabilityMass(getObservedTrueShare(metricSummary))
+    return `${metricLabel}: ${observedShare || '-'} observed true share`
   }
 
   if (metricSummary.distribution_kind === 'categorical') {
@@ -2092,22 +2748,18 @@ const buildSummaryBody = (metricSummary) => {
   if (metricSummary.distribution_kind === 'binary') {
     const trueCount = metricSummary.counts?.true ?? 0
     const falseCount = metricSummary.counts?.false ?? 0
-    const probability = formatProbabilityMass(metricSummary.empirical_probability)
-    return `${sampleCount} runs contribute to this empirical summary; ${trueCount} true and ${falseCount} false, with ${probability || '-'} observed true overall.`
+    const observedShare = formatProbabilityMass(getObservedTrueShare(metricSummary))
+    return `${sampleCount} runs contribute to this empirical summary; ${trueCount} observed true and ${falseCount} observed false, with ${observedShare || '-'} observed true share.`
   }
 
   if (metricSummary.distribution_kind === 'categorical') {
     const dominantCategory = getDominantCategory(metricSummary)
-    const dominantProbability = (
-      typeof metricSummary.dominant_probability === 'number'
-        ? metricSummary.dominant_probability
-        : metricSummary.category_probabilities?.[dominantCategory]
-    )
+    const dominantShare = getDominantObservedShare(metricSummary, dominantCategory)
     const dominantCount = dominantCategory
       ? metricSummary.category_counts?.[dominantCategory] ?? 0
       : 0
     return dominantCategory
-      ? `${sampleCount} runs contribute to this empirical summary; ${dominantCategory} led with ${dominantCount} of ${sampleCount} runs (${formatProbabilityMass(dominantProbability) || '-'}).`
+      ? `${sampleCount} runs contribute to this empirical summary; ${dominantCategory} led with ${dominantCount} of ${sampleCount} runs (${formatProbabilityMass(dominantShare) || '-'} observed share).`
       : `${sampleCount} runs contribute to this empirical categorical summary.`
   }
 
@@ -2167,7 +2819,83 @@ const buildSummaryCard = ({ artifact, loading, error }) => {
   }
 }
 
-const buildClustersCard = ({ artifact, loading, error }) => {
+const getDefaultAnalyticsAvailability = () => ({
+  summary: {
+    ready: true,
+    reason: ''
+  },
+  clusters: {
+    ready: true,
+    reason: ''
+  },
+  sensitivity: {
+    ready: true,
+    reason: ''
+  }
+})
+
+const normalizeAnalyticsAvailabilityEntry = (entry, fallbackReason = '') => {
+  if (!entry || typeof entry !== 'object') {
+    return {
+      ready: true,
+      reason: fallbackReason
+    }
+  }
+
+  return {
+    ready: entry.ready !== false,
+    reason: normalizeOptionalString(entry.reason) || fallbackReason
+  }
+}
+
+const normalizeAnalyticsAvailability = (availabilityByKey = {}) => ({
+  summary: normalizeAnalyticsAvailabilityEntry(
+    availabilityByKey.summary,
+    ''
+  ),
+  clusters: normalizeAnalyticsAvailabilityEntry(
+    availabilityByKey.clusters,
+    'Scenario clusters will appear after at least one stored run produces metrics.'
+  ),
+  sensitivity: normalizeAnalyticsAvailabilityEntry(
+    availabilityByKey.sensitivity,
+    'Sensitivity rankings will appear after at least one stored run produces metrics.'
+  )
+})
+
+const hasStoredRunMetricsArtifact = (runSummary = {}) => (
+  Boolean(normalizeOptionalString(runSummary?.artifact_paths?.metrics))
+)
+
+export const deriveProbabilisticAnalyticsAvailability = ({
+  runSummaries = []
+} = {}) => {
+  const normalizedRunSummaries = Array.isArray(runSummaries) ? runSummaries : []
+  const hasMetrics = normalizedRunSummaries.some((runSummary) => (
+    hasStoredRunMetricsArtifact(runSummary)
+  ))
+
+  return {
+    summary: {
+      ready: true,
+      reason: ''
+    },
+    clusters: {
+      ready: hasMetrics,
+      reason: hasMetrics
+        ? ''
+        : 'Scenario clusters will appear after at least one stored run produces metrics.'
+    },
+    sensitivity: {
+      ready: hasMetrics,
+      reason: hasMetrics
+        ? ''
+        : 'Sensitivity rankings will appear after at least one stored run produces metrics.'
+    }
+  }
+}
+
+const buildClustersCard = ({ artifact, loading, error, availability }) => {
   if (error) {
     return {
       status: 'error',
@@ -2186,6 +2914,15 @@ const buildClustersCard = ({ artifact, loading, error }) => {
     }
   }
 
+  if (availability?.ready === false && !artifact) {
+    return {
+      status: 'empty',
+      headline: 'Scenario clusters waiting on executed-run metrics',
+      body: availability.reason || 'Scenario clusters will appear after at least one stored run produces metrics.',
+      warnings: []
+    }
+  }
+
   if (!artifact) {
     return {
       status: 'empty',
@@ -2197,20 +2934,41 @@ const buildClustersCard = ({ artifact, loading, error }) => {
 
   const leadCluster = Array.isArray(artifact.clusters) ? artifact.clusters[0] : null
   const clusterCount = artifact.cluster_count ?? 0
-  const leadMass = formatProbabilityMass(leadCluster?.probability_mass)
+  const leadMass = formatProbabilityMass(
+    leadCluster?.observed_run_share ?? leadCluster?.probability_mass
+  )
   const prototypeRun = leadCluster?.prototype_run_id || '-'
+  const artifactSupportAssessment = normalizeSupportAssessment(
+    artifact.quality_summary?.support_assessment,
+    'observed_pattern'
+  )
+  const leadSupportAssessment = normalizeSupportAssessment(
+    leadCluster?.support_assessment,
+    artifactSupportAssessment.status
+  )
+  const downgradedSupport = leadSupportAssessment.downgraded
+    ? leadSupportAssessment
+    : artifactSupportAssessment
 
   return {
     status: artifact.quality_summary?.status || 'complete',
-    headline: `${clusterCount} observed clusters`,
+    headline: downgradedSupport.downgraded
+      ? `${clusterCount} descriptive cluster groupings`
+      : `${clusterCount} observed clusters`,
     body: leadCluster
-      ? `The largest observed cluster currently covers ${leadMass || '-'} of runs, with prototype run ${prototypeRun}.`
+      ? (
+          downgradedSupport.status === 'insufficient_support'
+            ? `Largest grouping covers about ${leadMass || '-'} of analyzable runs as observed run share, but minimum support is not met so that share stays descriptive only. Prototype run ${prototypeRun} remains a read-only reference.`
+            : (downgradedSupport.downgraded
+              ? `Largest grouping covers about ${leadMass || '-'} of analyzable runs as observed run share, but thin-sample or low-confidence warnings keep that share descriptive only. Prototype run ${prototypeRun} remains a read-only reference.`
+              : `The largest observed cluster currently covers ${leadMass || '-'} of analyzable runs as observed run share, with prototype run ${prototypeRun}.`)
+        )
       : 'No cluster memberships are available for this stored ensemble yet.',
     warnings: normalizeWarningList(artifact.quality_summary?.warnings)
   }
 }
 
-const buildSensitivityCard = ({ artifact, loading, error }) => {
+const buildSensitivityCard = ({ artifact, loading, error, availability }) => {
   if (error) {
     return {
       status: 'error',
@@ -2229,6 +2987,15 @@ const buildSensitivityCard = ({ artifact, loading, error }) => {
     }
   }
 
+  if (availability?.ready === false && !artifact) {
+    return {
+      status: 'empty',
+      headline: 'Sensitivity waiting on executed-run metrics',
+      body: availability.reason || 'Sensitivity rankings will appear after at least one stored run produces metrics.',
+      warnings: []
+    }
+  }
+
   if (!artifact) {
     return {
       status: 'empty',
@@ -2243,8 +3010,25 @@ const buildSensitivityCard = ({ artifact, loading, error }) => {
     : null
   const topImpact = topDriver?.metric_impacts?.[0] || null
   const warnings = normalizeWarningList(artifact.quality_summary?.warnings)
+  const artifactSupportAssessment = normalizeSupportAssessment(
+    artifact.quality_summary?.support_assessment,
+    'observational_only'
+  )
+  const driverSupportAssessment = normalizeSupportAssessment(
+    topDriver?.support_assessment,
+    artifactSupportAssessment.status
+  )
+  const downgradedSupport = driverSupportAssessment.downgraded
+    ? driverSupportAssessment
+    : artifactSupportAssessment
   const body = topDriver
-    ? `Observational only: the strongest observed driver is ${topDriver.field_path || topDriver.driver_id}, with a top effect size of ${formatAnalyticsNumber(topImpact?.effect_size) ?? '-'} on ${topImpact?.metric_id || 'the lead metric'}.`
+    ? (
+        downgradedSupport.status === 'insufficient_support'
+          ? `Observed variation points to ${topDriver.field_path || topDriver.driver_id}, but minimum support is not met, so the ranking remains insufficient support only.`
+          : (downgradedSupport.downgraded
+            ? `Observed variation points to ${topDriver.field_path || topDriver.driver_id}, but thin-sample warnings keep this ranking descriptive only.`
+            : `Observational only: the strongest observed driver is ${topDriver.field_path || topDriver.driver_id}, with a top effect size of ${formatAnalyticsNumber(topImpact?.effect_size) ?? '-'} on ${topImpact?.metric_id || 'the lead metric'}.`)
+      )
     : 'No varying drivers were observed across the currently analyzable stored runs.'
 
   return {
@@ -2252,7 +3036,13 @@ const buildSensitivityCard = ({ artifact, loading, error }) => {
       ? (artifact.quality_summary?.status || 'complete')
       : 'empty',
     headline: topDriver
-      ? `Top observed driver: ${topDriver.field_path || topDriver.driver_id}`
+      ? (
+          downgradedSupport.status === 'insufficient_support'
+            ? 'Sensitivity has insufficient support'
+            : (downgradedSupport.downgraded
+              ? `Observed driver variation: ${topDriver.field_path || topDriver.driver_id}`
+              : `Top observed driver: ${topDriver.field_path || topDriver.driver_id}`)
+        )
       : 'No ranked sensitivity drivers',
     body,
     warnings
@@ -2264,8 +3054,10 @@ export const deriveProbabilisticAnalyticsCards = ({
   clustersArtifact,
   sensitivityArtifact,
   loadingByKey = {},
-  errorByKey = {}
+  errorByKey = {},
+  availabilityByKey = getDefaultAnalyticsAvailability()
 } = {}) => {
+  const normalizedAvailabilityByKey = normalizeAnalyticsAvailability(availabilityByKey)
   return {
     summary: buildSummaryCard({
       artifact: normalizeAnalyticsRecord(summaryArtifact),
@@ -2275,12 +3067,14 @@ export const deriveProbabilisticAnalyticsCards = ({
     clusters: buildClustersCard({
       artifact: normalizeAnalyticsRecord(clustersArtifact),
       loading: loadingByKey.clusters === true,
-      error: errorByKey.clusters || ''
+      error: errorByKey.clusters || '',
+      availability: normalizedAvailabilityByKey.clusters
     }),
     sensitivity: buildSensitivityCard({
       artifact: normalizeAnalyticsRecord(sensitivityArtifact),
       loading: loadingByKey.sensitivity === true,
-      error: errorByKey.sensitivity || ''
+      error: errorByKey.sensitivity || '',
+      availability: normalizedAvailabilityByKey.sensitivity
     })
   }
 }

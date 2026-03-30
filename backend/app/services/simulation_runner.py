@@ -28,6 +28,7 @@ from ..models.probabilistic import (
 )
 from ..utils.logger import get_logger
 from .outcome_extractor import OutcomeExtractor
+from .phase_timing import PhaseTimingRecorder
 from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
@@ -395,6 +396,51 @@ class SimulationRunner:
         )
 
     @classmethod
+    def _get_run_phase_timings_path(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> str:
+        """Return the timing artifact path for one runtime scope."""
+        return os.path.join(
+            cls._get_run_dir(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=run_dir,
+            ),
+            "run_phase_timings.json",
+        )
+
+    @classmethod
+    def _get_run_phase_timing_recorder(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+    ) -> PhaseTimingRecorder:
+        """Build a run-scoped phase timing recorder for the resolved runtime root."""
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+        return PhaseTimingRecorder(
+            artifact_path=cls._get_run_phase_timings_path(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
+            ),
+            scope_kind="run",
+            scope_id=context["run_key"],
+        )
+
+    @classmethod
     def _resolve_run_context(
         cls,
         simulation_id: str,
@@ -685,6 +731,12 @@ class SimulationRunner:
             run_dir=run_dir,
             config_path=config_path,
         )
+        phase_timing = cls._get_run_phase_timing_recorder(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=context["run_dir"],
+        )
         extractor = OutcomeExtractor(simulation_data_dir=cls.RUN_STATE_DIR)
         state = cls.get_run_state(
             simulation_id,
@@ -692,15 +744,26 @@ class SimulationRunner:
             run_id=run_id,
         )
         try:
-            metrics_artifact = extractor.persist_run_metrics(
-                simulation_id,
-                ensemble_id=ensemble_id,
-                run_id=run_id,
-                run_dir=context["run_dir"],
-                config_path=context["config_path"],
-                run_status=run_status,
-                platform_mode=state.platform_mode if state else None,
-            )
+            with phase_timing.measure_phase(
+                "metrics_extraction",
+                metadata={"run_status": run_status},
+            ) as phase_metadata:
+                metrics_artifact = extractor.persist_run_metrics(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=context["run_dir"],
+                    config_path=context["config_path"],
+                    run_status=run_status,
+                    platform_mode=state.platform_mode if state else None,
+                )
+                phase_metadata["metric_count"] = len(
+                    metrics_artifact.get("metric_values", {})
+                )
+                phase_metadata["quality_status"] = metrics_artifact.get(
+                    "quality_checks",
+                    {},
+                ).get("status")
         except Exception as e:
             logger.warning(
                 "Failed to persist run metrics artifact for %s: %s",
@@ -913,230 +976,247 @@ class SimulationRunner:
             run_dir=run_dir,
         )
         run_key = context["run_key"]
-
-        # Check whether the simulation is already running.
-        existing = cls.get_run_state(
+        phase_timing = cls._get_run_phase_timing_recorder(
             simulation_id,
             ensemble_id=ensemble_id,
             run_id=run_id,
+            run_dir=context["run_dir"],
         )
-        if existing and existing.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
-            raise ValueError(f"Simulation is already running: {run_key}")
-        
-        # Load the simulation configuration.
-        sim_dir = context["run_dir"]
-        config_path = context["config_path"]
-        
-        if not os.path.exists(config_path):
-            raise ValueError("Simulation configuration does not exist. Call /prepare first.")
 
-        launch_reason = None
-        manifest = cls._read_run_manifest(
-            simulation_id,
-            ensemble_id=ensemble_id,
-            run_id=run_id,
-            run_dir=sim_dir,
-        )
-        if manifest is not None:
-            lifecycle = manifest.get("lifecycle", {})
-            launch_reason = (
-                "retry"
-                if lifecycle.get("start_count", 0) > 0
-                else "initial_start"
+        with phase_timing.measure_phase(
+            "run_startup",
+            metadata={
+                "platform": platform,
+                "legacy_scope": not bool(ensemble_id and run_id),
+            },
+        ) as phase_metadata:
+            # Check whether the simulation is already running.
+            existing = cls.get_run_state(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
             )
+            if existing and existing.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
+                raise ValueError(f"Simulation is already running: {run_key}")
 
-        cls._materialize_run_runtime_inputs(
-            simulation_id,
-            platform=platform,
-            run_dir=sim_dir,
-            ensemble_id=ensemble_id,
-            run_id=run_id,
-        )
-        
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
+            # Load the simulation configuration.
+            sim_dir = context["run_dir"]
+            config_path = context["config_path"]
 
-        effective_base_graph_id = base_graph_id or config.get("base_graph_id") or graph_id
-        effective_runtime_graph_id = (
-            runtime_graph_id
-            or config.get("runtime_graph_id")
-            or graph_id
-        )
-        
-        # Initialize the runtime state.
-        time_config = config.get("time_config", {})
-        total_hours = time_config.get("total_simulation_hours", 72)
-        minutes_per_round = time_config.get("minutes_per_round", 30)
-        total_rounds = int(total_hours * 60 / minutes_per_round)
-        
-        # Truncate to the configured maximum round count if requested.
-        if max_rounds is not None and max_rounds > 0:
-            original_rounds = total_rounds
-            total_rounds = min(total_rounds, max_rounds)
-            if total_rounds < original_rounds:
-                logger.info(f"Round count truncated: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
-        
-        state = SimulationRunState(
-            simulation_id=simulation_id,
-            ensemble_id=ensemble_id,
-            run_id=run_id,
-            run_key=run_key,
-            run_dir=sim_dir,
-            config_path=config_path,
-            graph_id=effective_base_graph_id,
-            base_graph_id=effective_base_graph_id,
-            runtime_graph_id=effective_runtime_graph_id,
-            platform_mode=platform,
-            runner_status=RunnerStatus.STARTING,
-            total_rounds=total_rounds,
-            total_simulation_hours=total_hours,
-            started_at=datetime.now().isoformat(),
-        )
-        
-        cls._save_run_state(state)
-        
-        # Create the graph-memory updater if enabled.
-        if enable_graph_memory_update:
-            if not effective_runtime_graph_id:
-                raise ValueError("graph_id is required when graph-memory updates are enabled")
-            
-            try:
-                ZepGraphMemoryManager.create_updater(run_key, effective_runtime_graph_id)
-                cls._graph_memory_enabled[run_key] = True
-                logger.info(
-                    "Enabled graph-memory updates: run_key=%s base_graph_id=%s runtime_graph_id=%s",
-                    run_key,
-                    effective_base_graph_id,
-                    effective_runtime_graph_id,
+            if not os.path.exists(config_path):
+                raise ValueError("Simulation configuration does not exist. Call /prepare first.")
+
+            launch_reason = None
+            manifest = cls._read_run_manifest(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=sim_dir,
+            )
+            if manifest is not None:
+                lifecycle = manifest.get("lifecycle", {})
+                launch_reason = (
+                    "retry"
+                    if lifecycle.get("start_count", 0) > 0
+                    else "initial_start"
                 )
-            except Exception as e:
-                logger.error(f"Failed to create graph-memory updater: {e}")
-                cls._graph_memory_enabled[run_key] = False
-        else:
-            cls._graph_memory_enabled[run_key] = False
-        
-        # Select the runner script under backend/scripts/.
-        if platform == "twitter":
-            script_name = "run_twitter_simulation.py"
-            state.twitter_running = True
-        elif platform == "reddit":
-            script_name = "run_reddit_simulation.py"
-            state.reddit_running = True
-        else:
-            script_name = "run_parallel_simulation.py"
-            state.twitter_running = True
-            state.reddit_running = True
-        
-        script_path = os.path.join(cls.SCRIPTS_DIR, script_name)
-        
-        if not os.path.exists(script_path):
-            raise ValueError(f"Script does not exist: {script_path}")
-        
-        # Create the action queue.
-        action_queue = Queue()
-        cls._action_queues[run_key] = action_queue
-        
-        # Start the simulation subprocess.
-        try:
-            # Build the command with absolute paths.
-            # Log layout:
-            #   twitter/actions.jsonl - Twitter action log
-            #   reddit/actions.jsonl  - Reddit action log
-            #   simulation.log        - Main process log
-            
-            cmd = [
-                sys.executable,  # Python interpreter.
-                script_path,
-                "--config", config_path,  # Use the absolute config path.
-            ]
 
-            runtime_seed = cls._load_runtime_seed(
+            cls._materialize_run_runtime_inputs(
                 simulation_id,
+                platform=platform,
                 run_dir=sim_dir,
                 ensemble_id=ensemble_id,
                 run_id=run_id,
             )
-            if ensemble_id and run_id:
-                cmd.extend([
-                    "--run-dir",
-                    sim_dir,
-                    "--run-id",
-                    run_id,
-                ])
-                if runtime_seed is not None:
-                    cmd.extend(["--seed", str(runtime_seed)])
-            
-            # Add the round-limit argument when requested.
+
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            effective_base_graph_id = base_graph_id or config.get("base_graph_id") or graph_id
+            effective_runtime_graph_id = (
+                runtime_graph_id
+                or config.get("runtime_graph_id")
+                or graph_id
+            )
+
+            # Initialize the runtime state.
+            time_config = config.get("time_config", {})
+            total_hours = time_config.get("total_simulation_hours", 72)
+            minutes_per_round = time_config.get("minutes_per_round", 30)
+            total_rounds = int(total_hours * 60 / minutes_per_round)
+
+            # Truncate to the configured maximum round count if requested.
             if max_rounds is not None and max_rounds > 0:
-                cmd.extend(["--max-rounds", str(max_rounds)])
-            if close_environment_on_complete:
-                cmd.append("--no-wait")
-            
-            # Use a shared main log file to avoid blocking on full stdout/stderr pipes.
-            main_log_path = os.path.join(sim_dir, "simulation.log")
-            main_log_file = open(main_log_path, 'w', encoding='utf-8')
-            
-            # Force UTF-8 so third-party libraries do not rely on platform defaults.
-            env = os.environ.copy()
-            env['PYTHONUTF8'] = '1'  # Makes UTF-8 the default text encoding on Python 3.7+.
-            env['PYTHONIOENCODING'] = 'utf-8'  # Keeps stdout/stderr on UTF-8.
-            
-            # Run in the simulation directory so generated databases and logs land there.
-            # start_new_session=True creates a new process group for later termination.
-            process = subprocess.Popen(
-                cmd,
-                cwd=sim_dir,
-                stdout=main_log_file,
-                stderr=subprocess.STDOUT,  # Send stderr into the same log file.
-                text=True,
-                encoding='utf-8',  # Explicit text encoding.
-                bufsize=1,
-                env=env,  # Pass the UTF-8 environment overrides.
-                start_new_session=True,  # Create a fresh process group for clean shutdown.
-            )
-            
-            # Keep file handles so they can be closed during cleanup.
-            cls._stdout_files[run_key] = main_log_file
-            cls._stderr_files[run_key] = None  # No separate stderr handle is needed.
-            
-            state.process_pid = process.pid
-            state.runner_status = RunnerStatus.RUNNING
-            cls._processes[run_key] = process
-            cls._save_run_state(state)
-            cls._update_run_manifest_status(
-                simulation_id,
-                "running",
+                original_rounds = total_rounds
+                total_rounds = min(total_rounds, max_rounds)
+                if total_rounds < original_rounds:
+                    logger.info(f"Round count truncated: {original_rounds} -> {total_rounds} (max_rounds={max_rounds})")
+
+            phase_metadata["total_rounds"] = total_rounds
+            phase_metadata["total_simulation_hours"] = total_hours
+            phase_metadata["launch_reason"] = launch_reason or "initial_start"
+
+            state = SimulationRunState(
+                simulation_id=simulation_id,
                 ensemble_id=ensemble_id,
                 run_id=run_id,
+                run_key=run_key,
                 run_dir=sim_dir,
-                launch_reason=launch_reason,
+                config_path=config_path,
+                graph_id=effective_base_graph_id,
+                base_graph_id=effective_base_graph_id,
+                runtime_graph_id=effective_runtime_graph_id,
+                platform_mode=platform,
+                runner_status=RunnerStatus.STARTING,
+                total_rounds=total_rounds,
+                total_simulation_hours=total_hours,
+                started_at=datetime.now().isoformat(),
             )
-            
-            # Start the monitor thread.
-            monitor_thread = threading.Thread(
-                target=cls._monitor_simulation,
-                args=(simulation_id, ensemble_id, run_id),
-                daemon=True
-            )
-            monitor_thread.start()
-            cls._monitor_threads[run_key] = monitor_thread
-            
-            logger.info(f"Simulation started successfully: {run_key}, pid={process.pid}, platform={platform}")
-            
-        except Exception as e:
-            state.runner_status = RunnerStatus.FAILED
-            state.error = str(e)
+
             cls._save_run_state(state)
-            cls._update_run_manifest_status(
-                simulation_id,
-                "failed",
-                ensemble_id=ensemble_id,
-                run_id=run_id,
-                run_dir=sim_dir,
-            )
-            raise
-        
-        return state
+
+            # Create the graph-memory updater if enabled.
+            if enable_graph_memory_update:
+                if not effective_runtime_graph_id:
+                    raise ValueError("graph_id is required when graph-memory updates are enabled")
+
+                try:
+                    ZepGraphMemoryManager.create_updater(run_key, effective_runtime_graph_id)
+                    cls._graph_memory_enabled[run_key] = True
+                    logger.info(
+                        "Enabled graph-memory updates: run_key=%s base_graph_id=%s runtime_graph_id=%s",
+                        run_key,
+                        effective_base_graph_id,
+                        effective_runtime_graph_id,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to create graph-memory updater: {e}")
+                    cls._graph_memory_enabled[run_key] = False
+            else:
+                cls._graph_memory_enabled[run_key] = False
+
+            # Select the runner script under backend/scripts/.
+            if platform == "twitter":
+                script_name = "run_twitter_simulation.py"
+                state.twitter_running = True
+            elif platform == "reddit":
+                script_name = "run_reddit_simulation.py"
+                state.reddit_running = True
+            else:
+                script_name = "run_parallel_simulation.py"
+                state.twitter_running = True
+                state.reddit_running = True
+
+            script_path = os.path.join(cls.SCRIPTS_DIR, script_name)
+
+            if not os.path.exists(script_path):
+                raise ValueError(f"Script does not exist: {script_path}")
+
+            # Create the action queue.
+            action_queue = Queue()
+            cls._action_queues[run_key] = action_queue
+
+            # Start the simulation subprocess.
+            try:
+                # Build the command with absolute paths.
+                # Log layout:
+                #   twitter/actions.jsonl - Twitter action log
+                #   reddit/actions.jsonl  - Reddit action log
+                #   simulation.log        - Main process log
+
+                cmd = [
+                    sys.executable,  # Python interpreter.
+                    script_path,
+                    "--config", config_path,  # Use the absolute config path.
+                ]
+
+                runtime_seed = cls._load_runtime_seed(
+                    simulation_id,
+                    run_dir=sim_dir,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                )
+                if ensemble_id and run_id:
+                    cmd.extend([
+                        "--run-dir",
+                        sim_dir,
+                        "--run-id",
+                        run_id,
+                    ])
+                    if runtime_seed is not None:
+                        cmd.extend(["--seed", str(runtime_seed)])
+
+                # Add the round-limit argument when requested.
+                if max_rounds is not None and max_rounds > 0:
+                    cmd.extend(["--max-rounds", str(max_rounds)])
+                if close_environment_on_complete:
+                    cmd.append("--no-wait")
+
+                # Use a shared main log file to avoid blocking on full stdout/stderr pipes.
+                main_log_path = os.path.join(sim_dir, "simulation.log")
+                main_log_file = open(main_log_path, 'w', encoding='utf-8')
+
+                # Force UTF-8 so third-party libraries do not rely on platform defaults.
+                env = os.environ.copy()
+                env['PYTHONUTF8'] = '1'  # Makes UTF-8 the default text encoding on Python 3.7+.
+                env['PYTHONIOENCODING'] = 'utf-8'  # Keeps stdout/stderr on UTF-8.
+
+                # Run in the simulation directory so generated databases and logs land there.
+                # start_new_session=True creates a new process group for later termination.
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=sim_dir,
+                    stdout=main_log_file,
+                    stderr=subprocess.STDOUT,  # Send stderr into the same log file.
+                    text=True,
+                    encoding='utf-8',  # Explicit text encoding.
+                    bufsize=1,
+                    env=env,  # Pass the UTF-8 environment overrides.
+                    start_new_session=True,  # Create a fresh process group for clean shutdown.
+                )
+
+                # Keep file handles so they can be closed during cleanup.
+                cls._stdout_files[run_key] = main_log_file
+                cls._stderr_files[run_key] = None  # No separate stderr handle is needed.
+
+                state.process_pid = process.pid
+                state.runner_status = RunnerStatus.RUNNING
+                cls._processes[run_key] = process
+                cls._save_run_state(state)
+                cls._update_run_manifest_status(
+                    simulation_id,
+                    "running",
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                    launch_reason=launch_reason,
+                )
+
+                # Start the monitor thread.
+                monitor_thread = threading.Thread(
+                    target=cls._monitor_simulation,
+                    args=(simulation_id, ensemble_id, run_id),
+                    daemon=True
+                )
+                monitor_thread.start()
+                cls._monitor_threads[run_key] = monitor_thread
+
+                logger.info(f"Simulation started successfully: {run_key}, pid={process.pid}, platform={platform}")
+
+            except Exception as e:
+                state.runner_status = RunnerStatus.FAILED
+                state.error = str(e)
+                cls._save_run_state(state)
+                cls._update_run_manifest_status(
+                    simulation_id,
+                    "failed",
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                )
+                raise
+
+            return state
     
     @classmethod
     def _monitor_simulation(
@@ -1964,6 +2044,7 @@ class SimulationRunner:
         files_to_delete = [
             "run_state.json",
             "metrics.json",
+            "run_phase_timings.json",
             "simulation.log",
             "stdout.log",
             "stderr.log",

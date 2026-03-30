@@ -27,12 +27,15 @@ import {
   getStep3ReportState,
   getStep5InteractionState,
   getStep2HandoffState,
+  getStep2HandoffButtonLabel,
+  getUncertaintyProfileDefinition,
   deriveProbabilisticStep3Runtime,
   deriveProbabilisticOperatorActions,
   deriveProbabilisticProgressSummary,
   deriveProbabilisticActionRoundsMeta,
   deriveProbabilisticPlatformSkewCopy,
   deriveProbabilisticCapabilityState,
+  deriveProbabilisticAnalyticsAvailability,
   deriveProbabilisticAnalyticsCards,
   deriveProbabilisticEvidenceSummary,
   deriveProbabilisticReportContextState,
@@ -397,6 +400,76 @@ test('getStep2PrepareBootstrapState makes forecast prepare primary when availabl
   )
 })
 
+test('getStep2HandoffButtonLabel stays explicit about stored run shell creation', () => {
+  assert.equal(
+    getStep2HandoffButtonLabel({
+      selectedPrepareMode: 'legacy',
+      step3HandoffInFlight: false
+    }),
+    'Start Dual-World Parallel Simulation ->'
+  )
+
+  assert.equal(
+    getStep2HandoffButtonLabel({
+      selectedPrepareMode: 'probabilistic',
+      step3HandoffInFlight: false
+    }),
+    'Create Step 3 stored run shell ->'
+  )
+
+  assert.equal(
+    getStep2HandoffButtonLabel({
+      selectedPrepareMode: 'probabilistic',
+      step3HandoffInFlight: true
+    }),
+    'Creating Step 3 stored run shell...'
+  )
+})
+
+test('getUncertaintyProfileDefinition explains supported forecast prepare profiles plainly', () => {
+  assert.deepEqual(
+    getUncertaintyProfileDefinition('deterministic-baseline'),
+    {
+      id: 'deterministic-baseline',
+      label: 'Deterministic Baseline',
+      summary: 'Locks run-varying fields to their default or fixed values so Step 3 starts from the most stable simulation reference shell.',
+      emphasis: 'Best for a steady simulation baseline, not for exploring spread or claiming probabilities.'
+    }
+  )
+
+  assert.deepEqual(
+    getUncertaintyProfileDefinition('balanced'),
+    {
+      id: 'balanced',
+      label: 'Balanced',
+      summary: 'Applies moderate spread across supported run-varying fields so stored simulation runs can explore plausible variation without leaning too hard into edge cases.',
+      emphasis: 'Best default for exploratory simulation coverage, not a direct probability forecast.'
+    }
+  )
+
+  assert.deepEqual(
+    getUncertaintyProfileDefinition('stress-test'),
+    {
+      id: 'stress-test',
+      label: 'Stress Test',
+      summary: 'Pushes supported run-varying fields toward more adverse or extreme settings more often so stored simulation runs can probe fragile paths.',
+      emphasis: 'Useful for downside exploration, not a guaranteed worst-case forecast or probability claim.'
+    }
+  )
+})
+
+test('getUncertaintyProfileDefinition falls back to a readable generic description for unknown profiles', () => {
+  assert.deepEqual(
+    getUncertaintyProfileDefinition('custom-profile'),
+    {
+      id: 'custom-profile',
+      label: 'Custom Profile',
+      summary: 'Uses the backend-defined sampling stance for this forecast prepare profile.',
+      emphasis: 'Read the backend profile contract before treating it as stronger evidence.'
+    }
+  )
+})
+
 test('sortSimulationHistory keeps newest saved reports first with deterministic ties', () => {
   const input = [
     {
@@ -565,6 +638,41 @@ test('deriveHistoryStep3ReplayState enables Step 3 replay only for saved probabi
         }
       },
       helperText: 'Reopen the latest stored probabilistic Step 3 shell for this simulation.'
+    }
+  )
+
+  assert.deepEqual(
+    deriveHistoryStep3ReplayState({
+      simulation_id: 'sim_fallback',
+      latest_report: {
+        report_id: 'report_saved',
+        ensemble_id: '0011',
+        run_id: '0006'
+      },
+      latest_probabilistic_runtime: {
+        source: 'storage',
+        report_id: 'report_saved'
+      }
+    }),
+    {
+      enabled: true,
+      simulationId: 'sim_fallback',
+      ensembleId: '0011',
+      clusterId: null,
+      runId: '0006',
+      routeTarget: {
+        name: 'SimulationRun',
+        params: {
+          simulationId: 'sim_fallback'
+        },
+        query: {
+          mode: 'probabilistic',
+          ensembleId: '0011',
+          scope: 'run',
+          runId: '0006'
+        }
+      },
+      helperText: 'Reopen the saved probabilistic Step 3 shell for this report-scoped run.'
     }
   )
 
@@ -1044,17 +1152,23 @@ test('shouldLaunchProbabilisticRuntime requires prepared probabilistic artifacts
     shouldLaunchProbabilisticRuntime({
       selectedPrepareMode: 'legacy',
       preparedArtifactSummary: {
-        probabilistic_mode: true
+        probabilistic_mode: true,
+        forecast_readiness: {
+          ready: false
+        }
       }
     }),
-    true
+    false
   )
 
   assert.equal(
     shouldLaunchProbabilisticRuntime({
       selectedPrepareMode: 'legacy',
       preparedArtifactSummary: {
-        mode: 'probabilistic'
+        mode: 'probabilistic',
+        forecast_readiness: {
+          ready: true
+        }
       }
     }),
     true
@@ -1085,7 +1199,7 @@ test('getStep2HandoffState blocks probabilistic handoff until prepare artifacts 
     {
       disabled: true,
       helperText:
-        'Probabilistic Step 3 requires probabilistic prepare artifacts. Run probabilistic prepare first or return to the legacy path.',
+        'Probabilistic Step 3 requires stored-run shell artifacts. Run stored-run shell preparation first or return to the legacy path.',
       runtimeBlocked: true
     }
   )
@@ -1116,7 +1230,10 @@ test('getStep2HandoffState blocks probabilistic handoff when runtime support is 
       phase: 4,
       selectedPrepareMode: 'probabilistic',
       preparedArtifactSummary: {
-        probabilistic_mode: true
+        probabilistic_mode: true,
+        forecast_readiness: {
+          ready: true
+        }
       },
       capabilitiesKnown: true,
       capabilities: {
@@ -1141,7 +1258,33 @@ test('getStep2HandoffState blocks probabilistic handoff when runtime support is 
     {
       disabled: true,
       helperText:
-        'Probabilistic Step 3 requires probabilistic prepare artifacts. Run probabilistic prepare first or return to the legacy path.',
+        'Probabilistic Step 3 requires stored-run shell artifacts. Run stored-run shell preparation first or return to the legacy path.',
+      runtimeBlocked: true
+    }
+  )
+})
+
+test('getStep2HandoffState explains the exact grounding blocker when forecast artifacts are not evidence-ready', () => {
+  assert.deepEqual(
+    getStep2HandoffState({
+      simulationId: 'sim-1',
+      phase: 4,
+      selectedPrepareMode: 'probabilistic',
+      preparedArtifactSummary: {
+        probabilistic_mode: true,
+        forecast_readiness: {
+          ready: false,
+          reason: 'Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json.'
+        }
+      },
+      capabilitiesKnown: true,
+      capabilities: {
+        probabilistic_ensemble_storage_enabled: true
+      }
+    }),
+    {
+      disabled: true,
+      helperText: 'Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json.',
       runtimeBlocked: true
     }
   )
@@ -1191,7 +1334,7 @@ test('getStep3ReportState disables Step 4 for probabilistic runtime mode', () =>
     {
       enabled: true,
       buttonLabel: 'Start generating the result report',
-      helperText: 'Step 4 will keep the legacy report body and add observed empirical ensemble context for this probabilistic run family.'
+      helperText: 'Step 4 will keep the legacy report body and add scoped evidence cards when available: forecast question, evidence bundle, prediction ledger, evaluation status, and simulation-backed scenario analysis.'
     }
   )
 })
@@ -1205,8 +1348,9 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
 
   assert.deepEqual(getStep5InteractionState('probabilistic'), {
     showNotice: true,
-    title: 'Probabilistic interaction context unavailable',
-    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. Interviews and surveys still use the legacy interaction path.'
+    title: 'Scoped report evidence unavailable',
+    body: 'This Step 5 session has no saved probabilistic report scope, so Report Agent chat falls back to the legacy report and simulation context. It can only inspect scoped evidence after Step 4 saves it. Interviews and surveys still use the legacy interaction path.',
+    hybridWorkspaceStatus: null
   })
 
   assert.deepEqual(
@@ -1216,8 +1360,9 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
     }),
     {
       showNotice: true,
-      title: 'Cluster-scoped probabilistic context available',
-      body: 'Report Agent chat can request ensemble and scenario-family evidence directly for this probabilistic scope. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: 'Scenario-family report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus ensemble and scenario-family evidence for this selected scope. It remains a scoped evidence view only. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: null
     }
   )
 
@@ -1228,8 +1373,9 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
     }),
     {
       showNotice: true,
-      title: 'Run-scoped probabilistic context available',
-      body: 'Report Agent chat can request ensemble, scenario-family, and run evidence directly for this probabilistic scope. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: 'Run-scoped report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus ensemble, scenario-family, and run evidence for this selected scope. It remains a scoped evidence view only. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: null
     }
   )
 
@@ -1249,8 +1395,9 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
     }),
     {
       showNotice: true,
-      title: 'Ensemble-scoped probabilistic context available',
-      body: 'Report Agent chat can request ensemble evidence directly for this probabilistic scope. Backtested calibration artifacts are available for simulation.completed. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: 'Ensemble report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope. Schema-valid backtest-linked calibration artifacts are attached for simulation.completed, so only that metric may be described as calibrated. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: null
     }
   )
 
@@ -1267,14 +1414,88 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
           supported_metric_ids: ['simulation.completed'],
           ready_metric_ids: [],
           not_ready_metric_ids: ['simulation.completed'],
-          gating_reasons: ['insufficient_negative_case_count']
+          gating_reasons: ['insufficient_negative_case_count'],
+          artifact_readiness: {
+            calibration_summary: {
+              status: 'valid',
+              reason: ''
+            },
+            backtest_summary: {
+              status: 'valid',
+              reason: ''
+            },
+            provenance: {
+              status: 'valid',
+              reason: ''
+            }
+          }
         }
       }
     }),
     {
       showNotice: true,
-      title: 'Ensemble-scoped probabilistic context available',
-      body: 'Report Agent chat can request ensemble evidence directly for this probabilistic scope. Calibration artifacts are present but not ready for calibrated language yet. Interviews with simulated individuals and surveys still use the legacy interaction path, so treat only the report-agent lane as probabilistic-context-aware.'
+      title: 'Ensemble report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope. Calibration artifacts are valid but calibrated language is still blocked by insufficient_negative_case_count. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: null
+    }
+  )
+
+  assert.deepEqual(
+    getStep5InteractionState('probabilistic', {
+      hasSavedProbabilisticContext: true,
+      reportContext: {
+        scope: {
+          level: 'ensemble',
+          ensemble_id: '0004'
+        },
+        forecast_workspace: {
+          forecast_question: {
+            question_text: 'Will the hybrid system remain honest?',
+            supported_question_templates: ['binary-resolution']
+          },
+          evidence_bundle: {
+            status: 'ready',
+            source_entries: [{ source_id: 'source-1' }]
+          },
+          prediction_ledger: {
+            entries: [{ entry_id: 'entry-1' }],
+            worker_outputs: [{ worker_output_id: 'worker-output-1' }]
+          },
+          forecast_workers: [
+            { worker_id: 'worker-sim', kind: 'simulation' },
+            { worker_id: 'worker-base', kind: 'base_rate' }
+          ],
+          forecast_answers: [{
+            confidence_semantics: 'uncalibrated',
+            calibration_summary: {
+              status: 'not_applicable'
+            },
+            answer_payload: {
+              abstain: false,
+              best_estimate: { value: 0.61, semantics: 'forecast_probability' },
+              worker_contribution_trace: [{ summary: 'Simulation remains supporting scenario analysis.' }],
+              confidence_basis: {
+                status: 'available',
+                benchmark_status: 'available',
+                calibration_status: 'not_applicable',
+                note: 'Evaluation is available, but no workspace calibration claim is made.'
+              }
+            }
+          }],
+          evaluation_cases: [{ case_id: 'case-1', status: 'resolved' }]
+        }
+      }
+    }),
+    {
+      showNotice: true,
+      title: 'Hybrid report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope. Evidence available. Evaluation available. Calibrated confidence not yet earned. Supported question templates: binary-resolution. Best estimate: 61%. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: {
+        evidenceAvailable: true,
+        evaluationAvailable: true,
+        calibratedConfidenceEarned: false,
+        simulationOnlyScenarioExploration: false
+      }
     }
   )
 })
@@ -1418,7 +1639,21 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
         not_ready_metric_ids: [],
         gating_reasons: [],
         warnings: [],
-        boundary_note: 'Calibration in this repo is binary-only and applies only to named metrics with ready backtest artifacts.'
+        artifact_readiness: {
+          calibration_summary: {
+            status: 'valid',
+            reason: ''
+          },
+          backtest_summary: {
+            status: 'valid',
+            reason: ''
+          },
+          provenance: {
+            status: 'valid',
+            reason: ''
+          }
+        },
+        boundary_note: 'Ensemble calibration artifacts apply only to named simulation metrics with validated backtest artifacts. Forecast-workspace categorical and numeric calibration, when present, is a separate answer-bound lane.'
       },
       calibration_provenance: {
         mode: 'calibrated',
@@ -1468,11 +1703,111 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
           }
         ]
       },
+      forecast_workspace: {
+        forecast_question: {
+          forecast_id: 'forecast-001',
+          title: 'Hybrid question',
+          question_text: 'Will the hybrid system surface honest summaries?',
+          question_type: 'binary',
+          horizon: '30 days',
+          issued_at: '2026-03-30T09:00:00Z',
+          owner: 'forecast-team',
+          source: 'product-ops',
+          supported_question_templates: ['binary-resolution', 'scenario-comparison'],
+          decomposition_support: ['question decomposition available'],
+          abstention_conditions: ['abstain if evidence remains sparse']
+        },
+        evidence_bundle: {
+          bundle_id: 'bundle-001',
+          title: 'Hybrid evidence bundle',
+          summary: 'Evidence remains scoped to uploaded artifacts and report-linked outputs.',
+          boundary_note: 'Simulation stays support only.',
+          status: 'ready',
+          source_entries: [
+            { source_id: 'source-1' },
+            { source_id: 'source-2' }
+          ],
+          freshness_status: 'fresh',
+          relevance_status: 'high',
+          quality_score: 0.9,
+          conflict_markers: [],
+          missing_evidence_markers: []
+        },
+        prediction_ledger: {
+          entries: [
+            { entry_id: 'entry-1' },
+            { entry_id: 'entry-2' }
+          ],
+          worker_outputs: [
+            { worker_output_id: 'worker-output-1' }
+          ],
+          final_resolution_state: 'pending'
+        },
+        forecast_workers: [
+          { worker_id: 'worker-sim', kind: 'simulation' },
+          { worker_id: 'worker-base', kind: 'base_rate' }
+        ],
+        forecast_answers: [
+          {
+            confidence_semantics: 'uncalibrated',
+            calibration_summary: {
+              status: 'not_applicable'
+            },
+            answer_type: 'hybrid_forecast',
+            answer_payload: {
+              abstain: false,
+              best_estimate: {
+                value: 0.63,
+                semantics: 'forecast_probability',
+                why: 'Base rate and retrieval aligned.'
+              },
+              counterevidence: ['Worker disagreement was limited.'],
+              assumption_summary: {
+                items: ['Evidence is fresh', 'Evaluation is available']
+              },
+              uncertainty_decomposition: {
+                drivers: ['fresh_evidence'],
+                components: [
+                  {
+                    code: 'fresh_evidence',
+                    summary: 'Evidence quality is strong.'
+                  }
+                ],
+                disagreement_range: 0.08
+              },
+              worker_contribution_trace: [
+                {
+                  worker_id: 'worker-base',
+                  summary: 'Base-rate worker anchored the estimate.'
+                }
+              ],
+              evaluation_summary: {
+                status: 'available',
+                case_count: 2,
+                resolved_case_count: 1
+              },
+              simulation_context: {
+                observed_run_share: 0.81
+              },
+              confidence_basis: {
+                status: 'available',
+                benchmark_status: 'available',
+                calibration_status: 'not_applicable',
+                note: 'Evaluation is available, but no workspace calibration claim is made.'
+              }
+            }
+          }
+        ],
+        evaluation_cases: [
+          { case_id: 'case-1', status: 'resolved' },
+          { case_id: 'case-2', status: 'pending' }
+        ]
+      },
       scenario_families: [
         {
           cluster_id: 'cluster_1',
           prototype_run_id: '0001',
-          probability_mass: 0.6,
+          observed_run_share: 0.6,
           support: {
             run_count: 4,
             prepared_run_count: 8
@@ -1482,7 +1817,7 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
         {
           cluster_id: 'cluster_2',
           prototype_run_id: '0002',
-          probability_mass: 0.4,
+          observed_run_share: 0.4,
           support: {
             run_count: 3,
             prepared_run_count: 8
@@ -1590,9 +1925,37 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
   assert.equal(summary.grounding.evidenceItems[0].citationId, '[S1]')
   assert.equal(summary.confidenceStatus.status, 'ready')
   assert.deepEqual(summary.confidenceStatus.readyMetricIds, ['simulation.completed'])
+  assert.deepEqual(summary.confidenceStatus.artifactReadiness, {
+    calibrationSummary: {
+      status: 'valid',
+      reason: ''
+    },
+    backtestSummary: {
+      status: 'valid',
+      reason: ''
+    },
+    provenance: {
+      status: 'valid',
+      reason: ''
+    }
+  })
   assert.deepEqual(summary.calibration.readyMetricIds, ['simulation.completed'])
   assert.match(summary.calibration.summary, /Brier score/i)
   assert.match(summary.calibration.summary, /10 resolved cases/i)
+  assert.equal(summary.hybridWorkspace.available, true)
+  assert.equal(summary.hybridWorkspace.forecastQuestion.questionText, 'Will the hybrid system surface honest summaries?')
+  assert.deepEqual(summary.hybridWorkspace.forecastQuestion.supportedQuestionTemplates, ['binary-resolution', 'scenario-comparison'])
+  assert.equal(summary.hybridWorkspace.latestAnswer.abstain, false)
+  assert.equal(summary.hybridWorkspace.latestAnswer.bestEstimate, 0.63)
+  assert.equal(summary.hybridWorkspace.latestAnswer.bestEstimateWhy, 'Base rate and retrieval aligned.')
+  assert.deepEqual(summary.hybridWorkspace.latestAnswer.counterevidence, ['Worker disagreement was limited.'])
+  assert.deepEqual(summary.hybridWorkspace.latestAnswer.assumptionLedger.items, ['Evidence is fresh', 'Evaluation is available'])
+  assert.equal(summary.hybridWorkspace.evidenceBundle.sourceEntryCount, 2)
+  assert.equal(summary.hybridWorkspace.evidenceBundle.qualityScore, 0.9)
+  assert.equal(summary.hybridWorkspace.predictionLedger.entryCount, 2)
+  assert.equal(summary.hybridWorkspace.evaluation.available, true)
+  assert.equal(summary.hybridWorkspace.statusSurface.calibratedConfidenceEarned, false)
+  assert.equal(summary.hybridWorkspace.simulationScenarioAnalysis.onlyScenarioExploration, false)
   assert.deepEqual(summary.compareOptions[0].left.clusterId, 'cluster_1')
   assert.equal(summary.compareCatalog.boundaryNote, 'Compare only within one saved report context and one ensemble.')
   assert.equal(summary.compareCatalog.options[0].compareId, 'run-0001__ensemble-0004')
@@ -1600,7 +1963,236 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
   assert.equal(summary.selectedCompare.leftSnapshot.semantics, 'observed')
   assert.match(summary.selectedCompare.comparisonSummary.boundaryNote, /causal/i)
   assert.ok(summary.comparePrompts.length >= 2)
+  assert.ok(
+    summary.comparePrompts.some((prompt) => /observed run share/i.test(prompt.prompt))
+  )
   assert.match(summary.comparePrompts[0].prompt, /run 0001 differs from ensemble 0004/i)
+})
+
+test('deriveProbabilisticEvidenceSummary surfaces absent backtest provenance plainly', () => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    reportContext: {
+      ensemble_id: '0004',
+      confidence_status: {
+        status: 'not_ready',
+        supported_metric_ids: ['simulation.completed'],
+        ready_metric_ids: [],
+        not_ready_metric_ids: ['simulation.completed'],
+        gating_reasons: ['missing_backtest_provenance'],
+        warnings: ['missing_backtest_provenance'],
+        artifact_readiness: {
+          calibration_summary: {
+            status: 'valid',
+            reason: ''
+          },
+          backtest_summary: {
+            status: 'valid',
+            reason: ''
+          },
+          provenance: {
+            status: 'absent',
+            reason: 'Calibration summary is missing explicit provenance back to backtest_summary.json.'
+          }
+        }
+      }
+    }
+  })
+
+  assert.equal(summary.confidenceStatus.status, 'not_ready')
+  assert.equal(summary.confidenceStatus.artifactReadiness.provenance.status, 'absent')
+  assert.match(summary.confidenceStatus.artifactReadiness.provenance.reason, /missing explicit provenance/i)
+})
+
+test('deriveProbabilisticEvidenceSummary does not inherit earned calibration from legacy workspace truthfulness flags', () => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    reportContext: {
+      ensemble_id: '0004',
+      confidence_status: {
+        status: 'ready',
+        ready_metric_ids: ['simulation.completed']
+      },
+      forecast_workspace: {
+        forecast_question: {
+          forecast_id: 'forecast-legacy',
+          question_text: 'Will the hybrid summary stay honest?'
+        },
+        truthfulness_surface: {
+          evidence_available: true,
+          evaluation_available: true,
+          calibrated_confidence_earned: true,
+          simulation_only_scenario_exploration: false
+        },
+        evidence_bundle: {
+          status: 'ready',
+          source_entries: [{ source_id: 'source-1' }]
+        },
+        forecast_workers: [
+          { worker_id: 'worker-sim', kind: 'simulation' },
+          { worker_id: 'worker-base', kind: 'base_rate' }
+        ],
+        prediction_ledger: {
+          entries: [{ entry_id: 'entry-1' }]
+        },
+        forecast_answers: [
+          {
+            confidence_semantics: 'uncalibrated',
+            answer_payload: {
+              abstain: false,
+              best_estimate: {
+                value: 0.58,
+                semantics: 'forecast_probability'
+              },
+              evaluation_summary: {
+                status: 'available',
+                resolved_case_count: 1
+              },
+              confidence_basis: {
+                status: 'available',
+                benchmark_status: 'available',
+                calibration_status: 'available',
+                note: 'Artifacts exist, but no calibrated forecast answer was issued.'
+              }
+            }
+          }
+        ],
+        evaluation_cases: [
+          { case_id: 'case-1', status: 'resolved' }
+        ]
+      }
+    }
+  })
+
+  assert.equal(summary.hybridWorkspace.statusSurface.evaluationAvailable, true)
+  assert.equal(summary.hybridWorkspace.statusSurface.calibratedConfidenceEarned, false)
+})
+
+test('deriveProbabilisticEvidenceSummary preserves answer-native categorical and numeric best-estimate displays', () => {
+  const categoricalSummary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    reportContext: {
+      ensemble_id: '0004',
+      forecast_workspace: {
+        forecast_question: {
+          forecast_id: 'forecast-cat',
+          question_text: 'Which launch posture will be observed?',
+          question_type: 'categorical'
+        },
+        evidence_bundle: {
+          status: 'ready',
+          source_entries: [{ source_id: 'source-1' }]
+        },
+        forecast_workers: [
+          { worker_id: 'worker-sim', kind: 'simulation' },
+          { worker_id: 'worker-base', kind: 'base_rate' }
+        ],
+        prediction_ledger: {
+          entries: [{ entry_id: 'entry-1' }]
+        },
+        forecast_answers: [
+          {
+            confidence_semantics: 'calibrated',
+            calibration_summary: {
+              status: 'ready'
+            },
+            answer_type: 'hybrid_forecast',
+            answer_payload: {
+              abstain: false,
+              best_estimate: {
+                value_type: 'categorical_distribution',
+                value_semantics: 'forecast_distribution',
+                top_label: 'win',
+                top_label_share: 0.62,
+                distribution: {
+                  win: 0.62,
+                  stretch: 0.24,
+                  miss: 0.14
+                }
+              },
+              evaluation_summary: {
+                status: 'available',
+                resolved_case_count: 12
+              },
+              confidence_basis: {
+                status: 'available',
+                resolved_case_count: 12,
+                benchmark_status: 'available',
+                backtest_status: 'available',
+                calibration_status: 'ready'
+              }
+            }
+          }
+        ]
+      }
+    }
+  })
+
+  const numericSummary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    reportContext: {
+      ensemble_id: '0004',
+      forecast_workspace: {
+        forecast_question: {
+          forecast_id: 'forecast-num',
+          question_text: 'What ARR will be observed?',
+          question_type: 'numeric'
+        },
+        evidence_bundle: {
+          status: 'ready',
+          source_entries: [{ source_id: 'source-1' }]
+        },
+        forecast_workers: [
+          { worker_id: 'worker-sim', kind: 'simulation' },
+          { worker_id: 'worker-base', kind: 'base_rate' }
+        ],
+        prediction_ledger: {
+          entries: [{ entry_id: 'entry-1' }]
+        },
+        forecast_answers: [
+          {
+            confidence_semantics: 'calibrated',
+            calibration_summary: {
+              status: 'ready'
+            },
+            answer_type: 'hybrid_forecast',
+            answer_payload: {
+              abstain: false,
+              best_estimate: {
+                value_type: 'numeric_interval',
+                value_semantics: 'numeric_interval_estimate',
+                point_estimate: 42,
+                unit: 'usd_millions',
+                intervals: {
+                  '80': { low: 36, high: 50 }
+                }
+              },
+              evaluation_summary: {
+                status: 'available',
+                resolved_case_count: 12
+              },
+              confidence_basis: {
+                status: 'available',
+                resolved_case_count: 12,
+                benchmark_status: 'available',
+                backtest_status: 'available',
+                calibration_status: 'ready'
+              }
+            }
+          }
+        ]
+      }
+    }
+  })
+
+  assert.equal(categoricalSummary.hybridWorkspace.latestAnswer.bestEstimateDisplay, 'win (62%)')
+  assert.equal(categoricalSummary.hybridWorkspace.statusSurface.calibratedConfidenceEarned, true)
+  assert.equal(numericSummary.hybridWorkspace.latestAnswer.bestEstimateDisplay, '42 usd_millions (80% interval 36 to 50)')
+  assert.equal(numericSummary.hybridWorkspace.statusSurface.calibratedConfidenceEarned, true)
 })
 
 test('deriveProbabilisticEvidenceSummary can intentionally downscope chat evidence from a saved run context', () => {
@@ -1663,8 +2255,8 @@ test('deriveProbabilisticStep3Runtime reports a hard error when probabilistic id
       lifecycleStatus: 'prepared',
       storageStatus: 'prepared',
       selectedRunSeed: '-',
-      waitingText: 'Probabilistic Step 3 is waiting for a stored run shell from Step 2.',
-      runtimeError: 'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and recreate the stored run shell.'
+      waitingText: 'Probabilistic Step 3 is waiting for Step 2 to create or reopen a stored run shell.',
+      runtimeError: 'Probabilistic Step 3 requires both ensemble and run identifiers from Step 2. Return to Step 2 and create or reopen the stored run shell.'
     }
   )
 })
@@ -1699,6 +2291,33 @@ test('deriveProbabilisticStep3Runtime prefers runtime-backed status and seed met
       storageStatus: 'prepared',
       selectedRunSeed: 77,
       waitingText: 'Waiting for actions from stored run run-09 (running).',
+      runtimeError: ''
+    }
+  )
+})
+
+test('deriveProbabilisticStep3Runtime keeps prepared stored shells passive until the operator launches', () => {
+  assert.deepEqual(
+    deriveProbabilisticStep3Runtime({
+      runtimeMode: 'probabilistic',
+      ensembleId: 'ens-01',
+      runId: 'run-11',
+      runDetail: {
+        status: 'prepared'
+      },
+      runStatus: {
+        storage_status: 'prepared'
+      }
+    }),
+    {
+      requestedProbabilisticMode: true,
+      isProbabilisticMode: true,
+      normalizedEnsembleId: 'ens-01',
+      normalizedRunId: 'run-11',
+      lifecycleStatus: 'prepared',
+      storageStatus: 'prepared',
+      selectedRunSeed: '-',
+      waitingText: 'Stored run shell run-11 is prepared. Launch it manually when ready.',
       runtimeError: ''
     }
   )
@@ -2083,13 +2702,23 @@ test('deriveProbabilisticAnalyticsCards summarizes partial empirical artifacts t
     clustersArtifact: {
       quality_summary: {
         status: 'partial',
-        warnings: ['low_confidence']
+        warnings: ['low_confidence'],
+        support_assessment: {
+          status: 'descriptive_only',
+          label: 'Descriptive only',
+          downgraded: true
+        }
       },
       cluster_count: 2,
       clusters: [
         {
-          probability_mass: 0.75,
-          prototype_run_id: '0004'
+          observed_run_share: 0.75,
+          prototype_run_id: '0004',
+          support_assessment: {
+            status: 'descriptive_only',
+            label: 'Descriptive only',
+            downgraded: true
+          }
         }
       ]
     },
@@ -2105,10 +2734,20 @@ test('deriveProbabilisticAnalyticsCards summarizes partial empirical artifacts t
       driver_rankings: [
         {
           field_path: 'twitter_config.echo_chamber_strength',
+          support_assessment: {
+            status: 'insufficient_support',
+            label: 'Insufficient support',
+            downgraded: true
+          },
           metric_impacts: [
             {
               metric_id: 'simulation.total_actions',
-              effect_size: 9
+              effect_size: 9,
+              support_assessment: {
+                status: 'insufficient_support',
+                label: 'Insufficient support',
+                downgraded: true
+              }
             }
           ]
         }
@@ -2122,13 +2761,14 @@ test('deriveProbabilisticAnalyticsCards summarizes partial empirical artifacts t
   assert.deepEqual(cards.summary.warnings, ['Thin sample', 'Degraded runs present'])
 
   assert.equal(cards.clusters.status, 'partial')
-  assert.match(cards.clusters.headline, /2 observed clusters/i)
-  assert.match(cards.clusters.body, /largest observed cluster/i)
+  assert.match(cards.clusters.headline, /descriptive cluster/i)
+  assert.match(cards.clusters.body, /observed run share/i)
+  assert.match(cards.clusters.body, /descriptive only/i)
   assert.deepEqual(cards.clusters.warnings, ['Low confidence'])
 
   assert.equal(cards.sensitivity.status, 'complete')
-  assert.match(cards.sensitivity.headline, /twitter_config\.echo_chamber_strength/)
-  assert.match(cards.sensitivity.body, /observational/i)
+  assert.match(cards.sensitivity.headline, /insufficient support|observed driver variation/i)
+  assert.match(cards.sensitivity.body, /descriptive only|insufficient support/i)
   assert.deepEqual(cards.sensitivity.warnings, ['Observational only', 'Thin sample'])
 })
 
@@ -2144,7 +2784,7 @@ test('deriveProbabilisticAnalyticsCards explains binary and categorical aggregat
           label: 'Simulation Completed',
           distribution_kind: 'binary',
           sample_count: 6,
-          empirical_probability: 2 / 3,
+          observed_true_share: 2 / 3,
           counts: {
             true: 4,
             false: 2
@@ -2155,7 +2795,7 @@ test('deriveProbabilisticAnalyticsCards explains binary and categorical aggregat
   })
 
   assert.match(binaryCards.summary.headline, /Simulation Completed/i)
-  assert.match(binaryCards.summary.body, /4 true and 2 false/i)
+  assert.match(binaryCards.summary.body, /4 observed true and 2 observed false/i)
 
   const categoricalCards = deriveProbabilisticAnalyticsCards({
     summaryArtifact: {
@@ -2172,7 +2812,7 @@ test('deriveProbabilisticAnalyticsCards explains binary and categorical aggregat
             twitter: 3,
             reddit: 2
           },
-          category_probabilities: {
+          category_observed_shares: {
             twitter: 0.6,
             reddit: 0.4
           }
@@ -2218,6 +2858,88 @@ test('deriveProbabilisticAnalyticsCards exposes loading, error, and empty states
   assert.deepEqual(cards.sensitivity.warnings, ['Observational only', 'No varying drivers'])
 })
 
+test('deriveProbabilisticAnalyticsAvailability keeps cluster and sensitivity fetches passive until metrics exist', () => {
+  assert.deepEqual(
+    deriveProbabilisticAnalyticsAvailability({
+      runSummaries: [
+        {
+          run_id: '0001',
+          artifact_paths: {
+            resolved_config: 'resolved_config.json'
+          }
+        }
+      ]
+    }),
+    {
+      summary: {
+        ready: true,
+        reason: ''
+      },
+      clusters: {
+        ready: false,
+        reason: 'Scenario clusters will appear after at least one stored run produces metrics.'
+      },
+      sensitivity: {
+        ready: false,
+        reason: 'Sensitivity rankings will appear after at least one stored run produces metrics.'
+      }
+    }
+  )
+})
+
+test('deriveProbabilisticAnalyticsAvailability enables cluster and sensitivity fetches once metrics exist', () => {
+  assert.deepEqual(
+    deriveProbabilisticAnalyticsAvailability({
+      runSummaries: [
+        {
+          run_id: '0001',
+          artifact_paths: {
+            resolved_config: 'resolved_config.json',
+            metrics: 'metrics.json'
+          }
+        }
+      ]
+    }),
+    {
+      summary: {
+        ready: true,
+        reason: ''
+      },
+      clusters: {
+        ready: true,
+        reason: ''
+      },
+      sensitivity: {
+        ready: true,
+        reason: ''
+      }
+    }
+  )
+})
+
+test('deriveProbabilisticAnalyticsCards uses pending availability reasons instead of pre-run error states', () => {
+  const cards = deriveProbabilisticAnalyticsCards({
+    availabilityByKey: {
+      clusters: {
+        ready: false,
+        reason: 'Scenario clusters will appear after at least one stored run produces metrics.'
+      },
+      sensitivity: {
+        ready: false,
+        reason: 'Sensitivity rankings will appear after at least one stored run produces metrics.'
+      }
+    }
+  })
+
+  assert.equal(cards.clusters.status, 'empty')
+  assert.equal(cards.clusters.headline, 'Scenario clusters waiting on executed-run metrics')
+  assert.match(cards.clusters.body, /at least one stored run produces metrics/i)
+
+  assert.equal(cards.sensitivity.status, 'empty')
+  assert.equal(cards.sensitivity.headline, 'Sensitivity waiting on executed-run metrics')
+  assert.match(cards.sensitivity.body, /at least one stored run produces metrics/i)
+})
+
 test('Step 2 blocks probabilistic Step 3 handoff when runtime shells are disabled', () => {
   assert.equal(typeof runtimeUtils.getStep2StartSimulationState, 'function')
 
@@ -2227,7 +2949,10 @@ test('Step 2 blocks probabilistic Step 3 handoff when runtime shells are disable
       phase: 4,
       selectedPrepareMode: 'probabilistic',
       preparedArtifactSummary: {
-        probabilistic_mode: true
+        probabilistic_mode: true,
+        forecast_readiness: {
+          ready: true
+        }
       },
       capabilities: {
         probabilistic_prepare_enabled: true,
@@ -2261,7 +2986,7 @@ test('Step 2 blocks probabilistic Step 3 handoff when probabilistic artifacts ar
     {
       enabled: false,
       helperText:
-        'Probabilistic Step 3 requires probabilistic prepare artifacts. Run probabilistic prepare first or return to the legacy path.'
+        'Probabilistic Step 3 requires stored-run shell artifacts. Run stored-run shell preparation first or return to the legacy path.'
     }
   )
 
@@ -2281,6 +3006,41 @@ test('Step 2 blocks probabilistic Step 3 handoff when probabilistic artifacts ar
     {
       enabled: true,
       helperText: ''
+    }
+  )
+})
+
+test('Step 2 blocks probabilistic Step 3 handoff when grounding evidence is unavailable', () => {
+  assert.equal(typeof runtimeUtils.getStep2StartSimulationState, 'function')
+
+  assert.deepEqual(
+    runtimeUtils.getStep2StartSimulationState({
+      simulationId: 'sim-1',
+      phase: 4,
+      selectedPrepareMode: 'probabilistic',
+      preparedArtifactSummary: {
+        probabilistic_mode: true,
+        artifact_completeness: {
+          ready: true
+        },
+        grounding_readiness: {
+          ready: false,
+          status: 'unavailable'
+        },
+        forecast_readiness: {
+          ready: false,
+          reason: 'Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json.'
+        }
+      },
+      capabilities: {
+        probabilistic_prepare_enabled: true,
+        probabilistic_ensemble_storage_enabled: true
+      }
+    }),
+    {
+      enabled: false,
+      helperText:
+        'Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json.'
     }
   )
 })

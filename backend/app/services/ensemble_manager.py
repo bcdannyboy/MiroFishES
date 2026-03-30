@@ -760,13 +760,13 @@ class EnsembleManager:
             true_count = sum(1 for value in values if value)
             false_count = len(values) - true_count
             dominant_value = true_count >= false_count
-            dominant_probability = max(true_count, false_count) / len(values)
+            dominant_observed_share = max(true_count, false_count) / len(values)
             summary.update(
                 {
                     "distribution_kind": "binary",
-                    "empirical_probability": true_count / len(values),
+                    "observed_true_share": true_count / len(values),
                     "dominant_value": dominant_value,
-                    "dominant_probability": dominant_probability,
+                    "dominant_observed_share": dominant_observed_share,
                     "counts": {
                         "false": false_count,
                         "true": true_count,
@@ -787,9 +787,9 @@ class EnsembleManager:
                 {
                     "distribution_kind": "categorical",
                     "dominant_value": dominant_category,
-                    "dominant_probability": dominant_count / len(values),
+                    "dominant_observed_share": dominant_count / len(values),
                     "category_counts": category_counts,
-                    "category_probabilities": {
+                    "category_observed_shares": {
                         category: count / len(values)
                         for category, count in category_counts.items()
                     },

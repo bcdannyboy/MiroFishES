@@ -116,6 +116,31 @@ def _write_project_grounding_artifacts(
             "warnings": [],
         },
     )
+    _write_json(
+        project_dir / "graph_entity_index.json",
+        {
+            "artifact_type": "graph_entity_index",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "generated_at": "2026-03-29T09:06:00",
+            "total_count": 1,
+            "filtered_count": 1,
+            "entity_types": ["Person"],
+            "entities": [
+                {
+                    "uuid": "entity-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "A tracked participant",
+                    "attributes": {"role": "analyst"},
+                    "related_edges": [],
+                    "related_nodes": [],
+                }
+            ],
+        },
+    )
 
 
 def _build_test_client(simulation_module):
@@ -312,6 +337,7 @@ def test_prepare_simulation_keeps_legacy_artifacts_when_probabilistic_mode_is_fa
     assert not (sim_dir / "uncertainty_spec.json").exists()
     assert not (sim_dir / "outcome_spec.json").exists()
     assert not (sim_dir / "prepared_snapshot.json").exists()
+    assert not (sim_dir / "prepare_phase_timings.json").exists()
 
 
 def test_prepare_simulation_persists_probabilistic_sidecar_artifacts(
@@ -340,6 +366,7 @@ def test_prepare_simulation_persists_probabilistic_sidecar_artifacts(
     uncertainty_spec = json.loads((sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8"))
     outcome_spec = json.loads((sim_dir / "outcome_spec.json").read_text(encoding="utf-8"))
     prepared_snapshot = json.loads((sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8"))
+    phase_timings = json.loads((sim_dir / "prepare_phase_timings.json").read_text(encoding="utf-8"))
     summary = manager.get_prepare_artifact_summary(state.simulation_id)
 
     assert (sim_dir / "simulation_config.json").exists()
@@ -375,16 +402,54 @@ def test_prepare_simulation_persists_probabilistic_sidecar_artifacts(
     assert prepared_snapshot["artifacts"]["base_config"]["filename"] == "simulation_config.base.json"
     assert prepared_snapshot["artifacts"]["grounding_bundle"]["filename"] == "grounding_bundle.json"
     assert prepared_snapshot["grounding_summary"]["status"] == "unavailable"
+    assert phase_timings["artifact_type"] == "phase_timings"
+    assert set(phase_timings["phases"]) == {
+        "config_generation",
+        "entity_read",
+        "profile_generation",
+    }
     assert summary["schema_version"] == "probabilistic.prepare.v1"
     assert summary["generator_version"] == "probabilistic.prepare.generator.v1"
     assert summary["lineage"]["project_id"] == "proj-1"
     assert summary["artifacts"]["base_config"]["path"].endswith("simulation_config.base.json")
+    assert summary["artifacts"]["prepare_phase_timings"]["exists"] is True
+    assert summary["artifacts"]["prepare_phase_timings"]["filename"] == "prepare_phase_timings.json"
     assert summary["artifacts"]["forecast_brief"]["filename"] == "forecast_brief.json"
     assert summary["artifacts"]["forecast_brief"]["exists"] is False
     assert summary["forecast_brief"] is None
     assert summary["artifacts"]["grounding_bundle"]["filename"] == "grounding_bundle.json"
     assert summary["artifacts"]["grounding_bundle"]["exists"] is True
     assert summary["grounding_summary"]["status"] == "unavailable"
+    assert summary["artifact_completeness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "missing_artifacts": [],
+    }
+    assert summary["grounding_readiness"] == {
+        "ready": False,
+        "status": "unavailable",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+    }
+    assert summary["forecast_readiness"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+    }
+    assert summary["workflow_handoff_status"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+        "semantics": "workflow_handoff_status",
+    }
     assert summary["artifacts"]["uncertainty_spec"]["schema_version"] == "probabilistic.prepare.v1"
     assert summary["feature_metadata"]["random_variable_count"] == len(
         uncertainty_spec["random_variables"]
@@ -393,6 +458,61 @@ def test_prepare_simulation_persists_probabilistic_sidecar_artifacts(
         non_fixed_variables
     )
     assert summary["feature_metadata"]["sampling_enabled"] is True
+
+
+def test_prepare_simulation_uses_project_entity_index_before_remote_reads(
+    simulation_data_dir, monkeypatch, tmp_path
+):
+    manager_module = _load_manager_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+    _write_project_grounding_artifacts(
+        monkeypatch,
+        tmp_path / "projects",
+        project_id="proj-1",
+        graph_id="graph-1",
+    )
+
+    config_module = importlib.import_module("app.config")
+    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "test-key", raising=False)
+    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    monkeypatch.setattr(
+        reader_module.ZepEntityReader,
+        "get_all_nodes",
+        lambda self, graph_id: (_ for _ in ()).throw(
+            AssertionError("prepare should use the persisted entity index before remote node reads")
+        ),
+    )
+    monkeypatch.setattr(
+        reader_module.ZepEntityReader,
+        "get_all_edges",
+        lambda self, graph_id: (_ for _ in ()).throw(
+            AssertionError("prepare should use the persisted entity index before remote edge reads")
+        ),
+    )
+    monkeypatch.setattr(manager_module, "ZepEntityReader", reader_module.ZepEntityReader)
+    monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
+    monkeypatch.setattr(
+        manager_module, "SimulationConfigGenerator", _FakeSimulationConfigGenerator
+    )
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    prepared = manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    phase_timings = json.loads((sim_dir / "prepare_phase_timings.json").read_text(encoding="utf-8"))
+
+    assert prepared.status == manager_module.SimulationStatus.READY
+    assert prepared.entities_count == 1
+    assert phase_timings["phases"]["entity_read"]["metadata"]["entity_count"] == 1
 
 
 def test_prepare_simulation_persists_forecast_brief_artifact_and_summary(
@@ -534,6 +654,23 @@ def test_prepare_simulation_persists_grounding_bundle_and_summary_when_project_a
         "graph": 1,
         "code": 0,
     }
+    assert summary["artifact_completeness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "missing_artifacts": [],
+    }
+    assert summary["grounding_readiness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+    }
+    assert summary["forecast_readiness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "blocking_stage": None,
+    }
 
 
 def test_prepare_simulation_uses_fixed_variable_catalog_for_deterministic_baseline(
@@ -604,6 +741,9 @@ def test_prepare_simulation_emits_structured_uncertainty_metadata(
     uncertainty_spec = json.loads((sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8"))
     prepared_snapshot = json.loads((sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8"))
     summary = manager.get_prepare_artifact_summary(state.simulation_id)
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
 
     assert uncertainty_spec["experiment_design"]["method"] == "latin-hypercube"
     assert uncertainty_spec["variable_groups"]
@@ -612,9 +752,534 @@ def test_prepare_simulation_emits_structured_uncertainty_metadata(
         "base_case",
         "viral_spike",
     ]
+    assert templates_by_id["base_case"]["field_overrides"] == {
+        "event_config.narrative_direction": "baseline"
+    }
+    assert templates_by_id["viral_spike"]["field_overrides"] == {
+        "event_config.narrative_direction": "viral_spike",
+        "twitter_config.echo_chamber_strength": 0.8,
+        "reddit_config.echo_chamber_strength": 0.75,
+        "agent_configs[0].activity_level": 0.8,
+        "agent_configs[0].posts_per_hour": 1.5,
+        "agent_configs[0].comments_per_hour": 1.5,
+        "agent_configs[0].influence_weight": 1.35,
+    }
     assert prepared_snapshot["feature_metadata"]["structured_design_enabled"] is True
     assert prepared_snapshot["feature_metadata"]["experiment_design_method"] == "latin-hypercube"
+    assert prepared_snapshot["feature_metadata"]["scenario_diversity_enabled"] is True
+    assert prepared_snapshot["feature_metadata"]["scenario_worker"] == "simulation"
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"] == [
+        {
+            "template_id": "base_case",
+            "label": "Base Case",
+            "override_field_count": 1,
+            "override_fields": ["event_config.narrative_direction"],
+        },
+        {
+            "template_id": "viral_spike",
+            "label": "Viral Spike",
+            "override_field_count": 7,
+            "override_fields": [
+                "agent_configs[0].activity_level",
+                "agent_configs[0].comments_per_hour",
+                "agent_configs[0].influence_weight",
+                "agent_configs[0].posts_per_hour",
+                "event_config.narrative_direction",
+                "reddit_config.echo_chamber_strength",
+                "twitter_config.echo_chamber_strength",
+            ],
+        },
+    ]
     assert summary["feature_metadata"]["scenario_template_count"] == 2
+    assert summary["feature_metadata"]["scenario_diversity_enabled"] is True
+    assert summary["feature_metadata"]["scenario_worker"] == "simulation"
+
+
+def test_prepare_simulation_accepts_structured_scenario_template_payloads(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 8, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": [
+                {
+                    "template_id": "baseline_watch",
+                    "label": "Baseline Watch",
+                    "weight": 3.0,
+                    "field_overrides": {
+                        "event_config.narrative_direction": "baseline",
+                    },
+                    "notes": ["Keep a heavier baseline allocation."],
+                },
+                {
+                    "template_id": "shock_spike",
+                    "label": "Shock Spike",
+                    "weight": 1.0,
+                    "field_overrides": {
+                        "event_config.narrative_direction": "shock",
+                        "twitter_config.echo_chamber_strength": 0.9,
+                    },
+                    "notes": ["Reserve a smaller but explicit shock lane."],
+                },
+            ],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
+
+    assert uncertainty_spec["experiment_design"]["scenario_assignment"] == "weighted_cycle"
+    assert templates_by_id["baseline_watch"]["label"] == "Baseline Watch"
+    assert templates_by_id["baseline_watch"]["weight"] == 3.0
+    assert templates_by_id["baseline_watch"]["field_overrides"] == {
+        "event_config.narrative_direction": "baseline",
+    }
+    assert templates_by_id["shock_spike"]["label"] == "Shock Spike"
+    assert templates_by_id["shock_spike"]["weight"] == 1.0
+    assert templates_by_id["shock_spike"]["field_overrides"] == {
+        "event_config.narrative_direction": "shock",
+        "twitter_config.echo_chamber_strength": 0.9,
+    }
+
+
+def test_prepare_simulation_expands_scenario_templates_into_substantive_diverse_overrides(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 8, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": [
+                "base_case",
+                "viral_spike",
+                "consensus_bridge",
+            ],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    prepared_snapshot = json.loads(
+        (sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8")
+    )
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
+
+    assert uncertainty_spec["experiment_design"]["max_templates_per_run"] == 2
+    assert "coverage_tags" in templates_by_id["viral_spike"]
+    assert "amplification" in templates_by_id["viral_spike"]["coverage_tags"]
+    assert templates_by_id["viral_spike"]["field_overrides"][
+        "event_config.scheduled_events"
+    ]
+    assert templates_by_id["viral_spike"]["field_overrides"]["event_config.hot_topics"] != [
+        "seed"
+    ]
+    assert templates_by_id["consensus_bridge"]["field_overrides"][
+        "event_config.scheduled_events"
+    ]
+    assert uncertainty_spec["conditional_variables"]
+    preview_by_id = {
+        item["template_id"]: item
+        for item in prepared_snapshot["feature_metadata"]["scenario_template_preview"]
+    }
+    assert preview_by_id["viral_spike"]["coverage_tags"]
+    assert preview_by_id["viral_spike"]["exogenous_event_count"] >= 1
+
+
+def test_prepare_simulation_builds_substantive_scenario_diversity_metadata(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 6, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": [
+                "base_case",
+                "viral_spike",
+                "cooldown_recovery",
+            ],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    prepared_snapshot = json.loads(
+        (sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8")
+    )
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
+
+    assert {
+        item["variable"]["field_path"]
+        for item in uncertainty_spec["conditional_variables"]
+    } >= {
+        "twitter_config.recency_weight",
+        "reddit_config.relevance_weight",
+        "twitter_config.viral_threshold",
+        "reddit_config.viral_threshold",
+    }
+    assert templates_by_id["viral_spike"]["field_overrides"] == {
+        "event_config.narrative_direction": "viral_spike",
+        "event_config.hot_topics": ["seed", "viral_spike", "attention_surge"],
+        "event_config.scheduled_events": [
+            {
+                "offset_hours": 2,
+                "event_type": "exogenous_spike",
+                "topic": "viral_spike",
+                "intensity": "high",
+            },
+            {
+                "offset_hours": 10,
+                "event_type": "reaction_wave",
+                "topic": "attention_surge",
+                "intensity": "medium",
+            },
+        ],
+        "time_config.peak_activity_multiplier": 1.9,
+        "time_config.off_peak_activity_multiplier": 0.15,
+        "twitter_config.echo_chamber_strength": 0.8,
+        "reddit_config.echo_chamber_strength": 0.75,
+        "agent_configs[0].activity_level": 0.8,
+        "agent_configs[0].posts_per_hour": 1.5,
+        "agent_configs[0].comments_per_hour": 1.5,
+        "agent_configs[0].influence_weight": 1.35,
+    }
+    assert templates_by_id["cooldown_recovery"]["field_overrides"] == {
+        "event_config.narrative_direction": "cooldown",
+        "event_config.hot_topics": ["seed", "stabilization", "clarification"],
+        "event_config.scheduled_events": [
+            {
+                "offset_hours": 6,
+                "event_type": "clarification",
+                "topic": "stabilization",
+                "intensity": "medium",
+            }
+        ],
+        "time_config.peak_activity_multiplier": 1.1,
+        "time_config.work_activity_multiplier": 0.75,
+        "twitter_config.echo_chamber_strength": 0.25,
+        "reddit_config.echo_chamber_strength": 0.2,
+        "agent_configs[0].activity_level": 0.3,
+        "agent_configs[0].posts_per_hour": 0.6,
+        "agent_configs[0].comments_per_hour": 0.6,
+    }
+    assert prepared_snapshot["feature_metadata"]["scenario_diversity_axes"] == [
+        "agent_behavior",
+        "event_process",
+        "platform_dynamics",
+        "time_profile",
+    ]
+    assert prepared_snapshot["feature_metadata"]["scenario_template_override_total"] == 22
+    assert prepared_snapshot["feature_metadata"]["scenario_template_substantive_count"] == 3
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"] == [
+        {
+            "template_id": "base_case",
+            "label": "Base Case",
+            "override_field_count": 1,
+            "override_fields": ["event_config.narrative_direction"],
+        },
+        {
+            "template_id": "viral_spike",
+            "label": "Viral Spike",
+            "override_field_count": 11,
+            "override_fields": [
+                "agent_configs[0].activity_level",
+                "agent_configs[0].comments_per_hour",
+                "agent_configs[0].influence_weight",
+                "agent_configs[0].posts_per_hour",
+                "event_config.hot_topics",
+                "event_config.narrative_direction",
+                "event_config.scheduled_events",
+                "reddit_config.echo_chamber_strength",
+                "time_config.off_peak_activity_multiplier",
+                "time_config.peak_activity_multiplier",
+                "twitter_config.echo_chamber_strength",
+            ],
+        },
+        {
+            "template_id": "cooldown_recovery",
+            "label": "Cooldown Recovery",
+            "override_field_count": 10,
+            "override_fields": [
+                "agent_configs[0].activity_level",
+                "agent_configs[0].comments_per_hour",
+                "agent_configs[0].posts_per_hour",
+                "event_config.hot_topics",
+                "event_config.narrative_direction",
+                "event_config.scheduled_events",
+                "reddit_config.echo_chamber_strength",
+                "time_config.peak_activity_multiplier",
+                "time_config.work_activity_multiplier",
+                "twitter_config.echo_chamber_strength",
+            ],
+        },
+    ]
+
+
+def test_prepare_simulation_surfaces_substantive_diversity_template_metadata(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 8, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": [
+                {
+                    "template_id": "baseline_watch",
+                    "label": "Baseline Watch",
+                    "field_overrides": {
+                        "event_config.narrative_direction": "baseline",
+                    },
+                    "coverage_tags": ["baseline", "steady-state"],
+                    "exogenous_events": [
+                        {
+                            "event_id": "baseline-checkpoint",
+                            "kind": "operator_note",
+                            "hour": 4,
+                        }
+                    ],
+                    "correlated_field_paths": [
+                        "agent_configs[0].activity_level",
+                    ],
+                },
+                {
+                    "template_id": "crisis_spike",
+                    "label": "Crisis Spike",
+                    "weight": 2.0,
+                    "field_overrides": {
+                        "event_config.narrative_direction": "crisis",
+                    },
+                    "coverage_tags": ["shock", "amplification"],
+                    "exogenous_events": [
+                        {
+                            "event_id": "shock-wave",
+                            "kind": "breaking_news",
+                            "hour": 2,
+                        }
+                    ],
+                    "conditional_overrides": [
+                        {
+                            "variable": {
+                                "field_path": "twitter_config.viral_threshold",
+                                "distribution": "fixed",
+                                "parameters": {"value": 6},
+                            },
+                            "condition_field_path": "event_config.narrative_direction",
+                            "operator": "eq",
+                            "condition_value": "crisis",
+                        }
+                    ],
+                    "correlated_field_paths": [
+                        "agent_configs[0].activity_level",
+                        "twitter_config.viral_threshold",
+                    ],
+                },
+                {
+                    "template_id": "bridge_response",
+                    "label": "Bridge Response",
+                    "field_overrides": {
+                        "event_config.narrative_direction": "bridge",
+                    },
+                    "coverage_tags": ["bridge", "response"],
+                    "exogenous_events": [
+                        {
+                            "event_id": "bridge-briefing",
+                            "kind": "community_response",
+                            "hour": 5,
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    prepared_snapshot = json.loads(
+        (sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8")
+    )
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
+
+    assert uncertainty_spec["experiment_design"]["max_templates_per_run"] == 2
+    assert uncertainty_spec["experiment_design"]["template_combination_policy"] == (
+        "pairwise"
+    )
+    assert templates_by_id["crisis_spike"]["coverage_tags"] == [
+        "shock",
+        "amplification",
+    ]
+    assert templates_by_id["crisis_spike"]["exogenous_events"] == [
+        {
+            "event_id": "shock-wave",
+            "kind": "breaking_news",
+            "hour": 2,
+        }
+    ]
+    assert templates_by_id["crisis_spike"]["correlated_field_paths"] == [
+        "agent_configs[0].activity_level",
+        "twitter_config.viral_threshold",
+    ]
+    assert templates_by_id["crisis_spike"]["conditional_overrides"][0][
+        "condition_field_path"
+    ] == "event_config.narrative_direction"
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"][1][
+        "coverage_tags"
+    ] == ["amplification", "shock"]
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"][1][
+        "exogenous_event_count"
+    ] == 1
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"][1][
+        "conditional_override_count"
+    ] == 1
+    assert prepared_snapshot["feature_metadata"]["scenario_template_preview"][1][
+        "correlated_field_count"
+    ] == 2
+
+
+def test_prepare_simulation_builds_substantive_template_metadata_for_auto_templates(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 4, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": ["base_case", "viral_spike", "crisis_case"],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    prepared_snapshot = json.loads(
+        (sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8")
+    )
+    templates_by_id = {
+        item["template_id"]: item for item in uncertainty_spec["scenario_templates"]
+    }
+    preview_by_id = {
+        item["template_id"]: item
+        for item in prepared_snapshot["feature_metadata"]["scenario_template_preview"]
+    }
+
+    assert templates_by_id["viral_spike"]["coverage_tags"]
+    assert templates_by_id["viral_spike"]["exogenous_events"]
+    assert templates_by_id["viral_spike"]["conditional_overrides"]
+    assert preview_by_id["viral_spike"]["exogenous_event_count"] >= 1
+    assert preview_by_id["viral_spike"]["conditional_override_count"] >= 1
+    assert preview_by_id["viral_spike"]["substantive_override_count"] > 7
+    assert prepared_snapshot["feature_metadata"]["scenario_diversity_strategy"] == "cyclic"
+    assert prepared_snapshot["feature_metadata"]["scenario_coverage_axes"] == [
+        "attention",
+        "platform",
+        "trajectory",
+    ]
 
 
 def test_prepare_simulation_rejects_unknown_outcome_metric(
@@ -646,6 +1311,10 @@ def test_prepare_endpoint_accepts_probabilistic_inputs_and_reports_requested_met
     captured = {}
 
     class _FakeManager:
+        derive_prepare_readiness = staticmethod(
+            _load_manager_module().SimulationManager.derive_prepare_readiness
+        )
+
         def __init__(self):
             self.saved_states = []
 
@@ -955,6 +1624,143 @@ def test_prepare_status_requires_full_probabilistic_sidecar_set(
     payload = response.get_json()["data"]
     assert payload["already_prepared"] is False
     assert payload["status"] == "not_started"
+
+
+def test_prepare_status_blocks_forecast_handoff_when_grounding_is_unavailable(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+    )
+
+    simulation_module = _load_simulation_api_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir)
+    client = _build_test_client(simulation_module)
+
+    response = client.post(
+        "/api/simulation/prepare/status",
+        json={
+            "simulation_id": state.simulation_id,
+            "probabilistic_mode": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["already_prepared"] is False
+    assert payload["status"] == "not_started"
+    assert (
+        payload["prepare_info"]["reason"]
+        == "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+    )
+    assert payload["prepare_info"]["prepared_artifact_summary"]["artifact_completeness"] == {
+        "ready": True,
+        "status": "ready",
+        "reason": "",
+        "missing_artifacts": [],
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["grounding_readiness"] == {
+        "ready": False,
+        "status": "unavailable",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["forecast_readiness"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["workflow_handoff_status"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": (
+            "Stored-run shell handoff is blocked because grounding evidence is unavailable in grounding_bundle.json."
+        ),
+        "blocking_stage": "grounding",
+        "semantics": "workflow_handoff_status",
+    }
+
+
+def test_prepare_status_blocks_forecast_handoff_when_grounding_bundle_is_missing(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+    )
+
+    simulation_dir = Path(simulation_data_dir) / state.simulation_id
+    (simulation_dir / "grounding_bundle.json").unlink()
+
+    simulation_module = _load_simulation_api_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir)
+    client = _build_test_client(simulation_module)
+
+    response = client.post(
+        "/api/simulation/prepare/status",
+        json={
+            "simulation_id": state.simulation_id,
+            "probabilistic_mode": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["already_prepared"] is False
+    assert payload["status"] == "not_started"
+    assert (
+        payload["prepare_info"]["reason"]
+        == "Stored-run shell handoff is blocked because grounding_bundle.json is missing."
+    )
+    assert payload["prepare_info"]["prepared_artifact_summary"]["artifact_completeness"] == {
+        "ready": False,
+        "status": "partial",
+        "reason": "Forecast artifacts are incomplete. Missing files: grounding_bundle.json.",
+        "missing_artifacts": ["grounding_bundle.json"],
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["grounding_readiness"] == {
+        "ready": False,
+        "status": "missing",
+        "reason": "Stored-run shell handoff is blocked because grounding_bundle.json is missing.",
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["forecast_readiness"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": "Stored-run shell handoff is blocked because grounding_bundle.json is missing.",
+        "blocking_stage": "grounding",
+    }
+    assert payload["prepare_info"]["prepared_artifact_summary"]["workflow_handoff_status"] == {
+        "ready": False,
+        "status": "blocked",
+        "reason": "Stored-run shell handoff is blocked because grounding_bundle.json is missing.",
+        "blocking_stage": "grounding",
+        "semantics": "workflow_handoff_status",
+    }
 
 
 def test_prepare_status_respects_probabilistic_mode_when_task_is_missing(monkeypatch):

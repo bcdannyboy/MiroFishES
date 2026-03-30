@@ -220,6 +220,7 @@ def _build_requested_prepare_artifact_summary(
         "legacy_config": "simulation_config.json",
         "base_config": "simulation_config.base.json",
         "forecast_brief": "forecast_brief.json",
+        "grounding_bundle": "grounding_bundle.json",
         "uncertainty_spec": "uncertainty_spec.json",
         "outcome_spec": "outcome_spec.json",
         "prepared_snapshot": "prepared_snapshot.json",
@@ -266,6 +267,20 @@ def _build_requested_prepare_artifact_summary(
         "feature_metadata": feature_metadata,
         "artifacts": artifacts,
     })
+    grounding_summary = summary.get("grounding_summary", {})
+    readiness = SimulationManager.derive_prepare_readiness(
+        artifacts=artifacts,
+        grounding_summary=grounding_summary,
+    )
+    summary["feature_metadata"].update({
+        "grounding_ready": readiness["grounding_readiness"]["ready"],
+        "workflow_handoff_ready": readiness["workflow_handoff_status"]["ready"],
+        "scenario_analysis_ready": readiness["forecast_readiness"]["ready"],
+    })
+    summary["artifact_completeness"] = readiness["artifact_completeness"]
+    summary["grounding_readiness"] = readiness["grounding_readiness"]
+    summary["forecast_readiness"] = readiness["forecast_readiness"]
+    summary["workflow_handoff_status"] = readiness["workflow_handoff_status"]
     return summary
 
 
@@ -1311,25 +1326,19 @@ def _check_simulation_prepared(
         prepared_statuses = ["ready", "preparing", "running", "completed", "stopped", "failed"]
         if status in prepared_statuses and config_generated:
             artifact_summary = SimulationManager().get_prepare_artifact_summary(simulation_id)
-            if require_probabilistic_artifacts and not artifact_summary.get("probabilistic_mode"):
-                missing_probabilistic_artifacts = (
-                    artifact_summary.get("missing_probabilistic_artifacts")
-                    or artifact_summary.get("feature_metadata", {}).get(
-                        "missing_probabilistic_artifacts", []
-                    )
+            workflow_handoff_status = (
+                artifact_summary.get("workflow_handoff_status")
+                or artifact_summary.get("forecast_readiness")
+                if isinstance(artifact_summary, dict)
+                else {}
+            ) or {}
+            if require_probabilistic_artifacts and workflow_handoff_status.get("ready") is not True:
+                fallback_reason = (
+                    artifact_summary.get("artifact_completeness", {}).get("reason")
+                    or "Stored-run shell preparation is incomplete"
                 )
-                missing_artifact_message = ""
-                if missing_probabilistic_artifacts:
-                    missing_artifact_message = (
-                        "Missing probabilistic prepare artifacts: "
-                        + ", ".join(missing_probabilistic_artifacts)
-                    )
-
                 return False, {
-                    "reason": (
-                        missing_artifact_message
-                        or "Legacy prepare artifacts exist but probabilistic sidecars are missing"
-                    ),
+                    "reason": workflow_handoff_status.get("reason") or fallback_reason,
                     "status": status,
                     "config_generated": config_generated,
                     "prepared_artifact_summary": artifact_summary,
@@ -1792,7 +1801,8 @@ def get_prepare_status():
                         "status": "not_started",
                         "progress": 0,
                         "message": "Preparation has not started yet. Call /api/simulation/prepare to begin.",
-                        "already_prepared": False
+                        "already_prepared": False,
+                        "prepare_info": prepare_info,
                     }
                 })
             return jsonify({
@@ -2809,17 +2819,32 @@ def list_simulations():
 
     Query parameters:
         project_id: Optional project ID filter.
+        include_archived: When true, also return historical-only archived simulations.
     """
     try:
         project_id = request.args.get('project_id')
+        include_archived = _query_param_enabled("include_archived")
 
         manager = SimulationManager()
-        simulations = manager.list_simulations(project_id=project_id)
+        simulations = manager.list_simulations(
+            project_id=project_id,
+            include_archived=include_archived,
+        )
+
+        payload = []
+        for simulation in simulations:
+            simulation_payload = simulation.to_dict()
+            archive_metadata = manager.get_forecast_archive_metadata(
+                simulation.simulation_id
+            )
+            if archive_metadata is not None:
+                simulation_payload["forecast_archive"] = archive_metadata
+            payload.append(simulation_payload)
 
         return jsonify({
             "success": True,
-            "data": [s.to_dict() for s in simulations],
-            "count": len(simulations)
+            "data": payload,
+            "count": len(payload)
         })
 
     except Exception as e:
@@ -3004,6 +3029,14 @@ def _get_report_id_for_simulation(simulation_id: str) -> Optional[str]:
     return latest_report.get("report_id")
 
 
+def _query_param_enabled(name: str) -> bool:
+    """Interpret common truthy query parameter values."""
+    value = request.args.get(name)
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @simulation_bp.route('/history', methods=['GET'])
 def get_simulation_history():
     """
@@ -3014,6 +3047,7 @@ def get_simulation_history():
 
     Query parameters:
         limit: Maximum number of results to return. Defaults to 20.
+        include_archived: When true, also return historical-only archived simulations.
 
     Returns:
         {
@@ -3042,10 +3076,11 @@ def get_simulation_history():
     """
     try:
         limit = request.args.get('limit', 20, type=int)
+        include_archived = _query_param_enabled("include_archived")
 
         manager = SimulationManager()
         simulations = sorted(
-            manager.list_simulations(),
+            manager.list_simulations(include_archived=include_archived),
             key=lambda simulation: simulation.created_at or "",
             reverse=True,
         )[:limit]
@@ -3100,6 +3135,9 @@ def get_simulation_history():
             sim_dict["latest_probabilistic_runtime"] = (
                 _get_latest_probabilistic_runtime_summary_for_simulation(sim.simulation_id)
             )
+            archive_metadata = manager.get_forecast_archive_metadata(sim.simulation_id)
+            if archive_metadata is not None:
+                sim_dict["forecast_archive"] = archive_metadata
 
             # Add the version number.
             sim_dict["version"] = "v1.0.2"

@@ -209,6 +209,12 @@ def test_get_sensitivity_analysis_persists_ranked_driver_effects(
 
     assert first == second
     assert (ensemble_dir / "sensitivity.json").exists()
+    timing_payload = json.loads(
+        (ensemble_dir / "ensemble_phase_timings.json").read_text(encoding="utf-8")
+    )
+    assert timing_payload["scope_kind"] == "ensemble"
+    assert timing_payload["scope_id"] == f"{simulation_id}::{ensemble_id}"
+    assert "sensitivity" in timing_payload["phases"]
     assert first["artifact_type"] == "sensitivity"
     assert first["methodology"]["analysis_mode"] == "observational_resolved_values"
     assert first["methodology"]["grouping_policy"] == "support_aware_driver_bands"
@@ -311,8 +317,256 @@ def test_get_sensitivity_analysis_surfaces_missing_metrics_and_non_varying_drive
     assert artifact["quality_summary"]["status"] == "partial"
     assert artifact["quality_summary"]["missing_metrics_runs"] == ["0003"]
     assert "missing_run_metrics" in artifact["quality_summary"]["warnings"]
+
+
+def test_get_sensitivity_analysis_surfaces_scenario_diversity_context(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-diversity"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 41,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.2,
+                    "agent_configs[0].activity_level": 0.1,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T11:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 4),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 2
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 42,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.8,
+                    "agent_configs[0].activity_level": 0.9,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T11:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 18),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 12
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+    _write_json(
+        ensemble_dir / "scenario_clusters.json",
+        {
+            "artifact_type": "scenario_clusters",
+            "clusters": [
+                {"cluster_id": "cluster_0001", "member_run_ids": ["0001"]},
+                {"cluster_id": "cluster_0002", "member_run_ids": ["0002"]},
+            ],
+            "diversity_diagnostics": {
+                "coverage_metrics": {
+                    "template_coverage_fraction": 0.5,
+                    "coverage_tag_fraction": 0.5,
+                },
+                "distance_metrics": {
+                    "mean_pairwise_distance": 2.1,
+                    "min_pairwise_distance": 2.1,
+                    "max_pairwise_distance": 2.1,
+                },
+                "support_metrics": {
+                    "cluster_count": 2,
+                    "minimum_cluster_support": 1,
+                    "low_support_cluster_count": 2,
+                },
+                "warnings": ["limited_template_coverage", "low_scenario_support"],
+            },
+        },
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    assert artifact["scenario_diversity_context"]["coverage_metrics"][
+        "template_coverage_fraction"
+    ] == 0.5
+    assert artifact["scenario_diversity_context"]["warnings"] == [
+        "limited_template_coverage",
+        "low_scenario_support",
+    ]
+    assert "limited_scenario_diversity" in artifact["quality_summary"]["warnings"]
     assert "no_varying_drivers" in artifact["quality_summary"]["warnings"]
     assert "thin_sample" in artifact["quality_summary"]["warnings"]
+    assert artifact["quality_summary"]["support_assessment"] == {
+        "status": "descriptive_only",
+        "label": "Descriptive only",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Thin-sample warnings limit observational rankings to descriptive use only.",
+        "warnings": ["thin_sample"],
+    }
+
+
+def test_get_sensitivity_analysis_surfaces_scenario_diversity_context(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-diversity"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "root_seed": 41,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.2,
+                    "agent_configs[0].activity_level": 0.1,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T14:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 3
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "root_seed": 42,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.8,
+                    "agent_configs[0].activity_level": 0.9,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T14:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 21
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 15
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "root_seed": 43,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.85,
+                    "agent_configs[0].activity_level": 0.7,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T14:00:03",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 19
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 13
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "root_seed": 44,
+                "resolved_values": {
+                    "twitter_config.echo_chamber_strength": 0.25,
+                    "agent_configs[0].activity_level": 0.2,
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-09T14:00:04",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 5
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 2
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+    _write_json(
+        ensemble_dir / "scenario_clusters.json",
+        {
+            "artifact_type": "scenario_clusters",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "diversity_diagnostics": {
+                "coverage_metrics": {
+                    "planned_template_count": 3,
+                    "observed_template_count": 2,
+                    "planned_templates_missing_from_observed": ["bridge-response"],
+                    "template_coverage_ratio": 2 / 3,
+                },
+                "scenario_distance_metrics": {
+                    "pairwise_distance_mean": 1.5,
+                    "pairwise_distance_max": 3.2,
+                },
+                "support_metrics": {
+                    "minimum_support_count": 2,
+                    "singleton_cluster_count": 0,
+                },
+                "warnings": ["limited_template_coverage"],
+            },
+            "clusters": [],
+        },
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    assert artifact["scenario_diversity_context"] == {
+        "template_coverage_ratio": 2 / 3,
+        "pairwise_distance_mean": 1.5,
+        "pairwise_distance_max": 3.2,
+        "minimum_support_count": 2,
+        "warnings": ["limited_template_coverage"],
+    }
     assert artifact["driver_rankings"] == []
 
 
@@ -379,3 +633,87 @@ def test_get_sensitivity_analysis_bands_continuous_drivers_instead_of_exact_iden
     assert driver["distinct_value_count"] == 6
     assert len(impact["group_summaries"]) == 3
     assert [group["support_count"] for group in impact["group_summaries"]] == [2, 2, 2]
+
+
+def test_get_sensitivity_analysis_marks_minimum_support_rankings_as_insufficient(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-min-support"
+    ensemble_id = "0001"
+    _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"agent_configs[0].activity_level": "low"},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 2),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 1),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"agent_configs[0].activity_level": "low"},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 4),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 2),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"agent_configs[0].activity_level": "high"},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 12),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 8),
+                    },
+                },
+            },
+        ],
+    )
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    driver = artifact["driver_rankings"][0]
+    impact = next(
+        item for item in driver["metric_impacts"] if item["metric_id"] == "simulation.total_actions"
+    )
+
+    assert "minimum_support_not_met" in driver["warnings"]
+    assert "minimum_support_not_met" in impact["warnings"]
+    assert driver["support_assessment"] == {
+        "status": "insufficient_support",
+        "label": "Insufficient support",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Minimum support was not met, so this observational ranking cannot support strong driver language.",
+        "warnings": ["minimum_support_not_met"],
+    }
+    assert impact["support_assessment"] == {
+        "status": "insufficient_support",
+        "label": "Insufficient support",
+        "downgraded": True,
+        "decision_support_ready": False,
+        "reason": "Minimum support was not met, so this observational ranking cannot support strong driver language.",
+        "warnings": ["minimum_support_not_met"],
+    }

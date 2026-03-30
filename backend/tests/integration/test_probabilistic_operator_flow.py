@@ -28,6 +28,93 @@ def _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_mod
         )
 
 
+def _configure_project_grounding_dir(monkeypatch, project_root):
+    project_module = importlib.import_module("app.models.project")
+    monkeypatch.setattr(
+        project_module.ProjectManager,
+        "PROJECTS_DIR",
+        str(project_root),
+        raising=False,
+    )
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _seed_project_grounding_artifacts(
+    monkeypatch,
+    simulation_data_dir,
+    *,
+    project_id: str,
+    graph_id: str,
+    simulation_requirement: str,
+    document_text: str,
+):
+    project_root = Path(simulation_data_dir).parent / "projects"
+    _configure_project_grounding_dir(monkeypatch, project_root)
+    project_dir = project_root / project_id
+    excerpt = " ".join(document_text.split())[:180]
+
+    _write_json(
+        project_dir / "source_manifest.json",
+        {
+            "artifact_type": "source_manifest",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "created_at": "2026-03-29T09:00:00",
+            "simulation_requirement": simulation_requirement,
+            "boundary_note": "Integration-test fixture inputs only.",
+            "source_count": 1,
+            "sources": [
+                {
+                    "source_id": "fixture-source-1",
+                    "original_filename": "fixture.md",
+                    "saved_filename": "fixture.md",
+                    "relative_path": "files/fixture.md",
+                    "size_bytes": len(document_text.encode("utf-8")),
+                    "sha256": "fixture-sha256",
+                    "content_kind": "document",
+                    "extraction_status": "succeeded",
+                    "extracted_text_length": len(document_text),
+                    "combined_text_start": 0,
+                    "combined_text_end": len(document_text),
+                    "parser_warnings": [],
+                    "excerpt": excerpt,
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_build_summary.json",
+        {
+            "artifact_type": "graph_build_summary",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "generated_at": "2026-03-29T09:05:00",
+            "source_artifacts": {"source_manifest": "source_manifest.json"},
+            "ontology_summary": {
+                "analysis_summary": "Integration-test graph provenance for probabilistic operator flow.",
+                "entity_type_count": 1,
+                "edge_type_count": 1,
+            },
+            "chunk_size": 300,
+            "chunk_overlap": 40,
+            "chunk_count": 1,
+            "graph_counts": {
+                "node_count": 1,
+                "edge_count": 0,
+                "entity_types": ["Person"],
+            },
+            "warnings": [],
+        },
+    )
+
+
 def _build_app_client(monkeypatch):
     importlib.import_module("app.api.simulation")
     runner_module = importlib.import_module("app.services.simulation_runner")
@@ -229,13 +316,23 @@ def _prepare_simulation(simulation_data_dir, monkeypatch):
     manager_module = _load_manager_module()
     _install_prepare_stubs(monkeypatch, manager_module)
     _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+    simulation_requirement = "Forecast discussion spread"
+    document_text = "seed text"
+    _seed_project_grounding_artifacts(
+        monkeypatch,
+        simulation_data_dir,
+        project_id="proj-1",
+        graph_id="graph-1",
+        simulation_requirement=simulation_requirement,
+        document_text=document_text,
+    )
 
     manager = manager_module.SimulationManager()
     state = manager.create_simulation("proj-1", "graph-1")
     manager.prepare_simulation(
         simulation_id=state.simulation_id,
-        simulation_requirement="Forecast discussion spread",
-        document_text="seed text",
+        simulation_requirement=simulation_requirement,
+        document_text=document_text,
         probabilistic_mode=True,
         uncertainty_profile="balanced",
         outcome_metrics=["simulation.total_actions"],

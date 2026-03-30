@@ -8,7 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">Prediction Report</span>
+              <span class="report-tag">{{ reportTagLabel }}</span>
               <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
@@ -207,7 +207,7 @@
                     </div>
                   </template>
 <template v-if="log.action === 'section_content'">
-                    <div class="section-tag content-ready">
+                    <div class="section-tag content-generated">
                       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 20h9"></path>
                         <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
@@ -444,6 +444,17 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const reportTagLabel = computed(() => (
+  props.probabilisticContext && typeof props.probabilisticContext === 'object'
+  && (
+    props.probabilisticContext.forecast_workspace
+    || props.probabilisticContext.forecast_question
+    || props.probabilisticContext.prediction_ledger
+    || props.probabilisticContext.forecast_answers
+  )
+    ? 'Hybrid Forecast Report'
+    : 'Simulation Report'
+))
 const step5InteractionState = computed(() => getStep5InteractionState(
   props.runtimeMode,
   {
@@ -2986,12 +2997,12 @@ font-weight: 500;
   border-radius: 6px;
 }
 
-.section-tag.content-ready {
+.section-tag.content-generated {
   background: var(--wf-active-bg);
   border: 1px dashed var(--wf-active-border);
 }
 
-.section-tag.content-ready svg {
+.section-tag.content-generated svg {
   color: var(--wf-active-dot);
 }
 
