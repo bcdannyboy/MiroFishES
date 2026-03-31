@@ -1772,6 +1772,47 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
                     "abstain_reason": "",
                     "summary": "Hybrid answer available",
                 },
+                "resolution_record": {
+                    "forecast_id": "forecast-chat",
+                    "status": "resolved_true",
+                    "resolved_at": "2026-07-01T10:00:00",
+                    "resolution_note": "Observed yes.",
+                },
+                "scoring_events": [
+                    {
+                        "scoring_event_id": "score-1",
+                        "forecast_id": "forecast-chat",
+                        "status": "scored",
+                        "scoring_method": "brier_score",
+                        "score_value": 0.1521,
+                        "recorded_at": "2026-07-01T10:05:00",
+                    }
+                ],
+            },
+            "forecast_object": {
+                "forecast_id": "forecast-chat",
+                "status": "available",
+                "resolution": {
+                    "status": "resolved_true",
+                },
+                "scoring": {
+                    "event_count": 1,
+                    "latest_method": "brier_score",
+                },
+            },
+            "selected_run": {
+                "run_id": "0001",
+                "simulation_market": {
+                    "summary": {
+                        "artifact_type": "simulation_market_summary",
+                        "synthetic_consensus_probability": 0.61,
+                        "disagreement_index": 0.18,
+                    },
+                    "provenance_validation": {
+                        "status": "partial",
+                        "weight_multiplier": 0.65,
+                    },
+                },
             },
         },
     )
@@ -1804,8 +1845,13 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
     assert '"status": "not_ready"' in system_prompt
     assert '"no_supported_binary_metrics"' in system_prompt
     assert '"forecast_workspace"' in system_prompt
+    assert '"forecast_object"' in system_prompt
+    assert '"resolution"' in system_prompt
+    assert '"scoring"' in system_prompt
     assert '"forecast_workspace_status"' in system_prompt
     assert '"abstain_state"' in system_prompt
+    assert '"simulation_market_summary"' in system_prompt
+    assert '"signal_provenance_summary"' in system_prompt
 
 
 def test_report_agent_generate_report_persists_report_phase_timings(

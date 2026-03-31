@@ -1,0 +1,106 @@
+{
+  "plan_id": "2026-03-31-readiness-hardening-swarm",
+  "updated_at": "2026-03-31T11:39:32-07:00",
+  "current_prompt_complete": true,
+  "verdict": "READY FOR INTERNAL RESEARCH USE",
+  "ready_for_internal_research_use": true,
+  "ready_for_next_fix_prompt": false,
+  "remaining_blockers": [],
+  "follow_up_prompts_required": false,
+  "changed_files": [
+    "backend/app/models/forecasting.py",
+    "backend/tests/unit/test_forecast_api.py",
+    "backend/tests/unit/test_forecasting_schema.py",
+    "tests/live/probabilistic-operator-local.spec.mjs",
+    "docs/plans/2026-03-31-readiness-hardening-swarm/00-master-status.md",
+    "docs/plans/2026-03-31-readiness-hardening-swarm/status.json",
+    "docs/plans/2026-03-31-readiness-hardening-swarm/04-readiness-audit.md",
+    "docs/plans/2026-03-31-readiness-hardening-swarm/05-follow-up-prompts.md",
+    "docs/plans/2026-03-31-readiness-hardening-swarm/06-final-readiness-status.json"
+  ],
+  "authoritative_validation": [
+    {
+      "command": "python3 -m pytest backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_probabilistic_operator_flow.py backend/tests/integration/test_inference_ready_forecast_flow.py backend/tests/unit/test_forecast_resolution_manager.py backend/tests/unit/test_forecast_api.py -q",
+      "result": "70 passed in 3.34s"
+    },
+    {
+      "command": "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+      "result": "81 passed"
+    },
+    {
+      "command": "npm run verify:forecasting",
+      "result": "passed"
+    },
+    {
+      "command": "npm run verify:smoke",
+      "result": "10 passed (41.9s)"
+    },
+    {
+      "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+      "result": "2 passed (3.6m)"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "gate": 1,
+      "status": "passed"
+    },
+    {
+      "gate": 2,
+      "status": "passed"
+    },
+    {
+      "gate": 3,
+      "status": "passed"
+    },
+    {
+      "gate": 4,
+      "status": "passed"
+    },
+    {
+      "gate": 5,
+      "status": "passed"
+    },
+    {
+      "gate": 6,
+      "status": "passed"
+    },
+    {
+      "gate": 7,
+      "status": "passed"
+    },
+    {
+      "gate": 8,
+      "status": "passed"
+    },
+    {
+      "gate": 9,
+      "status": "passed"
+    }
+  ],
+  "fresh_live_evidence": {
+    "simulation_id": "sim_e93d43d721f3",
+    "forecast_id": "live-forecast-sim_e93d43d721f3-mneyhg97",
+    "ensemble_id": "0012",
+    "run_id": "0001",
+    "report_id": "report_7ac19af659d8",
+    "report_scope_source": "fresh-live-run",
+    "extraction_status": "ready",
+    "forecast_workspace_linked": true,
+    "scope_linked_to_run": true,
+    "signal_counts": {
+      "agent_beliefs": 3,
+      "belief_updates": 6,
+      "missing_information_requests": 0
+    },
+    "action_logs_persisted": true,
+    "best_estimate_present": true,
+    "abstain": null,
+    "report_context_ready": true
+  },
+  "notes": [
+    "This certification is grounded in a fresh live run and fresh live report, not in stale saved reports.",
+    "The passing live case uses linked simulation-market artifacts with non-empty extracted signals.",
+    "No residual readiness blocker remains for the fresh inference flow."
+  ]
+}

@@ -177,6 +177,22 @@ class ProbabilisticReportContextBuilder:
             linked_forecast_questions=linked_forecast_questions,
             confidence_status=confidence_status,
         )
+        forecast_object = self._build_forecast_object_summary(forecast_workspace)
+        selected_run_market = (
+            selected_run.get("simulation_market") or {}
+            if isinstance(selected_run, dict)
+            else {}
+        )
+        simulation_market_summary = (
+            selected_run_market.get("summary")
+            if isinstance(selected_run_market, dict)
+            else None
+        )
+        signal_provenance_summary = (
+            selected_run_market.get("provenance_validation")
+            if isinstance(selected_run_market, dict)
+            else None
+        )
         ensemble_facts = self._build_ensemble_facts(
             ensemble_payload=ensemble_payload,
             aggregate_summary=aggregate_summary,
@@ -242,6 +258,9 @@ class ProbabilisticReportContextBuilder:
                 ),
             },
             "forecast_workspace": forecast_workspace,
+            "forecast_object": forecast_object,
+            "simulation_market_summary": simulation_market_summary,
+            "signal_provenance_summary": signal_provenance_summary,
             **(
                 {
                     "calibration_provenance": self._build_calibration_provenance(
@@ -1853,6 +1872,46 @@ class ProbabilisticReportContextBuilder:
         )
         return workspace_payload
 
+    @staticmethod
+    def _build_forecast_object_summary(
+        forecast_workspace: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(forecast_workspace, dict):
+            return None
+
+        forecast_question = forecast_workspace.get("forecast_question")
+        if not isinstance(forecast_question, dict):
+            forecast_question = {}
+        forecast_answer = forecast_workspace.get("forecast_answer")
+        if not isinstance(forecast_answer, dict):
+            forecast_answer = {}
+        resolution_record = forecast_workspace.get("resolution_record")
+        if not isinstance(resolution_record, dict):
+            resolution_record = {}
+        scoring_events = [
+            item
+            for item in (forecast_workspace.get("scoring_events") or [])
+            if isinstance(item, dict)
+        ]
+        latest_scoring = scoring_events[-1] if scoring_events else {}
+
+        return {
+            "forecast_id": forecast_question.get("forecast_id"),
+            "status": "available",
+            "question_text": forecast_question.get("question_text"),
+            "latest_answer_id": forecast_answer.get("answer_id"),
+            "resolution": {
+                "status": resolution_record.get("status", "pending"),
+                "resolved_at": resolution_record.get("resolved_at"),
+                "resolution_note": resolution_record.get("resolution_note"),
+            },
+            "scoring": {
+                "event_count": len(scoring_events),
+                "latest_method": latest_scoring.get("scoring_method"),
+                "latest_score_value": latest_scoring.get("score_value"),
+            },
+        }
+
     def _build_calibration_provenance(
         self,
         calibrated_summary: Dict[str, Any],
@@ -2224,6 +2283,7 @@ class ProbabilisticReportContextBuilder:
                     if os.path.exists(metrics_path)
                     else None
                 ),
+                "simulation_market": run_payload.get("simulation_market"),
             }
         return run_lookup
 
@@ -2276,6 +2336,9 @@ class ProbabilisticReportContextBuilder:
             "assumption_ledger": manifest.get("assumption_ledger", {}),
             "top_topics": metrics.get("top_topics", []),
             "key_metrics": key_metrics,
+            "simulation_market": self._build_run_simulation_market_snapshot(
+                run_payload
+            ),
             "support": {
                 "has_metrics": bool(metrics),
                 "quality_status": quality.get("status", "missing")
@@ -2288,6 +2351,59 @@ class ProbabilisticReportContextBuilder:
                 "mode": "observed",
                 "label": "Observed single-run outcome",
                 "artifact_type": "metrics.json" if metrics else "run_manifest.json",
+            },
+        }
+
+    def _build_run_simulation_market_snapshot(
+        self,
+        run_payload: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(run_payload, dict) or not run_payload:
+            return None
+
+        simulation_market_payload = run_payload.get("simulation_market")
+        if not isinstance(simulation_market_payload, dict) or not simulation_market_payload:
+            return None
+
+        manifest = simulation_market_payload.get("simulation_market_manifest")
+        market_snapshot = simulation_market_payload.get("market_snapshot")
+        disagreement_summary = simulation_market_payload.get("disagreement_summary")
+        market_summary = run_payload.get("simulation_market_summary")
+        provenance_validation = run_payload.get("simulation_market_provenance")
+        if not manifest and not market_snapshot and not disagreement_summary:
+            return None
+
+        warnings = []
+        if manifest and manifest.get("extraction_status") != "ready":
+            warnings.append(
+                f"simulation_market:{manifest.get('extraction_status', 'partial')}"
+            )
+
+        return {
+            "manifest": manifest,
+            "market_snapshot": market_snapshot,
+            "disagreement_summary": disagreement_summary,
+            "summary": market_summary if isinstance(market_summary, dict) else None,
+            "provenance_validation": (
+                provenance_validation if isinstance(provenance_validation, dict) else None
+            ),
+            "support": {
+                "available": bool(market_snapshot),
+                "status": (
+                    manifest.get("extraction_status", "partial")
+                    if isinstance(manifest, dict)
+                    else "partial"
+                ),
+            },
+            "warnings": warnings,
+            "provenance": {
+                "mode": "observed",
+                "label": "Observed synthetic market extraction",
+                "artifact_type": (
+                    manifest.get("artifact_type")
+                    if isinstance(manifest, dict)
+                    else "simulation_market_manifest"
+                ),
             },
         }
 

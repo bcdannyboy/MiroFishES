@@ -26,9 +26,9 @@ class HybridForecastService:
     @staticmethod
     def _worker_family(worker: ForecastWorker) -> str:
         family = str(worker.metadata.get("worker_family") or "").strip()
-        if family in {"base_rate", "reference_class", "retrieval_synthesis", "simulation"}:
+        if family in {"base_rate", "reference_class", "retrieval_synthesis", "simulation", "simulation_market"}:
             return family
-        if worker.kind in {"base_rate", "reference_class", "retrieval_synthesis", "simulation"}:
+        if worker.kind in {"base_rate", "reference_class", "retrieval_synthesis", "simulation", "simulation_market"}:
             return worker.kind
         if worker.kind == "retrieval":
             return "retrieval_synthesis"
@@ -96,6 +96,24 @@ class HybridForecastService:
                 capabilities=["scenario_generation", "scenario_analysis"],
                 primary_output_semantics="scenario_evidence",
                 metadata={"worker_family": "simulation_adapter"},
+            )
+        simulation_scope = workspace.simulation_scope
+        if (
+            "simulation_market" not in family_map
+            and simulation_scope is not None
+            and simulation_scope.simulation_id
+            and simulation_scope.latest_ensemble_id
+            and simulation_scope.latest_run_id
+        ):
+            worker_map["worker-simulation-market"] = ForecastWorker(
+                worker_id="worker-simulation-market",
+                forecast_id=forecast_id,
+                kind="simulation_market",
+                label="Synthetic market aggregation worker",
+                status="ready",
+                capabilities=["belief_aggregation", "disagreement_analysis"],
+                primary_output_semantics=analytical_output_semantics,
+                metadata={"worker_family": "simulation_market"},
             )
         return list(worker_map.values())
 

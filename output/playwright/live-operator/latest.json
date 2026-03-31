@@ -1,17 +1,17 @@
 {
   "evidenceClass": "local-only non-fixture",
   "mutationAllowed": true,
-  "simulationId": "sim_03059e7c8be8",
+  "simulationId": "sim_e93d43d721f3",
   "simulationSelection": {
-    "simulationId": "sim_03059e7c8be8",
+    "simulationId": "sim_e93d43d721f3",
     "source": "auto"
   },
-  "startedAt": "2026-03-30T23:39:29.962Z",
+  "startedAt": "2026-03-31T18:34:07.083Z",
   "operatorActions": [
     {
       "action": "step2-handoff",
       "result": "created ensemble and opened Step 3 shell",
-      "ensembleId": "0016",
+      "ensembleId": "0011",
       "runId": "0001",
       "responseStatus": 200
     },
@@ -57,192 +57,177 @@
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/status?limit=200"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/status?limit=200"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/actions?limit=500"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/actions?limit=500"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/timeline"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/timeline"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/start"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/start"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/actions?limit=500"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/actions?limit=500"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/timeline"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/timeline"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/stop"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/stop"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/start"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/start"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/actions?limit=500"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/actions?limit=500"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/timeline"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/timeline"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/stop"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/stop"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/cleanup"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/cleanup"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/status?limit=200"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/status?limit=200"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/run-status"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/actions?limit=500"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/actions?limit=500"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/timeline"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/timeline"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/summary"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/summary"
     },
     {
       "method": "POST",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0001/rerun"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0001/rerun"
     },
     {
       "method": "GET",
       "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0009/run-status"
-    },
-    {
-      "method": "GET",
-      "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/status?limit=200"
-    },
-    {
-      "method": "GET",
-      "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0009"
-    },
-    {
-      "method": "GET",
-      "status": 200,
-      "url": "http://127.0.0.1:50141/api/simulation/sim_03059e7c8be8/ensembles/0016/runs/0009/run-status"
+      "url": "http://127.0.0.1:50141/api/simulation/sim_e93d43d721f3/ensembles/0011/runs/0009/run-status"
     }
   ],
   "console": [
@@ -257,11 +242,15 @@
     {
       "type": "error",
       "text": "Response error: CanceledError"
+    },
+    {
+      "type": "error",
+      "text": "Response error: CanceledError"
     }
   ],
   "pageErrors": [],
-  "ensembleId": "0016",
+  "ensembleId": "0011",
   "initialRunId": "0001",
   "childRunId": "0009",
-  "completedAt": "2026-03-30T23:39:34.129Z"
+  "completedAt": "2026-03-31T18:34:11.290Z"
 }

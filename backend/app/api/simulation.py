@@ -11,10 +11,12 @@ import threading
 import traceback
 from datetime import datetime
 from typing import Any, Optional
+from uuid import uuid4
 from flask import request, jsonify, send_file
 
 from . import simulation_bp
 from ..config import Config
+from ..models.forecasting import ForecastQuestion
 from ..models.probabilistic import (
     DEFAULT_OUTCOME_METRICS,
     DEFAULT_UNCERTAINTY_PROFILE,
@@ -29,6 +31,7 @@ from ..models.probabilistic import (
     validate_outcome_metric_id,
 )
 from ..services.ensemble_manager import EnsembleManager
+from ..services.forecast_manager import ForecastManager
 from ..services.scenario_clusterer import ScenarioClusterer
 from ..services.sensitivity_analyzer import SensitivityAnalyzer
 from ..services.zep_entity_reader import ZepEntityReader
@@ -357,6 +360,127 @@ def _ensemble_storage_enabled() -> bool:
             getattr(Config, "ENSEMBLE_RUNTIME_ENABLED", False),
         )
     )
+
+
+def _normalize_forecast_workspace_request(
+    data: dict,
+    state: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Normalize an optional forecast workspace request carried on simulation endpoints."""
+    state_forecast_id = getattr(state, "forecast_id", None)
+    request_forecast_id = str(data.get("forecast_id") or "").strip() or None
+    forecast_question_payload = data.get("forecast_question")
+    if not isinstance(forecast_question_payload, dict):
+        forecast_question_payload = None
+
+    if forecast_question_payload is not None:
+        normalized = dict(forecast_question_payload)
+        normalized_forecast_id = (
+            str(normalized.get("forecast_id") or request_forecast_id or state_forecast_id or "").strip()
+            or f"forecast_{uuid4().hex[:12]}"
+        )
+        now = datetime.now().isoformat()
+        question_text = (
+            normalized.get("question")
+            or normalized.get("question_text")
+            or normalized.get("title")
+            or ""
+        )
+        normalized.setdefault("forecast_id", normalized_forecast_id)
+        normalized.setdefault(
+            "project_id",
+            normalized.get("project_id") or getattr(state, "project_id", None) or "",
+        )
+        normalized.setdefault("title", normalized.get("title") or question_text)
+        normalized.setdefault("question", question_text or normalized.get("title") or "")
+        normalized.setdefault("question_text", normalized["question"])
+        normalized.setdefault("question_type", normalized.get("question_type", "binary"))
+        normalized.setdefault("status", normalized.get("status", "draft"))
+        normalized.setdefault("created_at", normalized.get("created_at", now))
+        normalized.setdefault("updated_at", normalized.get("updated_at", normalized["created_at"]))
+        normalized.setdefault(
+            "issue_timestamp",
+            normalized.get("issue_timestamp", normalized["created_at"]),
+        )
+        normalized.setdefault(
+            "resolution_criteria_ids",
+            normalized.get("resolution_criteria_ids", []),
+        )
+        return normalized_forecast_id, normalized
+
+    return request_forecast_id or state_forecast_id, None
+
+
+def _sync_state_forecast_id(state, forecast_id: Optional[str], manager: Optional[SimulationManager] = None) -> None:
+    """Persist a simulation->forecast linkage when the state object supports it."""
+    normalized_forecast_id = str(forecast_id or "").strip() or None
+    if not hasattr(state, "forecast_id"):
+        return
+    if getattr(state, "forecast_id", None) == normalized_forecast_id:
+        return
+    state.forecast_id = normalized_forecast_id
+    if manager is not None and hasattr(manager, "_save_simulation_state"):
+        manager._save_simulation_state(state)
+
+
+def _ensure_forecast_workspace_for_simulation(
+    state,
+    data: dict,
+    *,
+    manager: Optional[SimulationManager] = None,
+    attach_scope: bool = True,
+    prepare_status: Optional[str] = None,
+    prepare_task_id: Optional[str] = None,
+    prepare_artifact_paths: Optional[list[str]] = None,
+    ensemble_ids: Optional[list[str]] = None,
+    run_ids: Optional[list[str]] = None,
+    latest_ensemble_id: Optional[str] = None,
+    latest_run_id: Optional[str] = None,
+    source_stage: Optional[str] = None,
+) -> Optional[dict]:
+    """Create or reopen a forecast workspace and optionally attach simulation scope."""
+    forecast_id, forecast_question_payload = _normalize_forecast_workspace_request(data, state)
+    if forecast_id is None and forecast_question_payload is None:
+        return None
+
+    forecast_manager = ForecastManager()
+    workspace = None
+    get_workspace = getattr(forecast_manager, "get_workspace", None)
+    if callable(get_workspace) and forecast_id:
+        workspace = get_workspace(forecast_id)
+
+    if workspace is None and forecast_question_payload is not None:
+        workspace = forecast_manager.create_question(
+            ForecastQuestion.from_dict(forecast_question_payload)
+        )
+        forecast_id = workspace.forecast_question.forecast_id
+    elif workspace is None and forecast_question_payload is None and callable(get_workspace):
+        return None
+    elif workspace is None and forecast_question_payload is None and not hasattr(
+        forecast_manager, "attach_simulation_scope"
+    ):
+        return None
+    elif workspace is not None and forecast_question_payload is not None:
+        forecast_id = workspace.forecast_question.forecast_id
+
+    _sync_state_forecast_id(state, forecast_id, manager)
+
+    if attach_scope:
+        workspace = forecast_manager.attach_simulation_scope(
+            forecast_id,
+            simulation_id=getattr(state, "simulation_id", None),
+            prepare_artifact_paths=prepare_artifact_paths or [],
+            ensemble_ids=ensemble_ids or [],
+            run_ids=run_ids or [],
+            latest_ensemble_id=latest_ensemble_id,
+            latest_run_id=latest_run_id,
+            prepare_status=prepare_status,
+            prepare_task_id=prepare_task_id,
+            source_stage=source_stage,
+        )
+    elif workspace is None:
+        return None
+    return workspace.to_summary_dict()
 
 
 def _resolve_base_graph_id_for_simulation(state) -> Optional[str]:
@@ -692,6 +816,13 @@ def _cleanup_ensemble_run_storage_fallback(run_payload: dict) -> dict:
     files_to_delete = [
         "run_state.json",
         "metrics.json",
+        "simulation_market_manifest.json",
+        "agent_belief_book.json",
+        "belief_update_trace.json",
+        "disagreement_summary.json",
+        "market_snapshot.json",
+        "argument_map.json",
+        "missing_information_signals.json",
         "simulation.log",
         "stdout.log",
         "stderr.log",
@@ -738,6 +869,13 @@ def _cleanup_ensemble_run_storage_fallback(run_payload: dict) -> dict:
         manifest["updated_at"] = datetime.now().isoformat()
         artifact_paths = dict(manifest.get("artifact_paths", {}))
         artifact_paths.pop("metrics", None)
+        artifact_paths.pop("simulation_market_manifest", None)
+        artifact_paths.pop("agent_belief_book", None)
+        artifact_paths.pop("belief_update_trace", None)
+        artifact_paths.pop("disagreement_summary", None)
+        artifact_paths.pop("market_snapshot", None)
+        artifact_paths.pop("argument_map", None)
+        artifact_paths.pop("missing_information_signals", None)
         manifest["artifact_paths"] = artifact_paths
         with open(manifest_path, 'w', encoding='utf-8') as handle:
             json.dump(manifest, handle, ensure_ascii=False, indent=2)
@@ -1226,13 +1364,24 @@ def create_simulation():
         state = manager.create_simulation(
             project_id=project_id,
             graph_id=graph_id,
+            forecast_id=str(data.get('forecast_id') or '').strip() or None,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
         )
+        forecast_workspace = _ensure_forecast_workspace_for_simulation(
+            state,
+            data,
+            manager=manager,
+            attach_scope=True,
+            source_stage="simulation_create",
+        )
+        response_payload = state.to_dict()
+        if forecast_workspace is not None:
+            response_payload["forecast_workspace"] = forecast_workspace
 
         return jsonify({
             "success": True,
-            "data": state.to_dict()
+            "data": response_payload
         })
 
     except Exception as e:
@@ -1494,6 +1643,14 @@ def prepare_simulation():
             logger.debug(f"Preparation check result: is_prepared={is_prepared}, prepare_info={prepare_info}")
             if is_prepared:
                 logger.info(f"Simulation {simulation_id} is already prepared, skipping duplicate generation")
+                forecast_workspace = _ensure_forecast_workspace_for_simulation(
+                    state,
+                    data,
+                    manager=manager,
+                    attach_scope=True,
+                    prepare_status="ready" if probabilistic_mode else "unprepared",
+                    source_stage="prepare_reused",
+                )
                 return jsonify({
                     "success": True,
                     "data": {
@@ -1501,7 +1658,8 @@ def prepare_simulation():
                         "status": "ready",
                         "message": "Completed preparation already exists; no regeneration is needed",
                         "already_prepared": True,
-                        "prepare_info": prepare_info
+                        "prepare_info": prepare_info,
+                        "forecast_workspace": forecast_workspace,
                     }
                 })
             else:
@@ -1565,6 +1723,15 @@ def prepare_simulation():
         # Update the simulation state, including the pre-fetched entity count.
         state.status = SimulationStatus.PREPARING
         manager._save_simulation_state(state)
+        forecast_workspace = _ensure_forecast_workspace_for_simulation(
+            state,
+            data,
+            manager=manager,
+            attach_scope=True,
+            prepare_status="requested",
+            prepare_task_id=task_id,
+            source_stage="prepare_requested",
+        )
 
         # Define the background task.
         def run_prepare():
@@ -1671,6 +1838,29 @@ def prepare_simulation():
                     forecast_brief=normalized_forecast_brief,
                     existing_summary=manager.get_prepare_artifact_summary(simulation_id),
                 )
+                prepared_summary = result_payload.get("prepared_artifact_summary", {})
+                artifacts = (
+                    prepared_summary.get("artifacts", {})
+                    if isinstance(prepared_summary, dict)
+                    else {}
+                )
+                prepare_artifact_paths = [
+                    artifact.get("path")
+                    for artifact in artifacts.values()
+                    if isinstance(artifact, dict) and artifact.get("path")
+                ]
+                forecast_workspace_result = _ensure_forecast_workspace_for_simulation(
+                    state,
+                    {"forecast_id": getattr(state, "forecast_id", None)},
+                    manager=manager,
+                    attach_scope=True,
+                    prepare_status="ready" if probabilistic_mode else "unprepared",
+                    prepare_task_id=task_id,
+                    prepare_artifact_paths=prepare_artifact_paths,
+                    source_stage="prepare_completed",
+                )
+                if forecast_workspace_result is not None:
+                    result_payload["forecast_workspace"] = forecast_workspace_result
 
                 # Mark the task as complete.
                 task_manager.complete_task(
@@ -1716,6 +1906,7 @@ def prepare_simulation():
                 "uncertainty_profile": uncertainty_profile if probabilistic_mode else None,
                 "outcome_metrics": outcome_metric_ids if probabilistic_mode else [],
                 "prepared_artifact_summary": prepared_artifact_summary,
+                "forecast_workspace": forecast_workspace,
             }
         })
 
@@ -1892,6 +2083,7 @@ def get_simulation(simulation_id: str):
 def create_simulation_ensemble(simulation_id: str):
     """Create one storage-only ensemble under a prepared probabilistic simulation."""
     try:
+        data = request.get_json() or {}
         state, error_response = _get_simulation_or_404(simulation_id)
         if error_response:
             return error_response
@@ -1915,15 +2107,27 @@ def create_simulation_ensemble(simulation_id: str):
                 "prepare_info": prepare_info,
             }), 400
 
-        ensemble_spec = _build_ensemble_spec_from_request(request.get_json() or {})
+        ensemble_spec = _build_ensemble_spec_from_request(data)
         created = EnsembleManager().create_ensemble(
             simulation_id=state.simulation_id,
             ensemble_spec=ensemble_spec,
         )
+        response_payload = _build_ensemble_response_payload(created)
+        forecast_workspace = _ensure_forecast_workspace_for_simulation(
+            state,
+            data,
+            manager=SimulationManager(),
+            attach_scope=True,
+            ensemble_ids=[created["ensemble_id"]],
+            latest_ensemble_id=created["ensemble_id"],
+            source_stage="ensemble_create",
+        )
+        if forecast_workspace is not None:
+            response_payload["forecast_workspace"] = forecast_workspace
 
         return jsonify({
             "success": True,
-            "data": _build_ensemble_response_payload(created),
+            "data": response_payload,
         })
 
     except ValueError as e:
@@ -2398,6 +2602,19 @@ def start_simulation_ensemble_run(
             close_environment_on_complete=close_environment_on_complete,
             state=state,
         )
+        forecast_workspace = _ensure_forecast_workspace_for_simulation(
+            state,
+            data,
+            manager=SimulationManager(),
+            attach_scope=True,
+            ensemble_ids=[ensemble_id],
+            run_ids=[run_id],
+            latest_ensemble_id=ensemble_id,
+            latest_run_id=run_id,
+            source_stage="ensemble_run_start",
+        )
+        if forecast_workspace is not None:
+            response_data["forecast_workspace"] = forecast_workspace
 
         return jsonify({
             "success": True,

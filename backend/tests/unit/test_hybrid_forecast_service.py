@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from app.models.forecasting import ForecastWorkspaceRecord
 
 
@@ -169,6 +172,314 @@ def _simulation_contract_payload(forecast_id: str):
         "probability_interpretation": "do_not_treat_as_real_world_probability",
         "notes": ["Simulation remains scenario evidence only."],
     }
+
+
+def _simulation_market_scope_payload(forecast_id: str):
+    return {
+        "forecast_id": forecast_id,
+        "simulation_id": "sim-001",
+        "prepare_artifact_paths": ["uploads/simulations/sim-001/prepared_snapshot.json"],
+        "ensemble_ids": ["0001"],
+        "run_ids": ["0001"],
+        "latest_ensemble_id": "0001",
+        "latest_run_id": "0001",
+        "prepare_status": "ready",
+        "status": "linked",
+        "updated_at": "2026-03-30T09:00:00",
+        "last_attached_stage": "test_seed",
+    }
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in records) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_simulation_market_artifacts(
+    simulation_data_dir: Path,
+    *,
+    forecast_id: str,
+    consensus_probability: float,
+    disagreement_index: float,
+) -> None:
+    run_dir = simulation_data_dir / "sim-001" / "ensemble" / "ensemble_0001" / "runs" / "run_0001"
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {"content": "I put this near 74% after the latest brief."},
+            {"content": "Revising a bit lower after debate."},
+        ],
+    )
+    _write_jsonl(
+        run_dir / "reddit" / "actions.jsonl",
+        [{"content": "Closer to 61% with some hesitation."}],
+    )
+    ref_a = {
+        "simulation_id": "sim-001",
+        "ensemble_id": "0001",
+        "run_id": "0001",
+        "platform": "twitter",
+        "round_num": 1,
+        "line_number": 1,
+        "agent_id": 1,
+        "agent_name": "Analyst A",
+        "timestamp": "2026-03-30T10:00:00",
+        "action_type": "CREATE_POST",
+        "source_artifact": "twitter/actions.jsonl",
+    }
+    ref_b = {
+        "simulation_id": "sim-001",
+        "ensemble_id": "0001",
+        "run_id": "0001",
+        "platform": "reddit",
+        "round_num": 2,
+        "line_number": 1,
+        "agent_id": 2,
+        "agent_name": "Analyst B",
+        "timestamp": "2026-03-30T10:06:00",
+        "action_type": "CREATE_POST",
+        "source_artifact": "reddit/actions.jsonl",
+    }
+    _write_json(
+        run_dir / "simulation_market_manifest.json",
+        {
+            "artifact_type": "simulation_market_manifest",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "extraction_status": "ready",
+            "supported_question_type": True,
+            "forecast_workspace_linked": True,
+            "scope_linked_to_run": True,
+            "artifact_paths": {
+                "market_snapshot": "market_snapshot.json",
+                "agent_belief_book": "agent_belief_book.json",
+                "belief_update_trace": "belief_update_trace.json",
+                "disagreement_summary": "disagreement_summary.json",
+                "argument_map": "argument_map.json",
+                "missing_information_signals": "missing_information_signals.json",
+            },
+            "signal_counts": {"agent_beliefs": 2, "belief_updates": 3, "missing_information_requests": 1},
+            "warnings": [],
+            "source_artifacts": {
+                "run_manifest": "run_manifest.json",
+                "run_state": "run_state.json",
+                "action_logs": ["twitter/actions.jsonl", "reddit/actions.jsonl"],
+            },
+            "boundary_notes": ["Synthetic market outputs are heuristic inference inputs derived from simulated discourse."],
+            "extracted_at": "2026-03-30T10:10:00",
+        },
+    )
+    _write_json(
+        run_dir / "agent_belief_book.json",
+        {
+            "artifact_type": "simulation_market_agent_belief_book",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "support_status": "ready",
+            "beliefs": [
+                {
+                    "forecast_id": forecast_id,
+                    "question_type": "binary",
+                    "agent_id": 1,
+                    "agent_name": "Analyst A",
+                    "judgment_type": "binary_probability",
+                    "probability": 0.74,
+                    "confidence": 0.62,
+                    "dominant_outcome": "yes",
+                    "outcome_distribution": {"yes": 0.74, "no": 0.26},
+                    "rationale_tags": ["briefing"],
+                    "reference": ref_a,
+                },
+                {
+                    "forecast_id": forecast_id,
+                    "question_type": "binary",
+                    "agent_id": 2,
+                    "agent_name": "Analyst B",
+                    "judgment_type": "binary_probability",
+                    "probability": 0.61,
+                    "confidence": 0.46,
+                    "dominant_outcome": "yes",
+                    "outcome_distribution": {"yes": 0.61, "no": 0.39},
+                    "rationale_tags": ["inflation"],
+                    "reference": ref_b,
+                },
+            ],
+            "extracted_at": "2026-03-30T10:10:00",
+        },
+    )
+    _write_json(
+        run_dir / "belief_update_trace.json",
+        {
+            "artifact_type": "simulation_market_belief_update_trace",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "support_status": "ready",
+            "updates": [
+                {
+                    "forecast_id": forecast_id,
+                    "question_type": "binary",
+                    "agent_id": 1,
+                    "agent_name": "Analyst A",
+                    "judgment_type": "binary_probability",
+                    "probability": 0.78,
+                    "confidence": 0.64,
+                    "dominant_outcome": "yes",
+                    "outcome_distribution": {"yes": 0.78, "no": 0.22},
+                    "rationale_tags": ["briefing"],
+                    "reference": ref_a,
+                    "previous_probability": None,
+                    "previous_outcome": None,
+                    "belief_changed": False,
+                },
+                {
+                    "forecast_id": forecast_id,
+                    "question_type": "binary",
+                    "agent_id": 1,
+                    "agent_name": "Analyst A",
+                    "judgment_type": "binary_probability",
+                    "probability": 0.74,
+                    "confidence": 0.62,
+                    "dominant_outcome": "yes",
+                    "outcome_distribution": {"yes": 0.74, "no": 0.26},
+                    "rationale_tags": ["briefing"],
+                    "reference": ref_a,
+                    "previous_probability": 0.78,
+                    "previous_outcome": "yes",
+                    "belief_changed": True,
+                },
+                {
+                    "forecast_id": forecast_id,
+                    "question_type": "binary",
+                    "agent_id": 2,
+                    "agent_name": "Analyst B",
+                    "judgment_type": "binary_probability",
+                    "probability": 0.61,
+                    "confidence": 0.46,
+                    "dominant_outcome": "yes",
+                    "outcome_distribution": {"yes": 0.61, "no": 0.39},
+                    "rationale_tags": ["inflation"],
+                    "reference": ref_b,
+                    "previous_probability": None,
+                    "previous_outcome": None,
+                    "belief_changed": False,
+                },
+            ],
+            "extracted_at": "2026-03-30T10:10:00",
+        },
+    )
+    _write_json(
+        run_dir / "disagreement_summary.json",
+        {
+            "artifact_type": "simulation_market_disagreement_summary",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "support_status": "ready",
+            "participant_count": 2,
+            "judgment_count": 3,
+            "disagreement_index": disagreement_index,
+            "consensus_probability": consensus_probability,
+            "consensus_outcome": "yes",
+            "distribution": {"yes": consensus_probability, "no": round(1 - consensus_probability, 6)},
+            "range_low": 0.61,
+            "range_high": 0.78,
+            "warnings": [],
+            "boundary_notes": ["Synthetic market outputs remain observational and non-calibrated."],
+        },
+    )
+    _write_json(
+        run_dir / "market_snapshot.json",
+        {
+            "artifact_type": "simulation_market_snapshot",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "extraction_status": "ready",
+            "support_status": "ready",
+            "participating_agent_count": 2,
+            "extracted_signal_count": 3,
+            "disagreement_index": disagreement_index,
+            "synthetic_consensus_probability": consensus_probability,
+            "dominant_outcome": "yes",
+            "categorical_distribution": {},
+            "missing_information_request_count": 1,
+            "boundary_notes": ["Synthetic market outputs remain observational and non-calibrated."],
+        },
+    )
+    _write_json(
+        run_dir / "argument_map.json",
+        {
+            "artifact_type": "simulation_market_argument_map",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "support_status": "ready",
+            "tags": [
+                {"tag": "briefing", "count": 2, "sample_excerpts": ["latest brief"]},
+                {"tag": "inflation", "count": 1, "sample_excerpts": ["hesitation"]},
+            ],
+            "extracted_at": "2026-03-30T10:10:00",
+        },
+    )
+    _write_json(
+        run_dir / "missing_information_signals.json",
+        {
+            "artifact_type": "simulation_market_missing_information_signals",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": "sim-001",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "forecast_id": forecast_id,
+            "question_type": "binary",
+            "support_status": "ready",
+            "signals": [
+                {
+                    "request": "Need labor update",
+                    "agent_id": 1,
+                    "agent_name": "Analyst A",
+                    "question_type": "binary",
+                    "reference": ref_a,
+                }
+            ],
+            "extracted_at": "2026-03-30T10:10:00",
+        },
+    )
 
 
 def _simulation_prediction_payload(forecast_id: str, *, observed_run_share: float):
@@ -944,6 +1255,50 @@ def test_hybrid_forecast_service_abstains_when_non_simulation_workers_disagree_t
         item["worker_kind"] == "simulation" and item["used_in_best_estimate"] is False
         for item in payload["worker_contribution_trace"]
     )
+
+
+def test_hybrid_forecast_service_registers_simulation_market_worker_and_downgrades_for_disagreement(
+    simulation_data_dir,
+):
+    from app.services.hybrid_forecast_service import HybridForecastService
+
+    forecast_id = "forecast-market-service"
+    _write_simulation_market_artifacts(
+        simulation_data_dir,
+        forecast_id=forecast_id,
+        consensus_probability=0.71,
+        disagreement_index=0.31,
+    )
+
+    service = HybridForecastService(simulation_data_dir=str(simulation_data_dir))
+    workspace_payload = _workspace_payload(
+        forecast_id,
+        title="Service market question",
+        question_text="Will the service path incorporate synthetic market signals?",
+        conflicting_bundle=False,
+    )
+    workspace_payload["simulation_scope"] = _simulation_market_scope_payload(forecast_id)
+    workspace = _workspace_from_payload(workspace_payload)
+
+    result = service.execute(
+        workspace,
+        requested_at="2026-03-30T12:00:00",
+        comparable_workspaces=[],
+    )
+
+    assert any(worker.kind == "simulation_market" for worker in result.registered_workers)
+    payload = result.forecast_answer.answer_payload
+    sim_market_trace = next(
+        item
+        for item in payload["worker_contribution_trace"]
+        if item["worker_kind"] == "simulation_market"
+    )
+
+    assert sim_market_trace["used_in_best_estimate"] is True
+    assert sim_market_trace["confidence_inputs"]["provenance_status"] == "ready"
+    assert sim_market_trace["effective_weight"] < 0.3
+    assert payload["simulation_market_context"]["included"] is True
+    assert payload["simulation_market_context"]["disagreement_index"] == 0.31
 
 
 def test_hybrid_forecast_service_registers_typed_default_worker_semantics():

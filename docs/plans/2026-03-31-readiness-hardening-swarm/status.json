@@ -1,0 +1,137 @@
+{
+  "plan_id": "2026-03-31-readiness-hardening-swarm",
+  "prompt_chain_step": 8,
+  "status": "ready_for_internal_research_use",
+  "updated_at": "2026-03-31T11:39:32-07:00",
+  "ready_for_next_prompt": false,
+  "active_swarm": {
+    "swarm_id": "swarm-20260331-hardening-001",
+    "topology": "hierarchical-mesh",
+    "strategy": "specialized",
+    "coordination_mode": "workspace-local-ruflo-state-mirror",
+    "ruflo_write_path_status": "blocked_on_/.claude-flow/tasks"
+  },
+  "deliverables": {
+    "master_status": "00-master-status.md",
+    "blocker_map": "01-blocker-map.md",
+    "task_graph": "02-hardening-task-graph.md",
+    "swarm_board": "03-swarm-board.json",
+    "readiness_audit": "04-readiness-audit.md",
+    "follow_up_prompts": "05-follow-up-prompts.md",
+    "final_status": "06-final-readiness-status.json"
+  },
+  "completed_outputs": [
+    "shared hardening handoff reread and checked against current code",
+    "stale unresolved follow-up prompt independently superseded by fresh rerun",
+    "targeted backend inference and report-context suites rerun green",
+    "targeted frontend runtime suites rerun green",
+    "full forecasting wrapper rerun green on authoritative execution",
+    "standalone smoke ladder rerun green",
+    "full live local operator ladder rerun green",
+    "fresh live artifacts inspected directly and confirmed linked forecast workspace, ready extraction, non-empty signals, non-null best estimate, and completed report context",
+    "final certification rerun marked the repo READY FOR INTERNAL RESEARCH USE",
+    "follow-up prompt file cleared because no residual blocker remains"
+  ],
+  "validation": [
+    {
+      "command": "python3 -m pytest backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_probabilistic_operator_flow.py backend/tests/integration/test_inference_ready_forecast_flow.py backend/tests/unit/test_forecast_resolution_manager.py backend/tests/unit/test_forecast_api.py -q",
+      "result": "passed",
+      "summary": "70 passed in 3.34s"
+    },
+    {
+      "command": "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+      "result": "passed",
+      "summary": "81 passed"
+    },
+    {
+      "command": "npm run verify:forecasting",
+      "result": "passed",
+      "summary": "broad repo verify green, backend 324 passed with 1 warning, targeted non-binary 102 passed, confidence verification green, active-only artifact conformance clean, embedded smoke 10 passed"
+    },
+    {
+      "command": "npm run verify:smoke",
+      "result": "passed",
+      "summary": "10 passed (41.9s)"
+    },
+    {
+      "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+      "result": "passed",
+      "summary": "2 passed (3.6m)"
+    }
+  ],
+  "acceptance_gates": [
+    {
+      "gate": 1,
+      "name": "forecast question and workspace",
+      "status": "passed"
+    },
+    {
+      "gate": 2,
+      "name": "simulation-backed scenario or market run",
+      "status": "passed"
+    },
+    {
+      "gate": 3,
+      "name": "structured simulation-market inference artifacts",
+      "status": "passed"
+    },
+    {
+      "gate": 4,
+      "name": "forecast engine derives final answer with contribution tracing",
+      "status": "passed"
+    },
+    {
+      "gate": 5,
+      "name": "signal provenance exists and invalid provenance is rejected or downgraded",
+      "status": "passed"
+    },
+    {
+      "gate": 6,
+      "name": "report/context surface presents forecast object and simulation evidence",
+      "status": "passed"
+    },
+    {
+      "gate": 7,
+      "name": "resolution and scoring primitives exist",
+      "status": "passed"
+    },
+    {
+      "gate": 8,
+      "name": "automated inference-ready tests pass",
+      "status": "passed"
+    },
+    {
+      "gate": 9,
+      "name": "live local end-to-end run succeeds when the environment permits",
+      "status": "passed"
+    }
+  ],
+  "open_blockers": [],
+  "remaining_work": [],
+  "failing_tests": [],
+  "follow_up_prompts_required": false,
+  "fresh_live_evidence": {
+    "simulation_id": "sim_e93d43d721f3",
+    "forecast_id": "live-forecast-sim_e93d43d721f3-mneyhg97",
+    "ensemble_id": "0012",
+    "run_id": "0001",
+    "report_id": "report_7ac19af659d8",
+    "report_scope_source": "fresh-live-run",
+    "extraction_status": "ready",
+    "forecast_workspace_linked": true,
+    "scope_linked_to_run": true,
+    "signal_counts": {
+      "agent_beliefs": 3,
+      "belief_updates": 6,
+      "missing_information_requests": 0
+    },
+    "best_estimate_present": true,
+    "report_context_ready": true
+  },
+  "final_readiness": {
+    "verdict": "READY FOR INTERNAL RESEARCH USE",
+    "ready_for_internal_research_use": true,
+    "remaining_blocker_count": 0,
+    "blocked_by_environment": false
+  }
+}

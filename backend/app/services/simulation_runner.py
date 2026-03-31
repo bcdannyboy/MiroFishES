@@ -29,6 +29,7 @@ from ..models.probabilistic import (
 from ..utils.logger import get_logger
 from .outcome_extractor import OutcomeExtractor
 from .phase_timing import PhaseTimingRecorder
+from .simulation_market_extractor import SimulationMarketExtractor
 from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
@@ -783,6 +784,54 @@ class SimulationRunner:
         return metrics_artifact
 
     @classmethod
+    def _persist_run_simulation_market_artifacts(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+        config_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist one run-scoped simulation-market artifact bundle."""
+        if not ensemble_id or not run_id:
+            return None
+
+        context = cls._resolve_run_context(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+            config_path=config_path,
+        )
+        extractor = SimulationMarketExtractor(simulation_data_dir=cls.RUN_STATE_DIR)
+        try:
+            artifact_bundle = extractor.persist_run_market_artifacts(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
+                config_path=context["config_path"],
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to persist simulation-market artifacts for %s: %s",
+                context["run_key"],
+                e,
+            )
+            return None
+
+        for artifact_name, artifact_filename in extractor.ARTIFACT_FILENAMES.items():
+            cls._update_run_manifest_artifact_path(
+                simulation_id,
+                artifact_name,
+                artifact_filename,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
+            )
+        return artifact_bundle
+
+    @classmethod
     def persist_run_metrics(
         cls,
         simulation_id: str,
@@ -800,6 +849,24 @@ class SimulationRunner:
             run_dir=run_dir,
             config_path=config_path,
             run_status=run_status,
+        )
+
+    @classmethod
+    def persist_run_market_artifacts(
+        cls,
+        simulation_id: str,
+        ensemble_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        run_dir: Optional[str] = None,
+        config_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Public helper for targeted simulation-market extraction and test coverage."""
+        return cls._persist_run_simulation_market_artifacts(
+            simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=run_dir,
+            config_path=config_path,
         )
 
     @classmethod
@@ -1320,6 +1387,12 @@ class SimulationRunner:
                     run_dir=sim_dir,
                     run_status=state.runner_status.value,
                 )
+                cls._persist_run_simulation_market_artifacts(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
+                )
             cls._save_run_state(state)
             
         except Exception as e:
@@ -1340,6 +1413,12 @@ class SimulationRunner:
                     run_id=run_id,
                     run_dir=sim_dir,
                     run_status=state.runner_status.value,
+                )
+                cls._persist_run_simulation_market_artifacts(
+                    simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_dir=sim_dir,
                 )
             cls._save_run_state(state)
         
@@ -1677,6 +1756,12 @@ class SimulationRunner:
                 run_id=run_id,
                 run_dir=context["run_dir"],
                 run_status=state.runner_status.value,
+            )
+            cls._persist_run_simulation_market_artifacts(
+                simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=context["run_dir"],
             )
         
         # Stop the graph-memory updater.
@@ -2044,6 +2129,13 @@ class SimulationRunner:
         files_to_delete = [
             "run_state.json",
             "metrics.json",
+            "simulation_market_manifest.json",
+            "agent_belief_book.json",
+            "belief_update_trace.json",
+            "disagreement_summary.json",
+            "market_snapshot.json",
+            "argument_map.json",
+            "missing_information_signals.json",
             "run_phase_timings.json",
             "simulation.log",
             "stdout.log",
@@ -2119,6 +2211,15 @@ class SimulationRunner:
             run_id=run_id,
             run_dir=sim_dir,
         )
+        for artifact_name in SimulationMarketExtractor.ARTIFACT_FILENAMES.keys():
+            cls._update_run_manifest_artifact_path(
+                simulation_id,
+                artifact_name,
+                None,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                run_dir=sim_dir,
+            )
         
         logger.info(f"Finished cleaning simulation logs: {run_key}, deleted files: {cleaned_files}")
         

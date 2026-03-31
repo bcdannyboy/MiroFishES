@@ -87,13 +87,13 @@
 
         <ProbabilisticReportContext
           :simulationId="simulationId"
-          :runtimeMode="runtimeMode"
+          :runtimeMode="effectiveRuntimeMode"
           :ensembleId="ensembleId"
           :clusterId="clusterId"
           :runId="runId"
           :compareId="selectedCompareId"
-          :reportContext="probabilisticContext"
-          @update:compareId="handleCompareSelection"
+          :reportContext="effectiveProbabilisticContext"
+          @update:compare-id="handleCompareSelection"
           @handoff-compare="handoffCompareToInteraction"
         />
 
@@ -400,7 +400,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, getReport } from '../api/report'
 import ProbabilisticReportContext from './ProbabilisticReportContext.vue'
 import {
   renderSafeInlineMarkdown,
@@ -408,6 +408,7 @@ import {
 } from '../utils/safeMarkdown'
 import {
   buildSimulationRunRouteQuery,
+  deriveProbabilisticEvidenceSummary,
   getStep5InteractionState
 } from '../utils/probabilisticRuntime'
 
@@ -444,31 +445,57 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const resolvedProbabilisticContext = ref(null)
+const effectiveProbabilisticContext = computed(() => (
+  props.probabilisticContext
+  && typeof props.probabilisticContext === 'object'
+  && Object.keys(props.probabilisticContext).length > 0
+    ? props.probabilisticContext
+    : resolvedProbabilisticContext.value
+))
+const effectiveRuntimeMode = computed(() => (
+  props.runtimeMode === 'probabilistic'
+    || Boolean(effectiveProbabilisticContext.value)
+    || Boolean(props.ensembleId || props.clusterId || props.runId)
+    ? 'probabilistic'
+    : 'legacy'
+))
 const reportTagLabel = computed(() => (
-  props.probabilisticContext && typeof props.probabilisticContext === 'object'
+  effectiveProbabilisticContext.value
   && (
-    props.probabilisticContext.forecast_workspace
-    || props.probabilisticContext.forecast_question
-    || props.probabilisticContext.prediction_ledger
-    || props.probabilisticContext.forecast_answers
+    effectiveProbabilisticContext.value.forecast_workspace
+    || effectiveProbabilisticContext.value.forecast_question
+    || effectiveProbabilisticContext.value.prediction_ledger
+    || effectiveProbabilisticContext.value.forecast_answers
   )
     ? 'Hybrid Forecast Report'
     : 'Simulation Report'
 ))
 const step5InteractionState = computed(() => getStep5InteractionState(
-  props.runtimeMode,
+  effectiveRuntimeMode.value,
   {
     ensembleId: props.ensembleId,
     clusterId: props.clusterId,
     runId: props.runId,
-    reportContext: props.probabilisticContext,
-    hasSavedProbabilisticContext: (
-      props.probabilisticContext
-      && typeof props.probabilisticContext === 'object'
-    )
+    reportContext: effectiveProbabilisticContext.value,
+    hasSavedProbabilisticContext: Boolean(effectiveProbabilisticContext.value)
   }
 ))
 const selectedCompareId = ref(props.compareId || null)
+
+const reconcileCompareSelection = (requestedCompareId = null) => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: effectiveRuntimeMode.value,
+    ensembleId: props.ensembleId,
+    clusterId: props.clusterId,
+    runId: props.runId,
+    compareId: requestedCompareId || selectedCompareId.value || props.compareId || null,
+    reportContext: effectiveProbabilisticContext.value
+  })
+
+  selectedCompareId.value = summary.selectedCompare?.compareId || null
+  return selectedCompareId.value
+}
 
 // Navigation
 const goToInteraction = (compareIdOverride = selectedCompareId.value) => {
@@ -478,7 +505,7 @@ const goToInteraction = (compareIdOverride = selectedCompareId.value) => {
       params: { reportId: props.reportId }
     }
     const probabilisticQuery = buildSimulationRunRouteQuery({
-      runtimeMode: props.runtimeMode,
+      runtimeMode: effectiveRuntimeMode.value,
       ensembleId: props.ensembleId,
       clusterId: props.clusterId,
       runId: props.runId,
@@ -492,12 +519,11 @@ const goToInteraction = (compareIdOverride = selectedCompareId.value) => {
 }
 
 const handleCompareSelection = (compareId) => {
-  selectedCompareId.value = compareId || null
+  reconcileCompareSelection(compareId)
 }
 
 const handoffCompareToInteraction = (compareId) => {
-  selectedCompareId.value = compareId || null
-  goToInteraction(compareId || null)
+  goToInteraction(reconcileCompareSelection(compareId))
 }
 
 // State
@@ -519,9 +545,9 @@ const logContent = ref(null)
 const showRawResult = reactive({})
 
 watch(
-  () => props.compareId,
-  (nextCompareId) => {
-    selectedCompareId.value = nextCompareId || null
+  () => [props.compareId, props.ensembleId, props.clusterId, props.runId, effectiveRuntimeMode.value, effectiveProbabilisticContext.value],
+  ([nextCompareId]) => {
+    reconcileCompareSelection(nextCompareId)
   },
   { immediate: true }
 )
@@ -1928,6 +1954,22 @@ const getLogLevelClass = (log) => {
 let agentLogTimer = null
 let consoleLogTimer = null
 
+const hydrateReportContext = async () => {
+  if (!props.reportId) {
+    resolvedProbabilisticContext.value = null
+    return
+  }
+
+  try {
+    const res = await getReport(props.reportId)
+    if (res.success && res.data?.probabilistic_context && typeof res.data.probabilistic_context === 'object') {
+      resolvedProbabilisticContext.value = res.data.probabilistic_context
+    }
+  } catch (err) {
+    console.warn('Failed to hydrate report context:', err)
+  }
+}
+
 const fetchAgentLog = async () => {
   if (!props.reportId) return
 
@@ -2073,6 +2115,7 @@ const stopPolling = () => {
 onMounted(() => {
   if (props.reportId) {
     addLog(`Report Agent initialized: ${props.reportId}`)
+    hydrateReportContext()
     startPolling()
   }
 })
@@ -2083,6 +2126,7 @@ onUnmounted(() => {
 
 watch(() => props.reportId, (newId) => {
   if (newId) {
+    resolvedProbabilisticContext.value = null
     agentLogs.value = []
     consoleLogs.value = []
     agentLogLine.value = 0
@@ -2096,6 +2140,7 @@ watch(() => props.reportId, (newId) => {
     isComplete.value = false
     startTime.value = null
 
+    hydrateReportContext()
     startPolling()
   }
 }, { immediate: true })

@@ -16,6 +16,18 @@ from typing import Any, Dict, List, Optional
 FORECAST_SCHEMA_VERSION = "forecast.foundation.v1"
 FORECAST_GENERATOR_VERSION = "forecast.foundation.generator.v1"
 SIMULATION_WORKER_CONTRACT_VERSION = "forecast.simulation_worker_contract.v1"
+FORECAST_LIFECYCLE_METADATA_VERSION = "forecast.lifecycle_metadata.v1"
+FORECAST_SIMULATION_SCOPE_VERSION = "forecast.simulation_scope.v1"
+FORECAST_RESOLUTION_RECORD_VERSION = "forecast.resolution_record.v1"
+FORECAST_SCORING_EVENT_VERSION = "forecast.scoring_event.v1"
+
+CANONICAL_FORECAST_STAGE_SEQUENCE = (
+    "forecast_question",
+    "forecast_workspace",
+    "forecast_answer",
+    "resolution_record",
+    "scoring_event",
+)
 
 REQUIRED_FORECAST_PRIMITIVES = (
     "forecast_question",
@@ -204,6 +216,7 @@ SUPPORTED_EVIDENCE_UNCERTAINTY_CODES = {
 }
 SUPPORTED_FORECAST_WORKER_KINDS = {
     "simulation",
+    "simulation_market",
     "base_rate",
     "reference_class",
     "retrieval_synthesis",
@@ -293,6 +306,21 @@ SUPPORTED_FORECAST_CALIBRATION_KINDS = {
 SUPPORTED_SIMULATION_PROBABILITY_INTERPRETATIONS = {
     "do_not_treat_as_real_world_probability",
     "evaluation_required_for_probability_claims",
+}
+SUPPORTED_WORKSPACE_LIFECYCLE_STAGES = set(CANONICAL_FORECAST_STAGE_SEQUENCE)
+SUPPORTED_SIMULATION_SCOPE_PREPARE_STATUSES = {
+    "unprepared",
+    "requested",
+    "ready",
+}
+SUPPORTED_SIMULATION_SCOPE_STATUSES = {
+    "linked",
+    "unlinked",
+}
+SUPPORTED_SCORING_EVENT_STATUSES = {
+    "pending",
+    "scored",
+    "not_applicable",
 }
 SUPPORTED_EVIDENCE_PROVIDER_KINDS = {
     "uploaded_local_artifact",
@@ -1152,7 +1180,7 @@ class ForecastQuestion:
                 "horizon.close_at",
                 self.horizon["close_at"],
             )
-            if datetime.fromisoformat(self.horizon["close_at"]) < datetime.fromisoformat(
+            if _parse_iso_temporal(self.horizon["close_at"]) < _parse_iso_temporal(
                 self.issue_timestamp
             ):
                 raise ValueError("horizon.close_at must be on or after issue_timestamp")
@@ -1176,9 +1204,9 @@ class ForecastQuestion:
         )
         self.primary_simulation_id = _normalize_optional_string(self.primary_simulation_id)
         self.tags = _normalize_string_list("tags", self.tags)
-        if datetime.fromisoformat(self.issue_timestamp) > datetime.fromisoformat(self.updated_at):
+        if _parse_iso_temporal(self.issue_timestamp) > _parse_iso_temporal(self.updated_at):
             raise ValueError("issue_timestamp cannot be after updated_at")
-        if datetime.fromisoformat(self.created_at) > datetime.fromisoformat(self.updated_at):
+        if _parse_iso_temporal(self.created_at) > _parse_iso_temporal(self.updated_at):
             raise ValueError("created_at cannot be after updated_at")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -2217,6 +2245,309 @@ class SimulationWorkerContract:
 
 
 @dataclass
+class ForecastSimulationScope:
+    forecast_id: str
+    simulation_id: Optional[str] = None
+    prepare_artifact_paths: List[str] = field(default_factory=list)
+    ensemble_ids: List[str] = field(default_factory=list)
+    run_ids: List[str] = field(default_factory=list)
+    latest_ensemble_id: Optional[str] = None
+    latest_run_id: Optional[str] = None
+    prepare_status: str = "unprepared"
+    prepare_task_id: Optional[str] = None
+    last_attached_stage: Optional[str] = None
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    schema_version: str = FORECAST_SIMULATION_SCOPE_VERSION
+
+    def __post_init__(self) -> None:
+        self.forecast_id = _require_non_empty_string("forecast_id", self.forecast_id)
+        self.simulation_id = _normalize_optional_string(self.simulation_id)
+        self.prepare_artifact_paths = _normalize_string_list(
+            "prepare_artifact_paths", self.prepare_artifact_paths
+        )
+        self.ensemble_ids = _normalize_string_list("ensemble_ids", self.ensemble_ids)
+        self.run_ids = _normalize_string_list("run_ids", self.run_ids)
+        self.latest_ensemble_id = _normalize_optional_string(self.latest_ensemble_id)
+        self.latest_run_id = _normalize_optional_string(self.latest_run_id)
+        self.prepare_status = _validate_supported_value(
+            "prepare_status",
+            _require_non_empty_string("prepare_status", self.prepare_status),
+            SUPPORTED_SIMULATION_SCOPE_PREPARE_STATUSES,
+        )
+        self.prepare_task_id = _normalize_optional_string(self.prepare_task_id)
+        self.last_attached_stage = _normalize_optional_string(self.last_attached_stage)
+        self.updated_at = _require_iso_datetime("updated_at", self.updated_at)
+        self.schema_version = _require_non_empty_string("schema_version", self.schema_version)
+        if self.latest_ensemble_id and self.latest_ensemble_id not in self.ensemble_ids:
+            self.ensemble_ids.append(self.latest_ensemble_id)
+        if self.latest_run_id and self.latest_run_id not in self.run_ids:
+            self.run_ids.append(self.latest_run_id)
+        if self.prepare_artifact_paths and self.prepare_status == "unprepared":
+            self.prepare_status = "ready"
+
+    @property
+    def status(self) -> str:
+        return "linked" if self.simulation_id else "unlinked"
+
+    @property
+    def scope_level(self) -> str:
+        if self.latest_run_id or self.run_ids:
+            return "run"
+        if self.latest_ensemble_id or self.ensemble_ids:
+            return "ensemble"
+        if self.simulation_id:
+            return "simulation"
+        return "unlinked"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "forecast_id": self.forecast_id,
+            "simulation_id": self.simulation_id,
+            "prepare_artifact_paths": list(self.prepare_artifact_paths),
+            "ensemble_ids": list(self.ensemble_ids),
+            "run_ids": list(self.run_ids),
+            "latest_ensemble_id": self.latest_ensemble_id,
+            "latest_run_id": self.latest_run_id,
+            "prepare_status": self.prepare_status,
+            "prepare_task_id": self.prepare_task_id,
+            "last_attached_stage": self.last_attached_stage,
+            "updated_at": self.updated_at,
+            "status": self.status,
+            "scope_level": self.scope_level,
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ForecastSimulationScope":
+        return cls(
+            forecast_id=data["forecast_id"],
+            simulation_id=data.get("simulation_id"),
+            prepare_artifact_paths=data.get("prepare_artifact_paths", []),
+            ensemble_ids=data.get("ensemble_ids", []),
+            run_ids=data.get("run_ids", []),
+            latest_ensemble_id=data.get("latest_ensemble_id"),
+            latest_run_id=data.get("latest_run_id"),
+            prepare_status=data.get("prepare_status", "unprepared"),
+            prepare_task_id=data.get("prepare_task_id"),
+            last_attached_stage=data.get("last_attached_stage"),
+            updated_at=data.get("updated_at", datetime.now().isoformat()),
+            schema_version=data.get(
+                "schema_version", FORECAST_SIMULATION_SCOPE_VERSION
+            ),
+        )
+
+
+@dataclass
+class ForecastResolutionRecord:
+    forecast_id: str
+    status: str = "pending"
+    resolved_at: Optional[str] = None
+    resolution_note: str = ""
+    evidence_bundle_ids: List[str] = field(default_factory=list)
+    prediction_entry_ids: List[str] = field(default_factory=list)
+    revision_entry_ids: List[str] = field(default_factory=list)
+    worker_output_ids: List[str] = field(default_factory=list)
+    schema_version: str = FORECAST_RESOLUTION_RECORD_VERSION
+
+    def __post_init__(self) -> None:
+        self.forecast_id = _require_non_empty_string("forecast_id", self.forecast_id)
+        self.status = _validate_supported_value(
+            "resolution status",
+            _require_non_empty_string("status", self.status),
+            SUPPORTED_PREDICTION_RESOLUTION_STATES,
+        )
+        self.resolved_at = (
+            _require_iso_datetime("resolved_at", self.resolved_at)
+            if self.resolved_at is not None
+            else None
+        )
+        self.resolution_note = str(self.resolution_note or "").strip()
+        self.evidence_bundle_ids = _normalize_string_list(
+            "evidence_bundle_ids", self.evidence_bundle_ids
+        )
+        self.prediction_entry_ids = _normalize_string_list(
+            "prediction_entry_ids", self.prediction_entry_ids
+        )
+        self.revision_entry_ids = _normalize_string_list(
+            "revision_entry_ids", self.revision_entry_ids
+        )
+        self.worker_output_ids = _normalize_string_list(
+            "worker_output_ids", self.worker_output_ids
+        )
+        self.schema_version = _require_non_empty_string("schema_version", self.schema_version)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "forecast_id": self.forecast_id,
+            "status": self.status,
+            "resolved_at": self.resolved_at,
+            "resolution_note": self.resolution_note,
+            "evidence_bundle_ids": list(self.evidence_bundle_ids),
+            "prediction_entry_ids": list(self.prediction_entry_ids),
+            "revision_entry_ids": list(self.revision_entry_ids),
+            "worker_output_ids": list(self.worker_output_ids),
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ForecastResolutionRecord":
+        return cls(
+            forecast_id=data["forecast_id"],
+            status=data.get("status", "pending"),
+            resolved_at=data.get("resolved_at"),
+            resolution_note=data.get("resolution_note", ""),
+            evidence_bundle_ids=data.get("evidence_bundle_ids", []),
+            prediction_entry_ids=data.get("prediction_entry_ids", []),
+            revision_entry_ids=data.get("revision_entry_ids", []),
+            worker_output_ids=data.get("worker_output_ids", []),
+            schema_version=data.get(
+                "schema_version", FORECAST_RESOLUTION_RECORD_VERSION
+            ),
+        )
+
+
+@dataclass
+class ForecastScoringEvent:
+    scoring_event_id: str
+    forecast_id: str
+    status: str = "pending"
+    scoring_method: Optional[str] = None
+    score_value: Optional[float] = None
+    recorded_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    notes: List[str] = field(default_factory=list)
+    schema_version: str = FORECAST_SCORING_EVENT_VERSION
+
+    def __post_init__(self) -> None:
+        self.scoring_event_id = _require_non_empty_string(
+            "scoring_event_id", self.scoring_event_id
+        )
+        self.forecast_id = _require_non_empty_string("forecast_id", self.forecast_id)
+        self.status = _validate_supported_value(
+            "scoring status",
+            _require_non_empty_string("status", self.status),
+            SUPPORTED_SCORING_EVENT_STATUSES,
+        )
+        self.scoring_method = _normalize_optional_string(self.scoring_method)
+        if self.score_value is not None:
+            self.score_value = float(self.score_value)
+        self.recorded_at = _require_iso_datetime("recorded_at", self.recorded_at)
+        self.notes = _normalize_string_list("notes", self.notes)
+        self.schema_version = _require_non_empty_string("schema_version", self.schema_version)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scoring_event_id": self.scoring_event_id,
+            "forecast_id": self.forecast_id,
+            "status": self.status,
+            "scoring_method": self.scoring_method,
+            "score_value": self.score_value,
+            "recorded_at": self.recorded_at,
+            "notes": list(self.notes),
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ForecastScoringEvent":
+        return cls(
+            scoring_event_id=data["scoring_event_id"],
+            forecast_id=data["forecast_id"],
+            status=data.get("status", "pending"),
+            scoring_method=data.get("scoring_method"),
+            score_value=data.get("score_value"),
+            recorded_at=data.get("recorded_at", datetime.now().isoformat()),
+            notes=data.get("notes", []),
+            schema_version=data.get(
+                "schema_version", FORECAST_SCORING_EVENT_VERSION
+            ),
+        )
+
+
+@dataclass
+class ForecastLifecycleMetadata:
+    forecast_id: str
+    current_stage: str = "forecast_workspace"
+    stage_sequence: List[str] = field(
+        default_factory=lambda: list(CANONICAL_FORECAST_STAGE_SEQUENCE)
+    )
+    latest_answer_id: Optional[str] = None
+    resolution_record_status: str = "pending"
+    scoring_event_count: int = 0
+    simulation_scope_status: str = "unlinked"
+    last_simulation_id: Optional[str] = None
+    last_ensemble_id: Optional[str] = None
+    last_run_id: Optional[str] = None
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    schema_version: str = FORECAST_LIFECYCLE_METADATA_VERSION
+
+    def __post_init__(self) -> None:
+        self.forecast_id = _require_non_empty_string("forecast_id", self.forecast_id)
+        self.current_stage = _validate_supported_value(
+            "current_stage",
+            _require_non_empty_string("current_stage", self.current_stage),
+            SUPPORTED_WORKSPACE_LIFECYCLE_STAGES,
+        )
+        self.stage_sequence = _normalize_string_list(
+            "stage_sequence", self.stage_sequence
+        ) or list(CANONICAL_FORECAST_STAGE_SEQUENCE)
+        self.latest_answer_id = _normalize_optional_string(self.latest_answer_id)
+        self.resolution_record_status = _validate_supported_value(
+            "resolution_record_status",
+            _require_non_empty_string(
+                "resolution_record_status", self.resolution_record_status
+            ),
+            SUPPORTED_PREDICTION_RESOLUTION_STATES,
+        )
+        self.scoring_event_count = max(int(self.scoring_event_count or 0), 0)
+        self.simulation_scope_status = _validate_supported_value(
+            "simulation_scope_status",
+            _require_non_empty_string(
+                "simulation_scope_status", self.simulation_scope_status
+            ),
+            SUPPORTED_SIMULATION_SCOPE_STATUSES,
+        )
+        self.last_simulation_id = _normalize_optional_string(self.last_simulation_id)
+        self.last_ensemble_id = _normalize_optional_string(self.last_ensemble_id)
+        self.last_run_id = _normalize_optional_string(self.last_run_id)
+        self.updated_at = _require_iso_datetime("updated_at", self.updated_at)
+        self.schema_version = _require_non_empty_string("schema_version", self.schema_version)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "forecast_id": self.forecast_id,
+            "current_stage": self.current_stage,
+            "stage_sequence": list(self.stage_sequence),
+            "latest_answer_id": self.latest_answer_id,
+            "resolution_record_status": self.resolution_record_status,
+            "scoring_event_count": self.scoring_event_count,
+            "simulation_scope_status": self.simulation_scope_status,
+            "last_simulation_id": self.last_simulation_id,
+            "last_ensemble_id": self.last_ensemble_id,
+            "last_run_id": self.last_run_id,
+            "updated_at": self.updated_at,
+            "schema_version": self.schema_version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ForecastLifecycleMetadata":
+        return cls(
+            forecast_id=data["forecast_id"],
+            current_stage=data.get("current_stage", "forecast_workspace"),
+            stage_sequence=data.get("stage_sequence", list(CANONICAL_FORECAST_STAGE_SEQUENCE)),
+            latest_answer_id=data.get("latest_answer_id"),
+            resolution_record_status=data.get("resolution_record_status", "pending"),
+            scoring_event_count=data.get("scoring_event_count", 0),
+            simulation_scope_status=data.get("simulation_scope_status", "unlinked"),
+            last_simulation_id=data.get("last_simulation_id"),
+            last_ensemble_id=data.get("last_ensemble_id"),
+            last_run_id=data.get("last_run_id"),
+            updated_at=data.get("updated_at", datetime.now().isoformat()),
+            schema_version=data.get(
+                "schema_version", FORECAST_LIFECYCLE_METADATA_VERSION
+            ),
+        )
+
+
+@dataclass
 class PredictionLedgerEntry:
     entry_id: str
     forecast_id: str
@@ -2526,7 +2857,7 @@ class PredictionLedger:
             raise ValueError(
                 f"revision entry references unknown entry_id: {entry.revises_entry_id or entry.revises_prediction_id}"
             )
-        if datetime.fromisoformat(entry.recorded_at) < datetime.fromisoformat(base_entry.recorded_at):
+        if _parse_iso_temporal(entry.recorded_at) < _parse_iso_temporal(base_entry.recorded_at):
             raise ValueError("prediction revision timestamp cannot precede the prediction it revises")
         if entry.revision_number <= base_entry.revision_number:
             raise ValueError("prediction revision_number must increase monotonically")
@@ -2809,6 +3140,10 @@ class ForecastWorkspaceRecord:
     evaluation_cases: List[EvaluationCase] = field(default_factory=list)
     forecast_answers: List[ForecastAnswer] = field(default_factory=list)
     simulation_worker_contract: Optional[SimulationWorkerContract] = None
+    simulation_scope: Optional[ForecastSimulationScope] = None
+    lifecycle_metadata: Optional[ForecastLifecycleMetadata] = None
+    resolution_record: Optional[ForecastResolutionRecord] = None
+    scoring_events: List[ForecastScoringEvent] = field(default_factory=list)
     schema_version: str = FORECAST_SCHEMA_VERSION
     generator_version: str = FORECAST_GENERATOR_VERSION
 
@@ -2824,6 +3159,24 @@ class ForecastWorkspaceRecord:
         ):
             self.simulation_worker_contract = SimulationWorkerContract.from_dict(
                 self.simulation_worker_contract
+            )
+        if self.simulation_scope is not None and not isinstance(
+            self.simulation_scope, ForecastSimulationScope
+        ):
+            self.simulation_scope = ForecastSimulationScope.from_dict(
+                self.simulation_scope
+            )
+        if self.lifecycle_metadata is not None and not isinstance(
+            self.lifecycle_metadata, ForecastLifecycleMetadata
+        ):
+            self.lifecycle_metadata = ForecastLifecycleMetadata.from_dict(
+                self.lifecycle_metadata
+            )
+        if self.resolution_record is not None and not isinstance(
+            self.resolution_record, ForecastResolutionRecord
+        ):
+            self.resolution_record = ForecastResolutionRecord.from_dict(
+                self.resolution_record
             )
 
         forecast_id = self.forecast_question.forecast_id
@@ -2842,6 +3195,10 @@ class ForecastWorkspaceRecord:
         self.forecast_answers = [
             item if isinstance(item, ForecastAnswer) else ForecastAnswer.from_dict(item)
             for item in self.forecast_answers
+        ]
+        self.scoring_events = [
+            item if isinstance(item, ForecastScoringEvent) else ForecastScoringEvent.from_dict(item)
+            for item in self.scoring_events
         ]
 
         if self.evidence_bundle.forecast_id != forecast_id:
@@ -2886,9 +3243,182 @@ class ForecastWorkspaceRecord:
                 raise ValueError(
                     "simulation_worker_contract worker_id must reference a simulation worker"
                 )
+        if self.simulation_scope is not None and self.simulation_scope.forecast_id != forecast_id:
+            raise ValueError(
+                "simulation_scope forecast_id must match forecast_question.forecast_id"
+            )
+        if self.resolution_record is not None and self.resolution_record.forecast_id != forecast_id:
+            raise ValueError(
+                "resolution_record forecast_id must match forecast_question.forecast_id"
+            )
+        for scoring_event in self.scoring_events:
+            if scoring_event.forecast_id != forecast_id:
+                raise ValueError(
+                    "scoring_events forecast_id must match forecast_question.forecast_id"
+                )
+
+        self.simulation_scope = self._derive_simulation_scope()
+        self._synchronize_simulation_contract()
+        self.resolution_record = self._derive_resolution_record()
+        self.lifecycle_metadata = self._derive_lifecycle_metadata()
         self.schema_version = _require_non_empty_string("schema_version", self.schema_version)
         self.generator_version = _require_non_empty_string(
             "generator_version", self.generator_version
+        )
+
+    def _derive_simulation_scope(self) -> ForecastSimulationScope:
+        forecast_id = self.forecast_question.forecast_id
+        contract = self.simulation_worker_contract
+        if self.simulation_scope is not None:
+            scope = self.simulation_scope
+        else:
+            scope = ForecastSimulationScope(
+                forecast_id=forecast_id,
+                simulation_id=(
+                    self.forecast_question.primary_simulation_id
+                    or (contract.simulation_id if contract is not None else None)
+                ),
+                prepare_artifact_paths=(
+                    list(contract.prepare_artifact_paths) if contract is not None else []
+                ),
+                ensemble_ids=(
+                    list(contract.ensemble_ids) if contract is not None else []
+                ),
+                latest_ensemble_id=(
+                    contract.ensemble_ids[-1]
+                    if contract is not None and contract.ensemble_ids
+                    else None
+                ),
+                prepare_status=(
+                    "ready"
+                    if contract is not None and contract.prepare_artifact_paths
+                    else "unprepared"
+                ),
+                updated_at=self.forecast_question.updated_at,
+            )
+
+        if (
+            scope.simulation_id is None
+            and self.forecast_question.primary_simulation_id is not None
+        ):
+            scope.simulation_id = self.forecast_question.primary_simulation_id
+        if (
+            scope.simulation_id is not None
+            and not self.forecast_question.primary_simulation_id
+        ):
+            self.forecast_question.primary_simulation_id = scope.simulation_id
+        if contract is not None and contract.ensemble_ids and not scope.ensemble_ids:
+            scope.ensemble_ids = list(contract.ensemble_ids)
+        if scope.latest_ensemble_id is None and scope.ensemble_ids:
+            scope.latest_ensemble_id = scope.ensemble_ids[-1]
+        if scope.latest_run_id is None and scope.run_ids:
+            scope.latest_run_id = scope.run_ids[-1]
+        if scope.updated_at != self.forecast_question.updated_at:
+            scope.updated_at = self.forecast_question.updated_at
+        return scope
+
+    def _synchronize_simulation_contract(self) -> None:
+        if self.simulation_scope is None:
+            return
+        if self.simulation_worker_contract is None:
+            return
+        if (
+            self.simulation_scope.simulation_id
+            and not self.simulation_worker_contract.simulation_id
+        ):
+            self.simulation_worker_contract.simulation_id = self.simulation_scope.simulation_id
+        if self.simulation_scope.prepare_artifact_paths:
+            self.simulation_worker_contract.prepare_artifact_paths = list(
+                self.simulation_scope.prepare_artifact_paths
+            )
+        if self.simulation_scope.ensemble_ids:
+            self.simulation_worker_contract.ensemble_ids = list(
+                self.simulation_scope.ensemble_ids
+            )
+
+    def _derive_resolution_record(self) -> ForecastResolutionRecord:
+        forecast_id = self.forecast_question.forecast_id
+        issue_ids = [
+            entry.prediction_id or entry.entry_id
+            for entry in self.prediction_ledger.issued_predictions
+        ]
+        revision_ids = [
+            entry.entry_id for entry in self.prediction_ledger.prediction_revisions
+        ]
+        worker_output_ids = [
+            str(item.get("output_id"))
+            for item in self.prediction_ledger.worker_outputs
+            if item.get("output_id")
+        ]
+        evidence_bundle_ids = [self.evidence_bundle.bundle_id]
+        if self.resolution_record is not None:
+            record = self.resolution_record
+            record.status = self.prediction_ledger.resolution_status
+            record.resolved_at = self.prediction_ledger.resolved_at
+            record.resolution_note = self.prediction_ledger.resolution_note
+            record.evidence_bundle_ids = list(evidence_bundle_ids)
+            record.prediction_entry_ids = list(issue_ids)
+            record.revision_entry_ids = list(revision_ids)
+            record.worker_output_ids = list(worker_output_ids)
+        else:
+            record = ForecastResolutionRecord(
+                forecast_id=forecast_id,
+                status=self.prediction_ledger.resolution_status,
+                resolved_at=self.prediction_ledger.resolved_at,
+                resolution_note=self.prediction_ledger.resolution_note,
+                evidence_bundle_ids=evidence_bundle_ids,
+                prediction_entry_ids=issue_ids,
+                revision_entry_ids=revision_ids,
+                worker_output_ids=worker_output_ids,
+            )
+
+        if not record.evidence_bundle_ids:
+            record.evidence_bundle_ids = [self.evidence_bundle.bundle_id]
+        return record
+
+    def _derive_lifecycle_metadata(self) -> ForecastLifecycleMetadata:
+        forecast_id = self.forecast_question.forecast_id
+        latest_answer_id = (
+            self.forecast_answers[-1].answer_id if self.forecast_answers else None
+        )
+        resolution_status = self.resolution_record.status
+        scoring_event_count = len(self.scoring_events)
+
+        if scoring_event_count > 0:
+            current_stage = "scoring_event"
+        elif resolution_status not in {"pending", "open"}:
+            current_stage = "resolution_record"
+        elif latest_answer_id is not None:
+            current_stage = "forecast_answer"
+        else:
+            current_stage = "forecast_workspace"
+
+        if self.lifecycle_metadata is not None:
+            metadata = self.lifecycle_metadata
+            metadata.current_stage = current_stage
+            metadata.stage_sequence = list(CANONICAL_FORECAST_STAGE_SEQUENCE)
+            metadata.latest_answer_id = latest_answer_id
+            metadata.resolution_record_status = resolution_status
+            metadata.scoring_event_count = scoring_event_count
+            metadata.simulation_scope_status = self.simulation_scope.status
+            metadata.last_simulation_id = self.simulation_scope.simulation_id
+            metadata.last_ensemble_id = self.simulation_scope.latest_ensemble_id
+            metadata.last_run_id = self.simulation_scope.latest_run_id
+            metadata.updated_at = self.forecast_question.updated_at
+            return metadata
+
+        return ForecastLifecycleMetadata(
+            forecast_id=forecast_id,
+            current_stage=current_stage,
+            stage_sequence=list(CANONICAL_FORECAST_STAGE_SEQUENCE),
+            latest_answer_id=latest_answer_id,
+            resolution_record_status=resolution_status,
+            scoring_event_count=scoring_event_count,
+            simulation_scope_status=self.simulation_scope.status,
+            last_simulation_id=self.simulation_scope.simulation_id,
+            last_ensemble_id=self.simulation_scope.latest_ensemble_id,
+            last_run_id=self.simulation_scope.latest_run_id,
+            updated_at=self.forecast_question.updated_at,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -2907,6 +3437,10 @@ class ForecastWorkspaceRecord:
                 if self.simulation_worker_contract is not None
                 else None
             ),
+            "simulation_scope": self.simulation_scope.to_dict(),
+            "lifecycle_metadata": self.lifecycle_metadata.to_dict(),
+            "resolution_record": self.resolution_record.to_dict(),
+            "scoring_events": [item.to_dict() for item in self.scoring_events],
         }
 
     def to_summary_dict(self) -> Dict[str, Any]:
@@ -2969,6 +3503,10 @@ class ForecastWorkspaceRecord:
             "resolution_history_count": len(self.prediction_ledger.resolution_history),
             "has_simulation_worker_contract": self.simulation_worker_contract is not None,
             "primary_simulation_id": self.forecast_question.primary_simulation_id,
+            "lifecycle_stage": self.lifecycle_metadata.current_stage,
+            "simulation_scope_status": self.simulation_scope.status,
+            "latest_ensemble_id": self.simulation_scope.latest_ensemble_id,
+            "latest_run_id": self.simulation_scope.latest_run_id,
             "created_at": self.forecast_question.created_at,
             "updated_at": self.forecast_question.updated_at,
         }
@@ -2994,6 +3532,10 @@ class ForecastWorkspaceRecord:
             evaluation_cases=data.get("evaluation_cases", []),
             forecast_answers=data.get("forecast_answers", []),
             simulation_worker_contract=data.get("simulation_worker_contract"),
+            simulation_scope=data.get("simulation_scope"),
+            lifecycle_metadata=data.get("lifecycle_metadata"),
+            resolution_record=data.get("resolution_record"),
+            scoring_events=data.get("scoring_events", []),
         )
 
 

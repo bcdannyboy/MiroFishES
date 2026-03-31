@@ -240,6 +240,7 @@ def test_scan_forecasting_artifacts_flags_grounding_and_confidence_overclaims(tm
 
 def test_scan_forecasting_artifacts_skips_archived_historical_simulations_by_default(tmp_path):
     simulations_dir = tmp_path / "simulations"
+    forecasts_dir = tmp_path / "forecasts"
     simulation_dir = simulations_dir / "sim-archived"
     ensemble_dir = simulation_dir / "ensemble" / "ensemble_0001"
 
@@ -269,7 +270,12 @@ def test_scan_forecasting_artifacts_skips_archived_historical_simulations_by_def
     )
     _write_archive_marker(simulation_dir)
 
-    default_result = _run_script("--simulation-data-dir", str(simulations_dir))
+    default_result = _run_script(
+        "--simulation-data-dir",
+        str(simulations_dir),
+        "--forecast-data-dir",
+        str(forecasts_dir),
+    )
 
     assert default_result.returncode == 0, default_result.stdout
     assert "Archived historical simulations skipped by default: 1" in default_result.stdout
@@ -403,8 +409,14 @@ def test_scan_forecasting_artifacts_accepts_explicit_archived_grounding_quaranti
 
 def test_scan_forecasting_artifacts_handles_missing_simulation_directory(tmp_path):
     missing_dir = tmp_path / "does-not-exist"
+    forecasts_dir = tmp_path / "forecasts"
 
-    result = _run_script("--simulation-data-dir", str(missing_dir))
+    result = _run_script(
+        "--simulation-data-dir",
+        str(missing_dir),
+        "--forecast-data-dir",
+        str(forecasts_dir),
+    )
 
     assert result.returncode == 0, result.stdout
     assert "Simulation directories scanned: 0" in result.stdout

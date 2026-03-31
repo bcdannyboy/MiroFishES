@@ -1,0 +1,396 @@
+{
+  "plan_id": "2026-03-30-inference-ready-swarm",
+  "prompt_chain_step": 5,
+  "generated_at": "2026-03-30T20:29:36-07:00",
+  "session_id": "inference-ready-swarm-20260330",
+  "active_swarm_id": "swarm-1774818185510-bscyl8",
+  "topology": "hierarchical-mesh",
+  "strategy": "specialized",
+  "status": "prompt_5_complete",
+  "coordination_mode": "workspace-local-ruflo-state-mirror",
+  "coordination_notes": [
+    "Ruflo MCP write APIs currently resolve /.claude-flow instead of the workspace-local .claude-flow directory.",
+    "The machine-readable board is mirrored into .claude-flow/tasks/store.json and the active swarm task list."
+  ],
+  "ownership_slices": [
+    {
+      "owner_name": "Dirac",
+      "owner_id": "019d412f-2c9c-7c51-aa74-8c69f2f4ba6d",
+      "role": "architecture-backend-core",
+      "scope": [
+        "forecast control plane",
+        "forecast engine integration",
+        "semantic debt cleanup"
+      ]
+    },
+    {
+      "owner_name": "Lagrange",
+      "owner_id": "019d412f-2d8a-7e11-a7c9-c3937987b19a",
+      "role": "simulation-market",
+      "scope": [
+        "simulation-market extraction",
+        "simulation-market aggregation"
+      ]
+    },
+    {
+      "owner_name": "Arendt",
+      "owner_id": "019d412f-2e7d-7570-94c5-3a3291cd97b3",
+      "role": "provenance-semantics",
+      "scope": [
+        "signal schema",
+        "truthfulness boundaries",
+        "signal-level provenance"
+      ]
+    },
+    {
+      "owner_name": "Volta",
+      "owner_id": "019d412f-31df-77f2-842b-9b6a19672bde",
+      "role": "report-api-frontend",
+      "scope": [
+        "report context",
+        "report agent",
+        "Step 2-5 integration"
+      ]
+    },
+    {
+      "owner_name": "Carver",
+      "owner_id": "019d413a-b303-76a2-8f91-01799ff5c626",
+      "role": "verification",
+      "scope": [
+        "unit and integration verification",
+        "smoke and local operator validation"
+      ]
+    },
+    {
+      "owner_name": "Curie",
+      "owner_id": "019d416f-a173-74a1-9dc1-65c91a23a7af",
+      "role": "resolution-scoring-research",
+      "scope": [
+        "resolution/scoring lifecycle",
+        "narrow technical research support"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "task-20260330-inference-001",
+      "phase": "P1",
+      "title": "Canonical forecast control plane",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Dirac",
+      "owner_id": "019d412f-2c9c-7c51-aa74-8c69f2f4ba6d",
+      "dependencies": [],
+      "files": [
+        "backend/app/models/forecasting.py",
+        "backend/app/services/forecast_manager.py",
+        "backend/app/services/hybrid_forecast_service.py",
+        "backend/app/services/simulation_manager.py",
+        "backend/app/api/forecast.py",
+        "backend/app/api/simulation.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_forecasting_schema.py",
+        "backend/tests/unit/test_forecast_manager.py",
+        "backend/tests/unit/test_forecast_api.py",
+        "backend/tests/integration/test_probabilistic_operator_flow.py"
+      ],
+      "acceptance_gates": [
+        "forecast workspace can be created or reopened before simulation execution",
+        "forecast_id links cleanly to simulation scope",
+        "canonical lifecycle is explicit for inference-ready runs"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-002",
+      "phase": "P2",
+      "title": "Simulation-market extraction artifacts",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Lagrange",
+      "owner_id": "019d412f-2d8a-7e11-a7c9-c3937987b19a",
+      "dependencies": [
+        "task-20260330-inference-001"
+      ],
+      "files": [
+        "backend/app/models/simulation_market.py",
+        "backend/app/services/simulation_market_extractor.py",
+        "backend/app/services/simulation_runner.py",
+        "backend/app/services/ensemble_manager.py",
+        "backend/app/services/probabilistic_report_context.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_simulation_market_schema.py",
+        "backend/tests/unit/test_simulation_market_extractor.py",
+        "backend/tests/unit/test_simulation_runner_runtime_scope.py",
+        "backend/tests/unit/test_simulation_runner_run_scope.py"
+      ],
+      "acceptance_gates": [
+        "completed runs emit persisted simulation-market artifacts",
+        "artifacts are versioned and linked to workspace/run scope",
+        "binary and categorical support are explicit"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-003",
+      "phase": "P3",
+      "title": "Signal schema and semantics",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Arendt",
+      "owner_id": "019d412f-2e7d-7570-94c5-3a3291cd97b3",
+      "dependencies": [
+        "task-20260330-inference-001"
+      ],
+      "files": [
+        "backend/app/models/forecasting.py",
+        "backend/app/models/simulation_market.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_simulation_market_schema.py",
+        "backend/tests/unit/test_forecasting_schema.py"
+      ],
+      "acceptance_gates": [
+        "simulation-derived signals have an explicit versioned schema",
+        "non-causal and non-calibrated boundaries are encoded in code"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-004",
+      "phase": "P4",
+      "title": "Simulation-market aggregation",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Lagrange",
+      "owner_id": "019d412f-2d8a-7e11-a7c9-c3937987b19a",
+      "dependencies": [
+        "task-20260330-inference-002",
+        "task-20260330-inference-003"
+      ],
+      "files": [
+        "backend/app/services/simulation_market_aggregator.py",
+        "backend/app/models/simulation_market.py",
+        "backend/app/services/forecast_manager.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_simulation_market_aggregator.py"
+      ],
+      "acceptance_gates": [
+        "raw market artifacts aggregate into deterministic signal summaries",
+        "consensus, dispersion, minority warnings, and missing-information signals are present"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-005",
+      "phase": "P5",
+      "title": "Forecast-engine integration",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Dirac",
+      "owner_id": "019d412f-2c9c-7c51-aa74-8c69f2f4ba6d",
+      "dependencies": [
+        "task-20260330-inference-004"
+      ],
+      "files": [
+        "backend/app/services/forecast_engine.py",
+        "backend/app/services/hybrid_forecast_service.py",
+        "backend/app/services/forecast_manager.py",
+        "backend/app/models/forecasting.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_forecast_engine.py",
+        "backend/tests/unit/test_hybrid_forecast_service.py"
+      ],
+      "acceptance_gates": [
+        "simulation-derived signals influence the final forecast answer",
+        "worker contribution trace exposes simulation-derived inference inputs",
+        "abstention and downgrade rules are explicit"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-006",
+      "phase": "P6",
+      "title": "Provenance and signal validation",
+      "type": "implementation",
+      "priority": "high",
+      "status": "completed",
+      "owner_name": "Arendt",
+      "owner_id": "019d412f-2e7d-7570-94c5-3a3291cd97b3",
+      "dependencies": [
+        "task-20260330-inference-002",
+        "task-20260330-inference-003",
+        "task-20260330-inference-004"
+      ],
+      "files": [
+        "backend/app/services/forecast_signal_provenance.py",
+        "backend/app/services/simulation_market_extractor.py",
+        "backend/app/services/simulation_market_aggregator.py",
+        "backend/app/services/grounding_bundle_builder.py",
+        "backend/app/services/forecast_manager.py",
+        "backend/app/services/probabilistic_report_context.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_forecast_signal_provenance.py",
+        "backend/tests/unit/test_forecast_grounding.py",
+        "backend/tests/unit/test_probabilistic_report_context.py"
+      ],
+      "acceptance_gates": [
+        "each signal has traceable provenance",
+        "invalid provenance causes exclusion or downgrade",
+        "provenance health is exposed to report/UI layers"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-007",
+      "phase": "P7",
+      "title": "Resolution and scoring lifecycle",
+      "type": "implementation",
+      "priority": "normal",
+      "status": "completed",
+      "owner_name": "Curie",
+      "owner_id": "019d416f-a173-74a1-9dc1-65c91a23a7af",
+      "dependencies": [
+        "task-20260330-inference-001",
+        "task-20260330-inference-005"
+      ],
+      "files": [
+        "backend/app/services/forecast_resolution_manager.py",
+        "backend/app/models/forecasting.py",
+        "backend/app/services/forecast_manager.py",
+        "backend/app/api/forecast.py",
+        "backend/app/services/forecast_engine.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_forecast_resolution_manager.py",
+        "backend/tests/unit/test_forecast_api.py",
+        "backend/tests/unit/test_forecast_manager.py"
+      ],
+      "acceptance_gates": [
+        "resolution records and scoring events are explicit artifacts",
+        "earned confidence semantics are separate from unsupported calibration claims"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-008",
+      "phase": "P8",
+      "title": "Report, API, and frontend integration",
+      "type": "implementation",
+      "priority": "normal",
+      "status": "completed",
+      "owner_name": "Volta",
+      "owner_id": "019d412f-31df-77f2-842b-9b6a19672bde",
+      "dependencies": [
+        "task-20260330-inference-001",
+        "task-20260330-inference-005",
+        "task-20260330-inference-006",
+        "task-20260330-inference-007"
+      ],
+      "files": [
+        "backend/app/api/forecast.py",
+        "backend/app/api/simulation.py",
+        "backend/app/api/report.py",
+        "backend/app/services/probabilistic_report_context.py",
+        "backend/app/services/report_agent.py",
+        "frontend/src/utils/forecastRuntime.js",
+        "frontend/src/utils/probabilisticRuntime.js",
+        "frontend/src/components/Step2EnvSetup.vue",
+        "frontend/src/components/Step3Simulation.vue",
+        "frontend/src/components/ProbabilisticReportContext.vue",
+        "frontend/src/components/Step4Report.vue",
+        "frontend/src/components/Step5Interaction.vue"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_probabilistic_report_context.py",
+        "backend/tests/unit/test_probabilistic_report_api.py",
+        "frontend/tests/unit/forecastRuntime.test.mjs",
+        "frontend/tests/unit/probabilisticRuntime.test.mjs"
+      ],
+      "acceptance_gates": [
+        "Step 2 can create/select a forecast question or workspace",
+        "Step 3 shows market summary, disagreement, and provenance health",
+        "Step 4 leads with the forecast object",
+        "Step 5 stays scoped to the same forecast/provenance object"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-009",
+      "phase": "P9",
+      "title": "Verification ladder and end-to-end inference path",
+      "type": "testing",
+      "priority": "high",
+      "status": "pending",
+      "owner_name": "Carver",
+      "owner_id": "019d413a-b303-76a2-8f91-01799ff5c626",
+      "dependencies": [
+        "task-20260330-inference-001",
+        "task-20260330-inference-002",
+        "task-20260330-inference-003",
+        "task-20260330-inference-004",
+        "task-20260330-inference-005",
+        "task-20260330-inference-006",
+        "task-20260330-inference-007",
+        "task-20260330-inference-008"
+      ],
+      "files": [
+        "backend/tests/integration/test_inference_ready_forecast_flow.py",
+        "backend/tests/integration/test_probabilistic_operator_flow.py",
+        "tests/smoke/probabilistic-runtime.spec.mjs",
+        "tests/live/probabilistic-operator-local.spec.mjs"
+      ],
+      "tests_to_add": [
+        "backend/tests/integration/test_inference_ready_forecast_flow.py",
+        "tests/smoke/probabilistic-runtime.spec.mjs",
+        "tests/live/probabilistic-operator-local.spec.mjs"
+      ],
+      "acceptance_gates": [
+        "one automated path proves question to signals to forecast answer",
+        "touched unit and integration suites pass",
+        "readiness gates can fail closed in the final prompt"
+      ]
+    },
+    {
+      "task_id": "task-20260330-inference-010",
+      "phase": "P10",
+      "title": "Semantic debt cleanup blocking truthfulness",
+      "type": "refactor",
+      "priority": "normal",
+      "status": "pending",
+      "owner_name": "Dirac",
+      "owner_id": "019d412f-2c9c-7c51-aa74-8c69f2f4ba6d",
+      "secondary_owner_name": "Arendt",
+      "secondary_owner_id": "019d412f-2e7d-7570-94c5-3a3291cd97b3",
+      "dependencies": [
+        "task-20260330-inference-001",
+        "task-20260330-inference-002",
+        "task-20260330-inference-003",
+        "task-20260330-inference-004",
+        "task-20260330-inference-005",
+        "task-20260330-inference-006",
+        "task-20260330-inference-007",
+        "task-20260330-inference-008",
+        "task-20260330-inference-009"
+      ],
+      "files": [
+        "backend/app/services/probabilistic_report_context.py",
+        "backend/app/services/simulation_manager.py",
+        "backend/app/services/report_agent.py",
+        "backend/app/services/forecast_engine.py"
+      ],
+      "tests_to_add": [
+        "backend/tests/unit/test_probabilistic_prepare.py",
+        "backend/tests/unit/test_probabilistic_report_context.py",
+        "backend/tests/unit/test_forecast_engine.py"
+      ],
+      "acceptance_gates": [
+        "duplicate or drifting truthfulness logic is removed",
+        "simulation-derived inference is clearly distinguished from descriptive scenario output",
+        "final readiness prompt can certify or fail closed without ambiguity"
+      ]
+    }
+  ]
+}

@@ -27,10 +27,13 @@ from ..models.probabilistic import (
     build_default_run_lifecycle,
     build_default_run_lineage,
 )
+from ..models.simulation_market import SIMULATION_MARKET_ARTIFACT_FILENAMES
 from .analytics_policy import AnalyticsPolicy
 from .backtest_manager import BacktestManager
 from .calibration_manager import CalibrationManager
 from .experiment_design import ExperimentDesignService
+from .forecast_signal_provenance import ForecastSignalProvenanceValidator
+from .simulation_market_aggregator import SimulationMarketAggregator
 from .uncertainty_resolver import UncertaintyResolver
 
 
@@ -79,6 +82,12 @@ class EnsembleManager:
             simulation_data_dir=self.simulation_data_dir
         )
         self.calibration_manager = CalibrationManager(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.simulation_market_aggregator = SimulationMarketAggregator(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.signal_provenance_validator = ForecastSignalProvenanceValidator(
             simulation_data_dir=self.simulation_data_dir
         )
         os.makedirs(self.simulation_data_dir, exist_ok=True)
@@ -265,6 +274,24 @@ class EnsembleManager:
                 f"Run does not exist for simulation {simulation_id}, ensemble {ensemble_id}: {run_id}"
             )
 
+        simulation_market = self._load_run_simulation_market(run_dir)
+        simulation_market_summary = None
+        simulation_market_provenance = None
+        if simulation_market:
+            try:
+                simulation_market_summary = self.simulation_market_aggregator.summarize_run_market_artifacts(
+                    simulation_id,
+                    ensemble_id=normalized_ensemble_id,
+                    run_id=normalized_run_id,
+                    run_dir=run_dir,
+                )
+                simulation_market_provenance = self.signal_provenance_validator.validate_simulation_market_summary(
+                    simulation_market_summary
+                )
+            except (ValueError, OSError, json.JSONDecodeError):
+                simulation_market_summary = None
+                simulation_market_provenance = None
+
         return {
             "simulation_id": simulation_id,
             "ensemble_id": normalized_ensemble_id,
@@ -273,7 +300,30 @@ class EnsembleManager:
             "run_dir": run_dir,
             "run_manifest": self._read_json(manifest_path),
             "resolved_config": self._read_json(resolved_config_path),
+            "simulation_market": simulation_market,
+            **(
+                {"simulation_market_summary": simulation_market_summary}
+                if simulation_market_summary is not None
+                else {}
+            ),
+            **(
+                {"simulation_market_provenance": simulation_market_provenance}
+                if simulation_market_provenance is not None
+                else {}
+            ),
         }
+
+    def _load_run_simulation_market(self, run_dir: str) -> Dict[str, Any] | None:
+        payload: Dict[str, Any] = {}
+        for artifact_name, filename in SIMULATION_MARKET_ARTIFACT_FILENAMES.items():
+            artifact_path = os.path.join(run_dir, filename)
+            if not os.path.exists(artifact_path):
+                continue
+            try:
+                payload[artifact_name] = self._read_json(artifact_path)
+            except (json.JSONDecodeError, OSError):
+                continue
+        return payload or None
 
     def delete_run(self, simulation_id: str, ensemble_id: str, run_id: str) -> bool:
         """Delete one run directory only and refresh the parent ensemble state."""

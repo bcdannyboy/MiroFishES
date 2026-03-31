@@ -690,6 +690,132 @@ def test_build_context_allows_ensemble_scope_without_selected_run(
 
     assert artifact["scope"]["level"] == "ensemble"
     assert artifact["selected_run"] is None
+
+
+def test_build_context_exposes_simulation_market_snapshot_for_selected_run(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_probabilistic_simulation(simulation_data_dir, monkeypatch)
+    created = _create_probabilistic_ensemble(
+        simulation_data_dir,
+        monkeypatch,
+        state.simulation_id,
+    )
+    run_dir = (
+        Path(simulation_data_dir)
+        / state.simulation_id
+        / "ensemble"
+        / f"ensemble_{created['ensemble_id']}"
+        / "runs"
+        / "run_0001"
+    )
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifact_paths"].update(
+        {
+            "simulation_market_manifest": "simulation_market_manifest.json",
+            "market_snapshot": "market_snapshot.json",
+            "disagreement_summary": "disagreement_summary.json",
+        }
+    )
+    _write_json(manifest_path, manifest)
+    _write_json(
+        run_dir / "simulation_market_manifest.json",
+        {
+            "artifact_type": "simulation_market_manifest",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "forecast_id": "forecast-sim-market",
+            "question_type": "binary",
+            "extraction_status": "ready",
+            "supported_question_type": True,
+            "forecast_workspace_linked": True,
+            "scope_linked_to_run": True,
+            "artifact_paths": {
+                "market_snapshot": "market_snapshot.json",
+                "disagreement_summary": "disagreement_summary.json",
+            },
+            "signal_counts": {
+                "agent_beliefs": 2,
+                "belief_updates": 3,
+                "missing_information_requests": 1,
+            },
+            "warnings": [],
+            "source_artifacts": {"run_manifest": "run_manifest.json"},
+            "boundary_notes": [
+                "Synthetic market outputs remain heuristic and observational."
+            ],
+            "extracted_at": "2026-03-30T10:15:00",
+        },
+    )
+    _write_json(
+        run_dir / "market_snapshot.json",
+        {
+            "artifact_type": "simulation_market_snapshot",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "forecast_id": "forecast-sim-market",
+            "question_type": "binary",
+            "extraction_status": "ready",
+            "support_status": "ready",
+            "participating_agent_count": 2,
+            "extracted_signal_count": 3,
+            "disagreement_index": 0.24,
+            "synthetic_consensus_probability": 0.58,
+            "dominant_outcome": None,
+            "categorical_distribution": {},
+            "missing_information_request_count": 1,
+            "boundary_notes": [
+                "Synthetic market outputs remain heuristic and observational."
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "disagreement_summary.json",
+        {
+            "artifact_type": "simulation_market_disagreement_summary",
+            "schema_version": "forecast.simulation_market.v1",
+            "generator_version": "forecast.simulation_market.generator.v1",
+            "simulation_id": state.simulation_id,
+            "ensemble_id": created["ensemble_id"],
+            "run_id": "0001",
+            "forecast_id": "forecast-sim-market",
+            "question_type": "binary",
+            "support_status": "ready",
+            "participant_count": 2,
+            "judgment_count": 3,
+            "disagreement_index": 0.24,
+            "consensus_probability": 0.58,
+            "consensus_outcome": None,
+            "distribution": {},
+            "range_low": 0.4,
+            "range_high": 0.65,
+            "warnings": [],
+            "boundary_notes": [
+                "Synthetic market outputs remain heuristic and observational."
+            ],
+        },
+    )
+
+    context_module = _load_context_module()
+    builder = context_module.ProbabilisticReportContextBuilder(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = builder.build_context(
+        simulation_id=state.simulation_id,
+        ensemble_id=created["ensemble_id"],
+        run_id="0001",
+    )
+
+    assert artifact["selected_run"]["simulation_market"]["market_snapshot"]["synthetic_consensus_probability"] == 0.58
+    assert artifact["selected_run"]["simulation_market"]["manifest"]["extraction_status"] == "ready"
+    assert artifact["selected_run"]["simulation_market"]["disagreement_summary"]["disagreement_index"] == 0.24
     assert artifact["aggregate_summary"]["artifact_type"] == "aggregate_summary"
     assert artifact["scenario_families"][0]["share_semantics"] == "observed_run_share"
     assert any(
@@ -1500,6 +1626,27 @@ def test_build_context_surfaces_hybrid_forecast_workspace_payload(
                         ],
                         "probability_interpretation": "do_not_treat_as_real_world_probability",
                     },
+                    "resolution_record": {
+                        "forecast_id": "forecast-001",
+                        "status": "resolved_true",
+                        "resolved_at": "2026-07-01T10:00:00",
+                        "resolution_note": "Observed yes.",
+                        "evidence_bundle_ids": ["bundle-1"],
+                        "prediction_entry_ids": ["entry-1"],
+                        "revision_entry_ids": [],
+                        "worker_output_ids": ["worker-output-1"],
+                    },
+                    "scoring_events": [
+                        {
+                            "scoring_event_id": "score-1",
+                            "forecast_id": "forecast-001",
+                            "status": "scored",
+                            "scoring_method": "brier_score",
+                            "score_value": 0.1369,
+                            "recorded_at": "2026-07-01T10:05:00",
+                            "notes": ["Binary answer scored after resolution."],
+                        }
+                    ],
                     "forecast_workspace_status": "available",
                 }
                 )
@@ -1790,6 +1937,8 @@ def test_build_context_surfaces_hybrid_forecast_workspace_payload(
     assert workspace["forecast_answer"]["answer_type"] == "hybrid_forecast"
     assert workspace["worker_comparison"]["worker_count"] == 2
     assert workspace["abstain_state"]["abstain"] is False
+    assert workspace["resolution_record"]["status"] == "resolved_true"
+    assert workspace["scoring_events"][0]["scoring_method"] == "brier_score"
     assert workspace["truthfulness_surface"] == {
         "evidence_available": True,
         "evaluation_available": True,
@@ -1800,4 +1949,20 @@ def test_build_context_surfaces_hybrid_forecast_workspace_payload(
             "calibrated and carries ready backtest and calibration metadata on a supported "
             "evaluation lane with resolved cases."
         ),
+    }
+    assert artifact["forecast_object"] == {
+        "forecast_id": "forecast-001",
+        "status": "available",
+        "question_text": "Will support exceed 55% by June 30, 2026?",
+        "latest_answer_id": "answer-1",
+        "resolution": {
+            "status": "resolved_true",
+            "resolved_at": "2026-07-01T10:00:00",
+            "resolution_note": "Observed yes.",
+        },
+        "scoring": {
+            "event_count": 1,
+            "latest_method": "brier_score",
+            "latest_score_value": 0.1369,
+        },
     }

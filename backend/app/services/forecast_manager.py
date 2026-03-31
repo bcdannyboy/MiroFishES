@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from ..config import Config
@@ -14,13 +14,18 @@ from ..models.forecasting import (
     EvidenceBundle,
     EvaluationCase,
     ForecastAnswer,
+    ForecastLifecycleMetadata,
     ForecastQuestion,
+    ForecastResolutionRecord,
+    ForecastScoringEvent,
+    ForecastSimulationScope,
     ForecastWorker,
     ForecastWorkspaceRecord,
     PredictionLedger,
     PredictionLedgerEntry,
     ResolutionCriteria,
     SimulationWorkerContract,
+    _parse_iso_temporal,
 )
 from ..utils.logger import get_logger
 from .forecast_interfaces import ForecastPhaseService, ForecastWorkspaceStore
@@ -29,6 +34,11 @@ from .hybrid_forecast_service import HybridForecastService
 
 
 logger = get_logger("mirofish.forecast")
+DEFAULT_FORECAST_DATA_DIR = Config.FORECAST_DATA_DIR
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 QUESTION_TYPE_PREDICTION_VALUE_TYPES = {
     "binary": {"probability", "scenario_observed_share", "qualitative"},
@@ -71,6 +81,10 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         "evidence_bundles": "evidence_bundles.json",
         "forecast_workers": "forecast_workers.json",
         "simulation_worker_contract": "simulation_worker_contract.json",
+        "simulation_scope": "simulation_scope.json",
+        "lifecycle_metadata": "lifecycle_metadata.json",
+        "resolution_record": "resolution_record.json",
+        "scoring_events": "scoring_events.json",
         "prediction_ledger": "prediction_ledger.json",
         "evaluation_cases": "evaluation_cases.json",
         "forecast_answers": "forecast_answers.json",
@@ -104,7 +118,14 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         evidence_bundle_service: Optional[EvidenceBundleService] = None,
         hybrid_forecast_service: Optional[HybridForecastService] = None,
     ):
-        self.forecast_data_dir = forecast_data_dir or self.FORECAST_DATA_DIR
+        class_dir = getattr(type(self), "FORECAST_DATA_DIR", None)
+        configured_dir = getattr(Config, "FORECAST_DATA_DIR", None)
+        if forecast_data_dir is not None:
+            self.forecast_data_dir = forecast_data_dir
+        elif class_dir and class_dir != DEFAULT_FORECAST_DATA_DIR:
+            self.forecast_data_dir = class_dir
+        else:
+            self.forecast_data_dir = configured_dir or class_dir or DEFAULT_FORECAST_DATA_DIR
         self.evidence_bundle_service = evidence_bundle_service or EvidenceBundleService()
         self.hybrid_forecast_service = hybrid_forecast_service or HybridForecastService(
             simulation_data_dir=self._infer_simulation_data_dir(
@@ -128,6 +149,32 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         workspace_dir = os.path.join(self.forecast_data_dir, forecast_id)
         os.makedirs(workspace_dir, exist_ok=True)
         return workspace_dir
+
+    def _candidate_forecast_dirs(self) -> list[str]:
+        candidates = [
+            self.forecast_data_dir,
+            getattr(type(self), "FORECAST_DATA_DIR", None),
+            getattr(Config, "FORECAST_DATA_DIR", None),
+            DEFAULT_FORECAST_DATA_DIR,
+        ]
+        normalized: list[str] = []
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = os.path.abspath(str(candidate))
+            if path not in normalized:
+                normalized.append(path)
+        return normalized
+
+    def _resolve_workspace_root(self, forecast_id: str) -> Optional[str]:
+        artifact_name = self.ARTIFACT_FILENAMES["forecast_question"]
+        for candidate_dir in self._candidate_forecast_dirs():
+            candidate_path = os.path.join(candidate_dir, forecast_id, artifact_name)
+            if os.path.exists(candidate_path):
+                if candidate_dir != self.forecast_data_dir:
+                    self.forecast_data_dir = candidate_dir
+                return candidate_dir
+        return None
 
     def _get_artifact_path(self, forecast_id: str, artifact_name: str) -> str:
         return os.path.join(
@@ -240,15 +287,15 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         timestamp: str,
         context: str,
     ) -> None:
-        timestamp_value = datetime.fromisoformat(timestamp)
-        issue_value = datetime.fromisoformat(workspace.forecast_question.issue_timestamp)
+        timestamp_value = _parse_iso_temporal(timestamp)
+        issue_value = _parse_iso_temporal(workspace.forecast_question.issue_timestamp)
         if timestamp_value < issue_value:
             raise ValueError(
                 f"{context} timestamp cannot precede forecast question issue_timestamp"
             )
 
     def _workspace_exists(self, forecast_id: str) -> bool:
-        return os.path.exists(self._get_artifact_path(forecast_id, "forecast_question"))
+        return self._resolve_workspace_root(forecast_id) is not None
 
     def _build_manifest(self, workspace: ForecastWorkspaceRecord) -> Dict[str, Any]:
         summary = workspace.to_summary_dict()
@@ -274,12 +321,13 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
 
     def save_workspace(self, workspace: ForecastWorkspaceRecord) -> ForecastWorkspaceRecord:
         forecast_id = workspace.forecast_question.forecast_id
-        workspace.forecast_question.updated_at = datetime.now().isoformat()
+        workspace.forecast_question.updated_at = _utcnow_iso()
         if workspace.simulation_worker_contract is not None and not workspace.forecast_question.primary_simulation_id:
             workspace.forecast_question.primary_simulation_id = (
                 workspace.simulation_worker_contract.simulation_id
                 or workspace.simulation_worker_contract.worker_id
             )
+        workspace = ForecastWorkspaceRecord.from_dict(workspace.to_dict())
         self._sync_evaluation_context(workspace)
 
         self._write_json(
@@ -329,6 +377,23 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
             )
         elif os.path.exists(simulation_contract_path):
             os.remove(simulation_contract_path)
+
+        self._write_json(
+            self._get_artifact_path(forecast_id, "simulation_scope"),
+            workspace.simulation_scope.to_dict(),
+        )
+        self._write_json(
+            self._get_artifact_path(forecast_id, "lifecycle_metadata"),
+            workspace.lifecycle_metadata.to_dict(),
+        )
+        self._write_json(
+            self._get_artifact_path(forecast_id, "resolution_record"),
+            workspace.resolution_record.to_dict(),
+        )
+        self._write_json(
+            self._get_artifact_path(forecast_id, "scoring_events"),
+            [item.to_dict() for item in workspace.scoring_events],
+        )
 
         logger.info("Saved forecast workspace %s", forecast_id)
         loaded = self.get_workspace(forecast_id)
@@ -891,12 +956,13 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         normalized_resolution_state = dict(resolution_state or {}) if isinstance(resolution_state, dict) else {
             "final_resolution_state": resolution_state,
         }
-        normalized_resolution_state.setdefault("final_resolution_state", "resolved")
         requested_status = normalized_resolution_state.get("final_resolution_state")
         if isinstance(requested_status, dict):
             requested_status = requested_status.get("status")
         if requested_status is None:
             requested_status = normalized_resolution_state.get("status", "resolved")
+        normalized_resolution_state["final_resolution_state"] = requested_status
+        normalized_resolution_state.setdefault("status", requested_status)
         normalized_resolution_state.setdefault("resolved_at", datetime.now().isoformat())
         if normalized_resolution_state.get("resolved_at") is not None:
             self._ensure_not_before_question_issue(
@@ -904,9 +970,9 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
                 str(normalized_resolution_state["resolved_at"]),
                 "resolution",
             )
-            resolved_value = datetime.fromisoformat(str(normalized_resolution_state["resolved_at"]))
+            resolved_value = _parse_iso_temporal(str(normalized_resolution_state["resolved_at"]))
             for entry in workspace.prediction_ledger.entries:
-                if datetime.fromisoformat(entry.recorded_at) > resolved_value:
+                if _parse_iso_temporal(entry.recorded_at) > resolved_value:
                     raise ValueError("resolution timestamp cannot precede existing prediction history")
         workspace.prediction_ledger.record_resolution_state(normalized_resolution_state)
         normalized_status = str(workspace.prediction_ledger.final_resolution_state or requested_status)
@@ -1062,6 +1128,8 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         return self.evidence_bundle_service.list_provider_capabilities()
 
     def get_workspace(self, forecast_id: str) -> Optional[ForecastWorkspaceRecord]:
+        if self._resolve_workspace_root(forecast_id) is None:
+            return None
         forecast_question_payload = self._read_json_if_exists(
             self._get_artifact_path(forecast_id, "forecast_question")
         )
@@ -1102,6 +1170,18 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
         simulation_worker_contract = self._read_json_if_exists(
             self._get_artifact_path(forecast_id, "simulation_worker_contract")
         )
+        simulation_scope = self._read_json_if_exists(
+            self._get_artifact_path(forecast_id, "simulation_scope")
+        )
+        lifecycle_metadata = self._read_json_if_exists(
+            self._get_artifact_path(forecast_id, "lifecycle_metadata")
+        )
+        resolution_record = self._read_json_if_exists(
+            self._get_artifact_path(forecast_id, "resolution_record")
+        )
+        scoring_events = self._read_json_if_exists(
+            self._get_artifact_path(forecast_id, "scoring_events")
+        ) or []
 
         return ForecastWorkspaceRecord(
             forecast_question=forecast_question_payload,
@@ -1112,7 +1192,77 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
             evaluation_cases=evaluation_cases,
             forecast_answers=forecast_answers,
             simulation_worker_contract=simulation_worker_contract,
+            simulation_scope=simulation_scope,
+            lifecycle_metadata=lifecycle_metadata,
+            resolution_record=resolution_record,
+            scoring_events=scoring_events,
         )
+
+    @staticmethod
+    def _merge_string_lists(existing: list[str], additions: list[str]) -> list[str]:
+        merged: list[str] = []
+        for item in list(existing) + list(additions):
+            normalized = str(item or "").strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+        return merged
+
+    def attach_simulation_scope(
+        self,
+        forecast_id: str,
+        *,
+        simulation_id: Optional[str] = None,
+        prepare_artifact_paths: Optional[list[str]] = None,
+        ensemble_ids: Optional[list[str]] = None,
+        run_ids: Optional[list[str]] = None,
+        latest_ensemble_id: Optional[str] = None,
+        latest_run_id: Optional[str] = None,
+        prepare_status: Optional[str] = None,
+        prepare_task_id: Optional[str] = None,
+        source_stage: Optional[str] = None,
+    ) -> ForecastWorkspaceRecord:
+        workspace = self.get_workspace(forecast_id)
+        if workspace is None:
+            raise ValueError(f"Forecast workspace does not exist: {forecast_id}")
+
+        scope = workspace.simulation_scope or ForecastSimulationScope(forecast_id=forecast_id)
+        if simulation_id is not None:
+            scope.simulation_id = str(simulation_id).strip() or None
+        if prepare_artifact_paths:
+            scope.prepare_artifact_paths = self._merge_string_lists(
+                scope.prepare_artifact_paths,
+                prepare_artifact_paths,
+            )
+        if ensemble_ids:
+            scope.ensemble_ids = self._merge_string_lists(scope.ensemble_ids, ensemble_ids)
+        if run_ids:
+            scope.run_ids = self._merge_string_lists(scope.run_ids, run_ids)
+        if latest_ensemble_id is not None:
+            scope.latest_ensemble_id = str(latest_ensemble_id).strip() or None
+        elif ensemble_ids:
+            scope.latest_ensemble_id = self._merge_string_lists([], ensemble_ids)[-1]
+        if latest_run_id is not None:
+            scope.latest_run_id = str(latest_run_id).strip() or None
+        elif run_ids:
+            scope.latest_run_id = self._merge_string_lists([], run_ids)[-1]
+        if prepare_status is not None:
+            scope.prepare_status = str(prepare_status).strip()
+        if prepare_task_id is not None:
+            scope.prepare_task_id = str(prepare_task_id).strip() or None
+        if source_stage is not None:
+            scope.last_attached_stage = str(source_stage).strip() or None
+        scope.updated_at = datetime.now().isoformat()
+
+        workspace.simulation_scope = scope
+        if scope.simulation_id:
+            workspace.forecast_question.primary_simulation_id = scope.simulation_id
+            if workspace.simulation_worker_contract is not None:
+                workspace.simulation_worker_contract.simulation_id = scope.simulation_id
+                workspace.simulation_worker_contract.prepare_artifact_paths = list(
+                    scope.prepare_artifact_paths
+                )
+                workspace.simulation_worker_contract.ensemble_ids = list(scope.ensemble_ids)
+        return self.save_workspace(workspace)
 
     def list_workspaces(self) -> list[ForecastWorkspaceRecord]:
         workspaces: list[ForecastWorkspaceRecord] = []

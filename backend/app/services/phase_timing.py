@@ -94,8 +94,13 @@ class PhaseTimingRecorder:
         if not os.path.exists(self.artifact_path):
             return self._base_payload()
 
-        with open(self.artifact_path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        try:
+            with open(self.artifact_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError, ValueError):
+            # Phase timings are auxiliary telemetry only. A malformed historical
+            # artifact must not block the primary report/analytics workflows.
+            return self._base_payload()
 
         if not isinstance(payload, dict):
             return self._base_payload()

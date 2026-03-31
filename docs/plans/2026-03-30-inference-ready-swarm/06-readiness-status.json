@@ -1,0 +1,128 @@
+{
+  "plan_id": "2026-03-30-inference-ready-swarm",
+  "updated_at": "2026-03-30T20:57:49-07:00",
+  "verdict": "NOT_READY",
+  "ready_for_internal_research_use": false,
+  "acceptance_gates": {
+    "1_forecast_question_and_workspace": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": false,
+      "notes": [
+        "Forecast question and workspace lifecycle implemented.",
+        "Focused backend verification passed."
+      ]
+    },
+    "2_simulation_market_run_executes": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": true,
+      "notes": [
+        "Simulation-backed run path implemented.",
+        "Live Step 2/3 operator validation passed."
+      ]
+    },
+    "3_structured_inference_artifacts_emitted": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": false
+    },
+    "4_forecast_engine_consumes_signals_with_trace": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": false
+    },
+    "5_signal_provenance_exists_and_gates": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": false
+    },
+    "6_report_context_presents_forecast_and_simulation_evidence": {
+      "status": "failed",
+      "code_path_implemented": true,
+      "automated_verification_passed": false,
+      "live_validated": false,
+      "blockers": [
+        "Step 4 compare selection does not reliably surface probabilistic compare handoff.",
+        "Step 5 does not reliably surface the hybrid workspace.",
+        "Categorical and numeric hybrid-answer smoke paths remain red."
+      ]
+    },
+    "7_resolution_and_scoring_primitives_exist": {
+      "status": "passed",
+      "code_path_implemented": true,
+      "automated_verification_passed": true,
+      "live_validated": false
+    },
+    "8_automated_inference_ready_tests_pass": {
+      "status": "failed",
+      "code_path_implemented": true,
+      "automated_verification_passed": false,
+      "live_validated": false,
+      "blockers": [
+        "Smoke suite still failing in Step 4/5.",
+        "Live operator suite still failing in Step 4/5."
+      ]
+    },
+    "9_live_local_end_to_end_succeeds": {
+      "status": "failed",
+      "code_path_implemented": true,
+      "automated_verification_passed": false,
+      "live_validated": false,
+      "blocked_by_environment": false,
+      "blockers": [
+        "Live Step 4/5 verification could not resolve a completed probabilistic report scope."
+      ]
+    }
+  },
+  "verification": {
+    "focused_backend": {
+      "status": "passed",
+      "command": "pytest -q backend/tests/unit/test_forecasting_schema.py backend/tests/unit/test_forecast_manager.py backend/tests/unit/test_forecast_api.py backend/tests/unit/test_simulation_market_schema.py backend/tests/unit/test_simulation_market_extractor.py backend/tests/unit/test_simulation_market_aggregator.py backend/tests/unit/test_forecast_signal_provenance.py backend/tests/unit/test_forecast_engine.py backend/tests/unit/test_hybrid_forecast_service.py backend/tests/unit/test_forecast_resolution_manager.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_probabilistic_operator_flow.py",
+      "tests_passed": 114
+    },
+    "focused_frontend": {
+      "status": "passed",
+      "command": "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+      "tests_passed": 79
+    },
+    "artifact_scan_regression": {
+      "status": "passed",
+      "command": "pytest -q backend/tests/unit/test_scan_forecasting_artifacts_script.py",
+      "tests_passed": 8
+    },
+    "verify_forecasting": {
+      "status": "passed",
+      "command": "npm run verify:forecasting"
+    },
+    "verify_smoke": {
+      "status": "failed",
+      "command": "npm run verify:smoke",
+      "summary": "4 passed, 6 failed"
+    },
+    "verify_operator_local": {
+      "status": "failed",
+      "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+      "summary": "1 passed, 1 failed"
+    }
+  },
+  "remaining_blockers": [
+    "Step 4 compare selection still fails to show probabilistic compare handoff.",
+    "Step 5 still fails to show the hybrid workspace consistently.",
+    "Categorical and numeric hybrid-answer smoke cases remain red.",
+    "History reopen smoke assertion is stale after probabilistic query preservation.",
+    "Live local Step 4/5 validation still cannot resolve a completed probabilistic report scope."
+  ],
+  "prompt_6_touched_files": [
+    "backend/tests/unit/test_scan_forecasting_artifacts_script.py",
+    "frontend/src/components/ProbabilisticReportContext.vue",
+    "frontend/src/components/Step4Report.vue",
+    "frontend/src/components/Step5Interaction.vue",
+    "frontend/src/components/HistoryDatabase.vue"
+  ]
+}

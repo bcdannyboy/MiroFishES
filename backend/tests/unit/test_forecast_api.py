@@ -588,7 +588,7 @@ def test_generate_hybrid_forecast_answer_route_returns_hybrid_answer(
     client = _build_test_client(forecast_module)
 
     create_response = client.post("/api/forecast/workspaces", json=workspace_payload)
-    assert create_response.status_code == 201
+    assert create_response.status_code == 201, create_response.get_json()
 
     generate_response = client.post(
         f"/api/forecast/questions/{QUESTION_ID}/forecast-answers/generate",
@@ -624,7 +624,7 @@ def test_evaluation_case_routes_support_read_update_and_resolve(
     client = _build_test_client(forecast_module)
 
     create_response = client.post("/api/forecast/workspaces", json=_workspace_payload())
-    assert create_response.status_code == 201
+    assert create_response.status_code == 201, create_response.get_json()
 
     create_case_response = client.post(
         f"/api/forecast/workspaces/{QUESTION_ID}/evaluation-cases",
@@ -704,11 +704,14 @@ def test_forecast_question_routes_round_trip_question_primary_object(
         json=_question_request_payload(),
     )
 
-    assert create_response.status_code == 201
+    assert create_response.status_code == 201, create_response.get_json()
     created_payload = create_response.get_json()
     assert created_payload["success"] is True
     assert created_payload["question"]["question_text"] == QUESTION_TEXT
     assert created_payload["question"]["issue_timestamp"] == QUESTION_ISSUED_AT
+    assert created_payload["workspace"]["lifecycle_metadata"]["current_stage"] == "forecast_workspace"
+    assert created_payload["workspace"]["resolution_record"]["status"] == "pending"
+    assert created_payload["workspace"]["scoring_events"] == []
 
     list_response = client.get("/api/forecast/questions")
     assert list_response.status_code == 200
@@ -723,6 +726,8 @@ def test_forecast_question_routes_round_trip_question_primary_object(
     assert get_payload["question"]["question_text"] == QUESTION_TEXT
     assert get_payload["question"]["issue_timestamp"] == QUESTION_ISSUED_AT
     assert get_payload["prediction_ledger"]["final_resolution_state"] == "pending"
+    assert get_payload["workspace"]["simulation_scope"]["simulation_id"] == "sim-001"
+    assert get_payload["workspace"]["lifecycle_metadata"]["current_stage"] == "forecast_workspace"
 
     update_response = client.patch(
         f"/api/forecast/questions/{QUESTION_ID}",
@@ -761,6 +766,289 @@ def test_forecast_question_routes_round_trip_question_primary_object(
     assert resolved_payload["question"]["issue_timestamp"] == QUESTION_ISSUED_AT
     assert resolved_payload["prediction_ledger"]["final_resolution_state"] == "resolved"
     assert resolved_payload["prediction_ledger"]["resolved_at"] == RESOLVED_AT
+
+
+def test_forecast_question_routes_accept_top_level_question_string_payload(
+    forecast_data_dir,
+    monkeypatch,
+):
+    top_level_forecast_id = "forecast-top-level-string"
+    manager_module = importlib.import_module("app.services.forecast_manager")
+    monkeypatch.setattr(manager_module.ForecastManager, "FORECAST_DATA_DIR", str(forecast_data_dir))
+
+    forecast_module = _load_forecast_api_module()
+    client = _build_test_client(forecast_module)
+
+    create_response = client.post(
+        "/api/forecast/questions",
+        json={
+            **{
+                **_question_payload(),
+                "forecast_id": top_level_forecast_id,
+            },
+            "resolution_criteria": [_criteria_payload()],
+            "forecast_workers": [
+                {
+                    **_worker_payload(),
+                    "forecast_id": top_level_forecast_id,
+                }
+            ],
+            "simulation_worker_contract": {
+                **_simulation_worker_contract_payload(),
+                "forecast_id": top_level_forecast_id,
+                "ensemble_ids": ["0001"],
+            },
+        },
+    )
+
+    assert create_response.status_code == 201, create_response.get_json()
+    created_payload = create_response.get_json()
+    assert created_payload["success"] is True
+    assert created_payload["question"]["forecast_id"] == top_level_forecast_id
+    assert created_payload["question"]["question_text"] == QUESTION_TEXT
+    assert created_payload["workspace"]["forecast_question"]["question_text"] == QUESTION_TEXT
+    assert created_payload["workspace"]["forecast_question"]["primary_simulation_id"] == "sim-001"
+    assert created_payload["workspace"]["simulation_worker_contract"]["simulation_id"] == "sim-001"
+    assert created_payload["workspace"]["simulation_worker_contract"]["ensemble_ids"] == ["0001"]
+    assert created_payload["workspace"]["simulation_scope"]["simulation_id"] == "sim-001"
+    assert created_payload["workspace"]["simulation_scope"]["ensemble_ids"] == ["0001"]
+    assert created_payload["workspace"]["simulation_scope"]["latest_ensemble_id"] == "0001"
+
+
+def test_forecast_question_routes_accept_timezone_aware_live_operator_payload(
+    forecast_data_dir,
+    monkeypatch,
+):
+    aware_forecast_id = "forecast-live-aware"
+    aware_timestamp = "2026-03-31T17:24:17.591Z"
+    manager_module = importlib.import_module("app.services.forecast_manager")
+    monkeypatch.setattr(manager_module.ForecastManager, "FORECAST_DATA_DIR", str(forecast_data_dir))
+
+    forecast_module = _load_forecast_api_module()
+    client = _build_test_client(forecast_module)
+
+    create_response = client.post(
+        "/api/forecast/questions",
+        json={
+            "forecast_id": aware_forecast_id,
+            "project_id": "live-sim-live-aware",
+            "title": "Live probabilistic report proof sim-live-aware",
+            "question": (
+                "Will the live probabilistic scope sim-live-aware/0002/0001 "
+                "preserve extracted simulation signals through one fresh report context?"
+            ),
+            "question_text": (
+                "Will the live probabilistic scope sim-live-aware/0002/0001 "
+                "preserve extracted simulation signals through one fresh report context?"
+            ),
+            "question_type": "binary",
+            "status": "active",
+            "source": "live-operator-local",
+            "horizon": {"type": "date", "value": "2026-12-31"},
+            "primary_simulation_id": "sim-live-aware",
+            "issue_timestamp": aware_timestamp,
+            "created_at": aware_timestamp,
+            "updated_at": aware_timestamp,
+            "forecast_workers": [
+                {
+                    "worker_id": "worker-sim-aware",
+                    "forecast_id": aware_forecast_id,
+                    "kind": "simulation",
+                    "label": "Live scenario simulation worker",
+                    "status": "ready",
+                    "capabilities": ["scenario_generation", "scenario_analysis"],
+                    "primary_output_semantics": "scenario_evidence",
+                }
+            ],
+            "simulation_worker_contract": {
+                "forecast_id": aware_forecast_id,
+                "worker_id": "worker-sim-aware",
+                "simulation_id": "sim-live-aware",
+                "ensemble_ids": ["0002"],
+            },
+        },
+    )
+
+    assert create_response.status_code == 201, create_response.get_json()
+    created_payload = create_response.get_json()
+    assert created_payload["success"] is True
+    assert created_payload["question"]["forecast_id"] == aware_forecast_id
+    assert created_payload["question"]["issue_timestamp"] == aware_timestamp
+    assert created_payload["workspace"]["forecast_question"]["horizon"]["value"] == "2026-12-31"
+    assert created_payload["workspace"]["simulation_worker_contract"]["ensemble_ids"] == ["0002"]
+    assert created_payload["workspace"]["simulation_scope"]["simulation_id"] == "sim-live-aware"
+    assert created_payload["workspace"]["simulation_scope"]["ensemble_ids"] == ["0002"]
+    assert created_payload["workspace"]["simulation_scope"]["latest_ensemble_id"] == "0002"
+
+
+def test_forecast_question_scoring_routes_append_scoring_events(
+    forecast_data_dir,
+    monkeypatch,
+):
+    scored_forecast_id = "forecast-binary-score"
+    manager_module = importlib.import_module("app.services.forecast_manager")
+    monkeypatch.setattr(manager_module.ForecastManager, "FORECAST_DATA_DIR", str(forecast_data_dir))
+
+    forecast_module = _load_forecast_api_module()
+    client = _build_test_client(forecast_module)
+
+    create_payload = _question_request_payload()
+    create_payload["question"] = {
+        **create_payload["question"],
+        "forecast_id": scored_forecast_id,
+    }
+    create_response = client.post(
+        "/api/forecast/questions",
+        json=create_payload,
+    )
+    assert create_response.status_code == 201, create_response.get_json()
+
+    manager = manager_module.ForecastManager(forecast_data_dir=str(forecast_data_dir))
+    forecasting_module = importlib.import_module("app.models.forecasting")
+    workspace = manager.get_workspace(scored_forecast_id)
+    assert workspace is not None
+    workspace.forecast_answers.append(
+        forecasting_module.ForecastAnswer.from_dict(
+            {
+                "answer_id": "answer-score-1",
+                "forecast_id": scored_forecast_id,
+                "answer_type": "hybrid_forecast",
+                "summary": "Binary scoring answer.",
+                "worker_ids": ["worker-base-rate"],
+                "prediction_entry_ids": [],
+                "confidence_semantics": "uncalibrated",
+                "created_at": "2026-03-30T10:00:00",
+                "answer_payload": {
+                    "best_estimate": {
+                        "value": 0.67,
+                        "value_semantics": "forecast_probability",
+                    }
+                },
+            }
+        )
+    )
+    manager.save_workspace(workspace)
+
+    resolve_response = client.post(
+        f"/api/forecast/questions/{scored_forecast_id}/resolve",
+        json={
+            "status": "resolved_true",
+            "resolved_at": RESOLVED_AT,
+            "resolution_note": "Observed support exceeded the threshold.",
+        },
+    )
+    assert resolve_response.status_code == 200
+
+    score_response = client.post(
+        f"/api/forecast/questions/{scored_forecast_id}/score",
+        json={
+            "observed_outcome": True,
+            "scoring_methods": ["brier_score", "log_score"],
+            "recorded_at": "2026-07-01T10:05:00",
+        },
+    )
+
+    assert score_response.status_code == 200
+    score_payload = score_response.get_json()
+    assert score_payload["workspace"]["lifecycle_metadata"]["current_stage"] == "scoring_event"
+    assert [event["scoring_method"] for event in score_payload["workspace"]["scoring_events"]] == [
+        "brier_score",
+        "log_score",
+    ]
+    assert score_payload["workspace"]["scoring_events"][0]["status"] == "scored"
+    assert score_payload["workspace"]["scoring_events"][0]["score_value"] == 0.1089
+    assert score_payload["workspace"]["resolution_record"]["status"] == "resolved_true"
+
+    scoring_events_response = client.get(
+        f"/api/forecast/questions/{scored_forecast_id}/scoring-events"
+    )
+    assert scoring_events_response.status_code == 200
+    assert len(scoring_events_response.get_json()["scoring_events"]) == 2
+
+
+def test_forecast_question_scoring_routes_append_numeric_scoring_events(
+    forecast_data_dir,
+    monkeypatch,
+):
+    manager_module = importlib.import_module("app.services.forecast_manager")
+    monkeypatch.setattr(manager_module.ForecastManager, "FORECAST_DATA_DIR", str(forecast_data_dir))
+
+    forecast_module = _load_forecast_api_module()
+    client = _build_test_client(forecast_module)
+
+    create_payload = _question_request_payload()
+    create_payload["question"] = {
+        **create_payload["question"],
+        "forecast_id": "forecast-numeric-score",
+        "question_text": "What support level will be observed by June 30, 2026?",
+        "question": "What support level will be observed by June 30, 2026?",
+        "question_type": "numeric",
+        "question_spec": {
+            "unit": "share",
+            "interval_levels": [50, 80, 90],
+        },
+    }
+    create_response = client.post(
+        "/api/forecast/questions",
+        json=create_payload,
+    )
+    assert create_response.status_code == 201
+
+    manager = manager_module.ForecastManager(forecast_data_dir=str(forecast_data_dir))
+    forecasting_module = importlib.import_module("app.models.forecasting")
+    workspace = manager.get_workspace("forecast-numeric-score")
+    assert workspace is not None
+    workspace.forecast_answers.append(
+        forecasting_module.ForecastAnswer.from_dict(
+            {
+                "answer_id": "answer-numeric-score-1",
+                "forecast_id": "forecast-numeric-score",
+                "answer_type": "hybrid_forecast",
+                "summary": "Numeric scoring answer.",
+                "worker_ids": ["worker-base-rate"],
+                "prediction_entry_ids": [],
+                "confidence_semantics": "uncalibrated",
+                "created_at": "2026-03-30T10:00:00",
+                "answer_payload": {
+                    "best_estimate": {
+                        "value": 42.0,
+                        "value_semantics": "numeric_point_estimate",
+                    }
+                },
+            }
+        )
+    )
+    manager.save_workspace(workspace)
+
+    resolve_response = client.post(
+        "/api/forecast/questions/forecast-numeric-score/resolve",
+        json={
+            "status": "resolved",
+            "resolved_at": RESOLVED_AT,
+            "resolution_note": "Observed 45.",
+        },
+    )
+    assert resolve_response.status_code == 200
+
+    score_response = client.post(
+        "/api/forecast/questions/forecast-numeric-score/score",
+        json={
+            "observed_outcome": 45,
+            "scoring_methods": ["absolute_error", "squared_error"],
+            "recorded_at": "2026-07-01T10:05:00",
+        },
+    )
+
+    assert score_response.status_code == 200
+    score_payload = score_response.get_json()
+    assert score_payload["workspace"]["lifecycle_metadata"]["current_stage"] == "scoring_event"
+    assert [event["scoring_method"] for event in score_payload["workspace"]["scoring_events"]] == [
+        "absolute_error",
+        "squared_error",
+    ]
+    assert score_payload["workspace"]["scoring_events"][0]["score_value"] == 3.0
+    assert score_payload["workspace"]["scoring_events"][1]["score_value"] == 9.0
+    assert score_payload["workspace"]["resolution_record"]["status"] == "resolved"
 
 
 def test_forecast_question_routes_accept_non_binary_question_specs_and_typed_evaluation_cases(

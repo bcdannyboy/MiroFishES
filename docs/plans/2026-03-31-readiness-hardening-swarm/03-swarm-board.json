@@ -1,0 +1,263 @@
+{
+  "plan_id": "2026-03-31-readiness-hardening-swarm",
+  "updated_at": "2026-03-31T09:54:11-07:00",
+  "status": "ready_for_internal_research_use",
+  "coordination": {
+    "mode": "workspace-local-ruflo-state-mirror",
+    "ruflo_write_api": "failed",
+    "ruflo_error": "ENOENT: no such file or directory, mkdir '/.claude-flow/tasks'",
+    "authoritative_files": [
+      "docs/plans/2026-03-31-readiness-hardening-swarm/00-master-status.md",
+      "docs/plans/2026-03-31-readiness-hardening-swarm/status.json",
+      "docs/plans/2026-03-31-readiness-hardening-swarm/01-blocker-map.md",
+      "docs/plans/2026-03-31-readiness-hardening-swarm/02-hardening-task-graph.md",
+      "docs/plans/2026-03-31-readiness-hardening-swarm/03-swarm-board.json"
+    ],
+    "workspace_mirror": [
+      ".claude-flow/tasks/store.json",
+      ".claude-flow/swarm/swarm-state.json"
+    ]
+  },
+  "swarm": {
+    "swarm_id": "swarm-20260331-hardening-001",
+    "topology": "hierarchical-mesh",
+    "strategy": "specialized",
+    "agents": [
+      {
+        "role": "volta-equivalent",
+        "agent_id": "019d4418-232f-7f23-af0e-57d687140518",
+        "name": "Ampere",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "dirac-equivalent",
+        "agent_id": "019d4418-2557-7433-ae90-e2e63ba7af3a",
+        "name": "Bernoulli",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "carver-equivalent",
+        "agent_id": "019d4418-242c-7960-a9b2-aa5e17876cc8",
+        "name": "Euler",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "frontend-test-specialist",
+        "agent_id": "019d444c-a360-7533-98be-a2e072f67e93",
+        "name": "Fermat",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "runtime-debug-specialist",
+        "agent_id": "019d444c-a4a2-7141-bca7-7c141df1c0fd",
+        "name": "James",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "live-bootstrap-explorer",
+        "agent_id": "019d446f-e49c-7db0-bddc-00ef4da6b639",
+        "name": "Plato",
+        "status": "analysis_complete"
+      },
+      {
+        "role": "backend-proof-explorer",
+        "agent_id": "019d446f-e5ec-7f02-89f4-75a2f93ed7c4",
+        "name": "Galileo",
+        "status": "analysis_complete"
+      }
+    ]
+  },
+  "claims": [
+    {
+      "issue_id": "task-20260331-hardening-001",
+      "claimant": "agent:main:Codex",
+      "role": "volta-equivalent",
+      "status": "completed"
+    },
+    {
+      "issue_id": "task-20260331-hardening-002",
+      "claimant": "agent:main:Codex",
+      "role": "volta-equivalent",
+      "status": "completed"
+    },
+    {
+      "issue_id": "task-20260331-hardening-003",
+      "claimant": "agent:main:Codex",
+      "role": "dirac-equivalent",
+      "status": "completed"
+    },
+    {
+      "issue_id": "task-20260331-hardening-004",
+      "claimant": "agent:main:Codex",
+      "role": "carver-equivalent",
+      "status": "completed"
+    },
+    {
+      "issue_id": "task-20260331-hardening-005",
+      "claimant": "agent:main:Codex",
+      "role": "carver-support",
+      "status": "completed"
+    },
+    {
+      "issue_id": "task-20260331-hardening-006",
+      "claimant": "agent:main:Codex",
+      "role": "carver-equivalent",
+      "status": "completed"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "task-20260331-hardening-000",
+      "title": "Refresh stale history assertion and add explicit backend report-context proof",
+      "status": "completed",
+      "priority": "normal",
+      "owner_role": "carver+dirac",
+      "verification": [
+        "tests/smoke/probabilistic-runtime.spec.mjs:297",
+        "backend/tests/integration/test_probabilistic_operator_flow.py"
+      ]
+    },
+    {
+      "task_id": "task-20260331-hardening-001",
+      "title": "Restore Step 4/5 hybrid workspace render path from hydrated probabilistic context",
+      "status": "completed",
+      "priority": "critical",
+      "owner_role": "volta-equivalent",
+      "files": [
+        "frontend/src/components/ProbabilisticReportContext.vue",
+        "frontend/src/components/Step5Interaction.vue",
+        "frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "tests/smoke/probabilistic-runtime.spec.mjs"
+      ],
+      "verification": [
+        "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "tests/smoke/probabilistic-runtime.spec.mjs:200",
+        "tests/smoke/probabilistic-runtime.spec.mjs:215",
+        "tests/smoke/probabilistic-runtime.spec.mjs:229"
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "null-unsafe market-summary render guards in Step 4/5 were corrected",
+          "saved report context now reaches the visible hybrid workspace surface in the targeted smoke slice"
+        ]
+      }
+    },
+    {
+      "task_id": "task-20260331-hardening-002",
+      "title": "Restore compare option visibility and compare handoff into Step 5",
+      "status": "completed",
+      "priority": "critical",
+      "owner_role": "volta-equivalent",
+      "files": [
+        "frontend/src/components/ProbabilisticReportContext.vue",
+        "frontend/src/components/Step4Report.vue",
+        "frontend/src/components/Step5Interaction.vue",
+        "frontend/src/utils/probabilisticRuntime.js",
+        "frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "tests/smoke/probabilistic-runtime.spec.mjs"
+      ],
+      "verification": [
+        "tests/smoke/probabilistic-runtime.spec.mjs:243"
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "compare handoff remained green after the shared Step 4/5 render repair",
+          "no regression to probabilistic route/query preservation was observed in the targeted smoke rerun"
+        ]
+      }
+    },
+    {
+      "task_id": "task-20260331-hardening-003",
+      "title": "Backend saved-context completeness audit beyond the green smoke slice",
+      "status": "completed",
+      "priority": "medium",
+      "owner_role": "dirac-equivalent",
+      "files": [
+        "backend/tests/integration/test_inference_ready_forecast_flow.py",
+        "backend/app/services/probabilistic_report_context.py",
+        "backend/app/api/report.py",
+        "backend/tests/integration/test_probabilistic_operator_flow.py"
+      ],
+      "verification": [
+        "cd backend && python3 -m pytest tests/integration/test_inference_ready_forecast_flow.py -q",
+        "cd backend && python3 -m pytest tests/unit/test_probabilistic_report_context.py tests/unit/test_probabilistic_report_api.py tests/integration/test_probabilistic_operator_flow.py tests/integration/test_inference_ready_forecast_flow.py -q"
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "dedicated inference-ready proof now asserts persisted probabilistic_report_context.json sidecar output",
+          "exact (simulation_id, ensemble_id, run_id) rediscovery returns the completed saved report"
+        ]
+      }
+    },
+    {
+      "task_id": "task-20260331-hardening-004",
+      "title": "Harden live selection to require a completed probabilistic report scope",
+      "status": "completed",
+      "priority": "high",
+      "owner_role": "carver-equivalent",
+      "files": [
+        "tests/live/probabilistic-operator-local.spec.mjs"
+      ],
+      "verification": [
+        "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local -- --grep \"Step 4 report and Step 5 report-agent work on a live probabilistic report\""
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "live bootstrap now prefers a completed saved report scope before run-derived fallback",
+          "the green live slice reused report_61ad87c3279a for sim_03059e7c8be8 instead of forcing regeneration"
+        ]
+      }
+    },
+    {
+      "task_id": "task-20260331-hardening-005",
+      "title": "Rerun only focused smoke/live/backend slices after the hardening fixes land",
+      "status": "completed",
+      "priority": "high",
+      "owner_role": "carver-equivalent",
+      "verification": [
+        "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "tests/smoke/probabilistic-runtime.spec.mjs targeted five-test slice",
+        "cd backend && python3 -m pytest tests/unit/test_probabilistic_report_context.py tests/unit/test_probabilistic_report_api.py tests/integration/test_probabilistic_operator_flow.py tests/integration/test_inference_ready_forecast_flow.py -q",
+        "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local -- --grep \"Step 4 report and Step 5 report-agent work on a live probabilistic report\""
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "focused frontend unit/runtime and targeted saved-context smoke are green",
+          "focused backend report-context/report-api suite is green",
+          "live Step 4/5 slice is green after bootstrap selection repair"
+        ]
+      }
+    },
+    {
+      "task_id": "task-20260331-hardening-006",
+      "title": "Run the broader readiness verification ladder after focused hardening turns green",
+      "status": "completed",
+      "priority": "high",
+      "owner_role": "carver-equivalent",
+      "files": [
+        "tests/smoke/probabilistic-runtime.spec.mjs",
+        "broader smoke/live/backend readiness ladder and any files it surfaced"
+      ],
+      "verification": [
+        "cd backend && python3 -m pytest tests/unit/test_probabilistic_report_context.py tests/unit/test_probabilistic_report_api.py tests/integration/test_probabilistic_operator_flow.py tests/integration/test_inference_ready_forecast_flow.py -q",
+        "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "npm run verify:forecasting",
+        "npm run verify:smoke",
+        "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local"
+      ],
+      "latest_attempt": {
+        "result": "passed",
+        "notes": [
+          "final certification reran the targeted backend and frontend suites green",
+          "the full forecasting wrapper, standalone smoke ladder, and full local operator ladder all passed on fresh authoritative reruns",
+          "all nine acceptance gates are now closed and the repo is ready for internal research use"
+        ]
+      }
+    }
+  ]
+}

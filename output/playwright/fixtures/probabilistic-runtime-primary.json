@@ -1,15 +1,15 @@
 {
   "fixture_type": "probabilistic_step2_step3_smoke",
-  "project_id": "proj_f27f5778cd9c",
-  "simulation_id": "sim_e99162412c4a",
+  "project_id": "proj_fcd32fc29f50",
+  "simulation_id": "sim_8ee47eeda481",
   "graph_id": "",
-  "project_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/projects/proj_f27f5778cd9c",
-  "simulation_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a",
-  "simulation_route": "/simulation/sim_e99162412c4a",
+  "project_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/projects/proj_fcd32fc29f50",
+  "simulation_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481",
+  "simulation_route": "/simulation/sim_8ee47eeda481",
   "prepared_artifact_summary": {
     "schema_version": "probabilistic.prepare.v1",
     "generator_version": "probabilistic.prepare.generator.v1",
-    "simulation_id": "sim_e99162412c4a",
+    "simulation_id": "sim_8ee47eeda481",
     "mode": "probabilistic",
     "probabilistic_mode": true,
     "uncertainty_profile": "balanced",
@@ -31,8 +31,8 @@
       "warnings": []
     },
     "lineage": {
-      "simulation_id": "sim_e99162412c4a",
-      "project_id": "proj_f27f5778cd9c",
+      "simulation_id": "sim_8ee47eeda481",
+      "project_id": "proj_fcd32fc29f50",
       "graph_id": "",
       "base_graph_id": "",
       "runtime_graph_id": null,
@@ -119,7 +119,7 @@
       "legacy_config": {
         "artifact_type": "legacy_config",
         "filename": "simulation_config.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/simulation_config.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/simulation_config.json",
         "relative_path": "simulation_config.json",
         "exists": true,
         "size_bytes": 2181,
@@ -128,7 +128,7 @@
       "base_config": {
         "artifact_type": "base_config",
         "filename": "simulation_config.base.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/simulation_config.base.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/simulation_config.base.json",
         "relative_path": "simulation_config.base.json",
         "exists": true,
         "size_bytes": 2673,
@@ -139,25 +139,25 @@
       "forecast_brief": {
         "artifact_type": "forecast_brief",
         "filename": "forecast_brief.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/forecast_brief.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/forecast_brief.json",
         "relative_path": "forecast_brief.json",
         "exists": false
       },
       "grounding_bundle": {
         "artifact_type": "grounding_bundle",
         "filename": "grounding_bundle.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/grounding_bundle.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/grounding_bundle.json",
         "relative_path": "grounding_bundle.json",
         "exists": true,
         "size_bytes": 2901,
         "schema_version": "forecast.grounding.v1",
         "generator_version": "forecast.grounding.generator.v1",
-        "generated_at": "2026-03-30T16:45:46.072673"
+        "generated_at": "2026-03-31T11:33:15.617133"
       },
       "uncertainty_spec": {
         "artifact_type": "uncertainty_spec",
         "filename": "uncertainty_spec.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/uncertainty_spec.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/uncertainty_spec.json",
         "relative_path": "uncertainty_spec.json",
         "exists": true,
         "size_bytes": 7495,
@@ -167,7 +167,7 @@
       "outcome_spec": {
         "artifact_type": "outcome_spec",
         "filename": "outcome_spec.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/outcome_spec.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/outcome_spec.json",
         "relative_path": "outcome_spec.json",
         "exists": true,
         "size_bytes": 1729,
@@ -177,7 +177,7 @@
       "prepare_phase_timings": {
         "artifact_type": "phase_timings",
         "filename": "prepare_phase_timings.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/prepare_phase_timings.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/prepare_phase_timings.json",
         "relative_path": "prepare_phase_timings.json",
         "exists": true,
         "size_bytes": 1145,
@@ -187,13 +187,13 @@
       "prepared_snapshot": {
         "artifact_type": "prepared_snapshot",
         "filename": "prepared_snapshot.json",
-        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_e99162412c4a/prepared_snapshot.json",
+        "path": "/Users/danielbloom/Desktop/MiroFishES/backend/app/services/../../uploads/simulations/sim_8ee47eeda481/prepared_snapshot.json",
         "relative_path": "prepared_snapshot.json",
         "exists": true,
         "size_bytes": 5262,
         "schema_version": "probabilistic.prepare.v1",
         "generator_version": "probabilistic.prepare.generator.v1",
-        "prepared_at": "2026-03-30T16:45:46.073487"
+        "prepared_at": "2026-03-31T11:33:15.617982"
       }
     }
   },
@@ -203,13 +203,13 @@
       "0001",
       "0002"
     ],
-    "ensemble_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/simulations/sim_e99162412c4a/ensemble/ensemble_0001"
+    "ensemble_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/simulations/sim_8ee47eeda481/ensemble/ensemble_0001"
   },
   "report": {
-    "report_id": "smoke-sim_e99162412c4a-0001-0001",
-    "report_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/reports/smoke-sim_e99162412c4a-0001-0001",
-    "report_route": "/report/smoke-sim_e99162412c4a-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
-    "interaction_route": "/interaction/smoke-sim_e99162412c4a-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
+    "report_id": "smoke-sim_8ee47eeda481-0001-0001",
+    "report_dir": "/Users/danielbloom/Desktop/MiroFishES/backend/app/../uploads/reports/smoke-sim_8ee47eeda481-0001-0001",
+    "report_route": "/report/smoke-sim_8ee47eeda481-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
+    "interaction_route": "/interaction/smoke-sim_8ee47eeda481-0001-0001?mode=probabilistic&ensembleId=0001&runId=0001",
     "ensemble_id": "0001",
     "run_id": "0001"
   }

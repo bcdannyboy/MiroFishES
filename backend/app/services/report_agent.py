@@ -577,19 +577,22 @@ Important: the OASIS simulation environment must be running to use this tool."""
 # Outline planning prompt
 
 PLAN_SYSTEM_PROMPT = """\
-You are an expert writer of simulation scenario reports. You can inspect events, speech, and interactions inside the simulation world.
+You are an expert writer of simulation-backed forecast reports. You can inspect forecast artifacts, simulation evidence, events, speech, and interactions inside the simulation world.
 
 Core idea:
 We created a simulation world and injected a specific simulation requirement as the condition under study. The resulting events are a bounded simulated scenario from this modeled setting. They are not experimental data, not a literal view into the real future, and not direct evidence of real human behavior.
+When a forecast object is attached, it is the primary object to summarize first. Simulation-market and scenario artifacts remain supporting evidence and must keep their bounded semantics explicit.
 
 Your task:
-Write a concise simulation scenario report that answers:
-1. What happened inside this simulated scenario under the conditions we set?
-2. How did different agents or groups react and act within this simulated environment?
-3. What risks, tensions, or possible implications emerged within this scenario and deserve attention?
+Write a concise simulation-backed forecast report that answers:
+1. What forecast question and latest forecast answer are in scope?
+2. What happened inside this simulated scenario under the conditions we set?
+3. How did different agents or groups react and act within this simulated environment?
+4. What risks, tensions, or possible implications emerged within this scenario and deserve attention?
 
 Report positioning:
-- This is a simulation-based scenario report about a scoped modeled setting
+- This is a forecast-object-first report with bounded simulation evidence about a scoped modeled setting
+- If a forecast object is attached, lead with the forecast question, latest answer, resolution/scoring state, and any simulation-market provenance or disagreement status
 - Focus on event trajectories, group reactions, emergent phenomena, uncertainties, and possible implications within the simulation
 - Agent behavior and statements are simulated outputs, not direct stand-ins for real human behavior outside the model
 - Do not write it as a literal forecast, certainty claim, or analysis of the current real world
@@ -641,7 +644,7 @@ Reminder: the report must have between 2 and 5 sections, and the content should 
 # Section generation prompt
 
 SECTION_SYSTEM_PROMPT_TEMPLATE = """\
-You are an expert writer of simulation scenario reports, and you are writing one section of the report.
+You are an expert writer of simulation-backed forecast reports, and you are writing one section of the report.
 
 Report title: {report_title}
 Report summary: {report_summary}
@@ -655,6 +658,7 @@ Core idea
 
 The simulation world is a bounded simulated scenario. We injected a specific condition, the simulation requirement, into the world.
 Agent behavior and interactions in the simulation are simulated outputs from this modeled setting, not direct evidence of real human behavior.
+If a forecast object is attached to the report context, treat it as the primary object for the section and use simulation evidence to support or qualify it rather than replacing it.
 
 Your job is to:
 - Describe what happened inside the simulated scenario under the given conditions
@@ -1218,6 +1222,9 @@ class ReportAgent:
             "cluster_id": context.get("cluster_id"),
             "run_id": context.get("run_id"),
             "scope": context.get("scope"),
+            "forecast_object": context.get("forecast_object"),
+            "simulation_market_summary": context.get("simulation_market_summary"),
+            "signal_provenance_summary": context.get("signal_provenance_summary"),
             "grounding_context": cls._build_prompt_safe_grounding_context(context),
             "probability_semantics": context.get("probability_semantics"),
             "confidence_status": context.get("confidence_status"),

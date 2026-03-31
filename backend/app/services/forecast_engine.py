@@ -23,6 +23,8 @@ from ..models.forecasting import (
     PredictionLedgerEntry,
     ResolutionCriteria,
 )
+from .forecast_signal_provenance import ForecastSignalProvenanceValidator
+from .simulation_market_aggregator import SimulationMarketAggregator
 
 
 def _iso_datetime(value: Optional[str]) -> str:
@@ -74,9 +76,9 @@ def _tokenize(*values: Any) -> set[str]:
 
 def _family_for_worker(worker: ForecastWorker) -> str:
     family = str(worker.metadata.get("worker_family") or "").strip()
-    if family in {"base_rate", "reference_class", "retrieval_synthesis", "simulation"}:
+    if family in {"base_rate", "reference_class", "retrieval_synthesis", "simulation", "simulation_market"}:
         return family
-    if worker.kind in {"base_rate", "reference_class", "retrieval_synthesis", "simulation"}:
+    if worker.kind in {"base_rate", "reference_class", "retrieval_synthesis", "simulation", "simulation_market"}:
         return worker.kind
     if worker.kind == "retrieval":
         return "retrieval_synthesis"
@@ -572,6 +574,12 @@ class HybridForecastEngine:
 
     def __init__(self, *, simulation_data_dir: Optional[str] = None):
         self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self.simulation_market_aggregator = SimulationMarketAggregator(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.signal_provenance_validator = ForecastSignalProvenanceValidator(
+            simulation_data_dir=self.simulation_data_dir
+        )
 
     @staticmethod
     def _derive_confidence_semantics(answer_payload: dict[str, Any]) -> str:
@@ -612,7 +620,13 @@ class HybridForecastEngine:
         }
         metric_id, operator, threshold = _first_metric_threshold(workspace.resolution_criteria)
 
-        ordered_families = ["base_rate", "reference_class", "retrieval_synthesis", "simulation"]
+        ordered_families = [
+            "base_rate",
+            "reference_class",
+            "retrieval_synthesis",
+            "simulation_market",
+            "simulation",
+        ]
         for family in ordered_families:
             worker = worker_map.get(family)
             if worker is None:
@@ -658,6 +672,14 @@ class HybridForecastEngine:
                         metric_id,
                         operator,
                         threshold,
+                    )
+                )
+            elif family == "simulation_market":
+                worker_results.append(
+                    self._run_simulation_market_worker(
+                        workspace,
+                        worker,
+                        recorded_at,
                     )
                 )
 
@@ -1527,6 +1549,202 @@ class HybridForecastEngine:
             citations=citations,
         )
 
+    def _run_simulation_market_worker(
+        self,
+        workspace: ForecastWorkspaceRecord,
+        worker: ForecastWorker,
+        recorded_at: str,
+    ) -> HybridWorkerResult:
+        question_type = _workspace_question_type(workspace)
+        if question_type not in {"binary", "categorical"}:
+            return HybridWorkerResult(
+                output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+                forecast_id=workspace.forecast_question.forecast_id,
+                worker_id=worker.worker_id,
+                worker_kind="simulation_market",
+                recorded_at=recorded_at,
+                status="abstained",
+                summary="Synthetic market worker abstained because the question type is unsupported.",
+                contribution_role="best_estimate",
+                influences_best_estimate=False,
+                value_type="qualitative",
+                value_semantics="qualitative_judgment",
+                abstain_reason="unsupported_question_type",
+                failure_modes=["unsupported_question_type"],
+                notes=[
+                    "Simulation-market inference remains bounded to binary and categorical questions.",
+                ],
+            )
+
+        active_bundle_id = workspace.evidence_bundle.bundle_id
+        summary = self.simulation_market_aggregator.summarize_workspace(
+            workspace,
+            evidence_bundle_ids=[active_bundle_id] if active_bundle_id else [],
+        )
+        if not summary:
+            return HybridWorkerResult(
+                output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+                forecast_id=workspace.forecast_question.forecast_id,
+                worker_id=worker.worker_id,
+                worker_kind="simulation_market",
+                recorded_at=recorded_at,
+                status="abstained",
+                summary="Synthetic market worker abstained because no run-scoped market artifacts were available.",
+                contribution_role="best_estimate",
+                influences_best_estimate=False,
+                value_type="qualitative",
+                value_semantics="qualitative_judgment",
+                abstain_reason="no_simulation_market_outputs",
+                failure_modes=["no_simulation_market_outputs"],
+            )
+
+        validation = self.signal_provenance_validator.validate_simulation_market_summary(
+            summary,
+            available_evidence_bundle_ids=[active_bundle_id] if active_bundle_id else [],
+        )
+        provenance_status = validation["status"]
+        disagreement_index = float(summary.get("disagreement_index") or 0.0)
+        downgrade_reasons = list(validation.get("downgrade_reasons") or [])
+        if provenance_status == "invalid":
+            return HybridWorkerResult(
+                output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+                forecast_id=workspace.forecast_question.forecast_id,
+                worker_id=worker.worker_id,
+                worker_kind="simulation_market",
+                recorded_at=recorded_at,
+                status="abstained",
+                summary="Synthetic market worker abstained because signal provenance was invalid.",
+                contribution_role="best_estimate",
+                influences_best_estimate=False,
+                value_type="qualitative",
+                value_semantics="qualitative_judgment",
+                abstain_reason="invalid_simulation_market_provenance",
+                failure_modes=["invalid_simulation_market_provenance"],
+                confidence_inputs={
+                    "provenance_status": provenance_status,
+                    "provenance_report": validation,
+                },
+                notes=[
+                    "Signals without traceable run-scoped provenance cannot influence the best estimate.",
+                ],
+            )
+        if disagreement_index >= 0.45:
+            return HybridWorkerResult(
+                output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+                forecast_id=workspace.forecast_question.forecast_id,
+                worker_id=worker.worker_id,
+                worker_kind="simulation_market",
+                recorded_at=recorded_at,
+                status="abstained",
+                summary="Synthetic market worker abstained because disagreement remained too high for defended inference.",
+                contribution_role="best_estimate",
+                influences_best_estimate=False,
+                value_type="qualitative",
+                value_semantics="qualitative_judgment",
+                abstain_reason="simulation_market_disagreement",
+                failure_modes=["simulation_market_disagreement"],
+                confidence_inputs={
+                    "provenance_status": provenance_status,
+                    "disagreement_index": round(disagreement_index, 6),
+                },
+                notes=[
+                    "High synthetic-market disagreement is treated as a hard gate for best-estimate use.",
+                ],
+            )
+
+        participant_count = int(summary.get("participant_count") or 0)
+        judgment_count = int(summary.get("judgment_count") or 0)
+        base_weight = 0.16 + min(0.18, participant_count * 0.03) + min(0.08, judgment_count * 0.015)
+        weight = base_weight * float(validation.get("weight_multiplier") or 1.0)
+        if disagreement_index >= 0.25:
+            weight *= 0.55
+            downgrade_reasons.append("downgraded_for_disagreement")
+        if int(summary.get("missing_information_signal", {}).get("request_count", 0) or 0) >= 3:
+            weight *= 0.85
+            downgrade_reasons.append("downgraded_for_missing_information")
+        weight = _clamp(weight, 0.05, 0.45)
+
+        signal_payload = {
+            "synthetic_consensus_probability": summary.get("synthetic_consensus_probability"),
+            "disagreement_index": summary.get("disagreement_index"),
+            "argument_cluster_distribution": dict(summary.get("argument_cluster_distribution") or {}),
+            "belief_momentum": dict(summary.get("belief_momentum") or {}),
+            "minority_warning_signal": dict(summary.get("minority_warning_signal") or {}),
+            "missing_information_signal": dict(summary.get("missing_information_signal") or {}),
+            "scenario_split_distribution": dict(summary.get("scenario_split_distribution") or {}),
+            "provenance_status": provenance_status,
+            "provenance_report": validation,
+            "signals": dict(summary.get("signals") or {}),
+        }
+        notes = [
+            "Simulation-market signals are heuristic inference inputs derived from simulated discourse.",
+            "They remain observational and non-calibrated until later scoring evidence exists.",
+        ]
+        notes.extend(downgrade_reasons)
+        if question_type == "categorical":
+            distribution = dict(summary.get("scenario_split_distribution") or {})
+            top_label = _top_distribution_label(distribution)
+            top_share = float(distribution.get(top_label, 0.0)) if top_label else 0.0
+            return HybridWorkerResult(
+                output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+                forecast_id=workspace.forecast_question.forecast_id,
+                worker_id=worker.worker_id,
+                worker_kind="simulation_market",
+                recorded_at=recorded_at,
+                status="completed",
+                summary="Synthetic market aggregation from run-scoped belief artifacts.",
+                contribution_role="best_estimate",
+                influences_best_estimate=True,
+                value_type="categorical_distribution",
+                value_semantics="forecast_distribution",
+                estimate=top_share,
+                value={
+                    "distribution": distribution,
+                    "top_label": top_label,
+                    "top_label_share": round(top_share, 6),
+                    **signal_payload,
+                },
+                effective_weight=weight,
+                confidence_inputs={
+                    "participant_count": participant_count,
+                    "judgment_count": judgment_count,
+                    "provenance_status": provenance_status,
+                    "disagreement_index": round(disagreement_index, 6),
+                    "downgraded": bool(downgrade_reasons),
+                },
+                notes=notes,
+            )
+
+        estimate = summary.get("synthetic_consensus_probability")
+        return HybridWorkerResult(
+            output_id=f"{worker.worker_id}-output-{_compact_timestamp(recorded_at)}",
+            forecast_id=workspace.forecast_question.forecast_id,
+            worker_id=worker.worker_id,
+            worker_kind="simulation_market",
+            recorded_at=recorded_at,
+            status="completed",
+            summary="Synthetic market aggregation from run-scoped belief artifacts.",
+            contribution_role="best_estimate",
+            influences_best_estimate=True,
+            value_type="probability",
+            value_semantics="forecast_probability",
+            estimate=float(estimate) if estimate is not None else None,
+            value={
+                "estimate": round(float(estimate), 6) if estimate is not None else None,
+                "value": round(float(estimate), 6) if estimate is not None else None,
+                **signal_payload,
+            },
+            effective_weight=weight,
+            confidence_inputs={
+                "participant_count": participant_count,
+                "judgment_count": judgment_count,
+                "provenance_status": provenance_status,
+                "disagreement_index": round(disagreement_index, 6),
+                "downgraded": bool(downgrade_reasons),
+            },
+            notes=notes,
+        )
+
     def _run_simulation_worker(
         self,
         workspace: ForecastWorkspaceRecord,
@@ -2167,6 +2385,10 @@ class HybridForecastEngine:
             (item for item in worker_results if item.worker_kind == "simulation"),
             None,
         )
+        simulation_market_result = next(
+            (item for item in worker_results if item.worker_kind == "simulation_market"),
+            None,
+        )
         simulation_context = {
             "included": simulation_result is not None,
             "worker_id": simulation_result.worker_id if simulation_result is not None else None,
@@ -2177,6 +2399,46 @@ class HybridForecastEngine:
             ),
             "contribution_role": (
                 simulation_result.contribution_role if simulation_result is not None else None
+            ),
+        }
+        simulation_market_context = {
+            "included": simulation_market_result is not None,
+            "worker_id": (
+                simulation_market_result.worker_id if simulation_market_result is not None else None
+            ),
+            "used_in_best_estimate": (
+                simulation_market_result.influences_best_estimate
+                if simulation_market_result is not None
+                else False
+            ),
+            "provenance_status": (
+                simulation_market_result.confidence_inputs.get("provenance_status")
+                if simulation_market_result is not None
+                else None
+            ),
+            "synthetic_consensus_probability": (
+                simulation_market_result.value.get("synthetic_consensus_probability")
+                if simulation_market_result is not None
+                and isinstance(simulation_market_result.value, dict)
+                else None
+            ),
+            "disagreement_index": (
+                simulation_market_result.value.get("disagreement_index")
+                if simulation_market_result is not None
+                and isinstance(simulation_market_result.value, dict)
+                else None
+            ),
+            "scenario_split_distribution": (
+                simulation_market_result.value.get("scenario_split_distribution")
+                if simulation_market_result is not None
+                and isinstance(simulation_market_result.value, dict)
+                else None
+            ),
+            "belief_momentum": (
+                simulation_market_result.value.get("belief_momentum")
+                if simulation_market_result is not None
+                and isinstance(simulation_market_result.value, dict)
+                else None
             ),
         }
         confidence_basis = self._build_confidence_basis(
@@ -2212,6 +2474,7 @@ class HybridForecastEngine:
             },
             "worker_contribution_trace": trace,
             "simulation_context": simulation_context,
+            "simulation_market_context": simulation_market_context,
         }
 
     def _build_evaluation_summary(

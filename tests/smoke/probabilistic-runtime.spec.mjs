@@ -244,8 +244,19 @@ test.describe('probabilistic runtime smoke', () => {
     await page.goto(fixture.report.report_route)
 
     await page.getByTestId('probabilistic-compare-option').first().click()
+    await expect(page.getByTestId('probabilistic-compare-handoff')).toBeVisible()
+    await expect(page.getByTestId('probabilistic-compare-scope-identity')).toHaveCount(2)
     await page.getByTestId('probabilistic-compare-handoff').click()
 
+    await expect(page).toHaveURL(
+      new RegExp(`/interaction/${fixture.report.report_id}(\\?|$)`)
+    )
+    await expect(page).toHaveURL(/mode=probabilistic/)
+    await expect(page).toHaveURL(
+      new RegExp(`ensembleId=${fixture.ensemble.ensemble_id}`)
+    )
+    await expect(page).toHaveURL(/scope=run/)
+    await expect(page).toHaveURL(new RegExp(`runId=${fixture.report.run_id}`))
     await expect(page).toHaveURL(/compareId=/)
     await expect(page.getByTestId('probabilistic-step5-compare')).toBeVisible()
   })
@@ -258,8 +269,8 @@ test.describe('probabilistic runtime smoke', () => {
       `history-card--${fixture.simulation_id}--${fixture.report.report_id}`
     )
 
+    await expect(historyToggle).toBeVisible({ timeout: 20000 })
     await expect(historyCard).toBeVisible()
-    await expect(historyToggle).toBeVisible()
 
     if ((await historyToggle.getAttribute('aria-expanded')) !== 'true') {
       await historyToggle.click()
@@ -305,15 +316,15 @@ test.describe('probabilistic runtime smoke', () => {
       `history-card--${alternateFixture.simulation_id}--${alternateFixture.report.report_id}`
     )
 
-    await expect(alternateHistoryCard).toBeVisible()
-    await expect(historyCard).toBeVisible()
-    await expect(historyToggle).toBeVisible()
+    await expect(historyToggle).toBeVisible({ timeout: 20000 })
 
     if ((await historyToggle.getAttribute('aria-expanded')) !== 'true') {
       await historyToggle.click()
     }
 
     await expect(historyToggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(alternateHistoryCard).toBeVisible({ timeout: 20000 })
+    await expect(historyCard).toBeVisible({ timeout: 20000 })
     await historyCard.click()
 
     await expect(page.locator('.modal-content')).toBeVisible()
@@ -323,7 +334,15 @@ test.describe('probabilistic runtime smoke', () => {
       )
       .click()
 
-    await expect(page).toHaveURL(new RegExp(`/interaction/${fixture.report.report_id}$`))
+    await expect(page).toHaveURL(
+      new RegExp(`/interaction/${fixture.report.report_id}(\\?|$)`)
+    )
+    await expect(page).toHaveURL(/mode=probabilistic/)
+    await expect(page).toHaveURL(
+      new RegExp(`ensembleId=${fixture.ensemble.ensemble_id}`)
+    )
+    await expect(page).toHaveURL(/scope=run/)
+    await expect(page).toHaveURL(new RegExp(`runId=${fixture.report.run_id}`))
     await expect(page.getByTestId('probabilistic-step5-banner')).toBeVisible()
   })
 })

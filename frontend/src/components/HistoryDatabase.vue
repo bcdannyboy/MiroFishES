@@ -216,7 +216,8 @@ import {
   getHistoryExpansionToggleLabel,
   buildHistoryCardTestId,
   buildHistoryActionTestId,
-  deriveHistoryStep3ReplayState
+  deriveHistoryStep3ReplayState,
+  buildSimulationRunRouteQuery
 } from '../utils/probabilisticRuntime'
 
 const router = useRouter()
@@ -274,6 +275,25 @@ const selectedProjectReplayHint = computed(() => {
     : ' Step 4 and Step 5 remain unavailable until a report is generated.'
 
   return `${step3Hint}${downstreamHint}`
+})
+
+const selectedProjectReportReplayQuery = computed(() => {
+  if (!selectedProject.value?.report_id) {
+    return null
+  }
+
+  const replayState = selectedProjectStep3ReplayState.value
+  if (!replayState.enabled) {
+    return null
+  }
+
+  return buildSimulationRunRouteQuery({
+    runtimeMode: 'probabilistic',
+    ensembleId: replayState.ensembleId,
+    clusterId: replayState.clusterId,
+    runId: replayState.runId,
+    scopeLevel: 'run'
+  })
 })
 
 const getCardStyle = (index) => {
@@ -490,20 +510,28 @@ const goToSimulationRun = () => {
 
 const goToReport = () => {
   if (selectedProject.value?.report_id) {
-    router.push({
+    const routeTarget = {
       name: 'Report',
       params: { reportId: selectedProject.value.report_id }
-    })
+    }
+    if (selectedProjectReportReplayQuery.value) {
+      routeTarget.query = selectedProjectReportReplayQuery.value
+    }
+    router.push(routeTarget)
     closeModal()
   }
 }
 
 const goToInteraction = () => {
   if (selectedProject.value?.report_id) {
-    router.push({
+    const routeTarget = {
       name: 'Interaction',
       params: { reportId: selectedProject.value.report_id }
-    })
+    }
+    if (selectedProjectReportReplayQuery.value) {
+      routeTarget.query = selectedProjectReportReplayQuery.value
+    }
+    router.push(routeTarget)
     closeModal()
   }
 }

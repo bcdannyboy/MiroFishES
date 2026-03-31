@@ -24,19 +24,20 @@
     <div v-if="contextError" class="context-banner error">
       {{ contextError }}
     </div>
-    <div v-else-if="capabilitiesLoading" class="context-banner neutral">
-      Loading probabilistic report capabilities...
-    </div>
-    <div v-else-if="isFlaggedOff" class="context-banner warning">
-      Scoped report evidence surfaces are disabled by the backend flag. The legacy report remains available without
-      ensemble analytics cards.
-    </div>
     <template v-else>
+      <div v-if="capabilitiesLoading" class="context-banner neutral">
+        Loading probabilistic report capabilities...
+      </div>
+      <div v-if="isFlaggedOff && !hasViewableReportContext" class="context-banner warning">
+        Scoped report evidence surfaces are disabled by the backend flag. The legacy report remains available without
+        ensemble analytics cards.
+      </div>
+      <template v-if="hasViewableReportContext">
       <div v-if="historicalNotice" class="context-banner warning">
         {{ historicalNotice }}
       </div>
       <div class="context-pill-row">
-        <span class="context-pill">Scoped evidence addendum</span>
+        <span class="context-pill">{{ evidenceSummary.forecastObject || evidenceSummary.hybridWorkspace?.available ? 'Forecast object first' : 'Scoped evidence addendum' }}</span>
         <span class="context-pill">{{ scopePillLabel }}</span>
         <span class="context-pill">
           {{ evidenceSummary.hybridWorkspace?.statusSurface?.calibratedConfidenceEarned ? 'Calibrated confidence earned' : 'No calibrated claims' }}
@@ -285,6 +286,7 @@
           </div>
         </article>
       </div>
+      </template>
     </template>
   </section>
 </template>
@@ -355,14 +357,20 @@ const errorByKey = ref({
   sensitivity: ''
 })
 
-const normalizedRuntimeMode = computed(() => (
-  props.runtimeMode === 'probabilistic' ? 'probabilistic' : 'legacy'
-))
-
 const embeddedReportContext = computed(() => (
-  props.reportContext && typeof props.reportContext === 'object'
+  props.reportContext
+  && typeof props.reportContext === 'object'
+  && Object.keys(props.reportContext).length > 0
     ? props.reportContext
     : null
+))
+
+const normalizedRuntimeMode = computed(() => (
+  props.runtimeMode === 'probabilistic'
+    || Boolean(embeddedReportContext.value && Object.keys(embeddedReportContext.value).length)
+    || Boolean(props.ensembleId || props.clusterId || props.runId)
+    ? 'probabilistic'
+    : 'legacy'
 ))
 
 const effectiveSummaryArtifact = computed(() => (
@@ -375,6 +383,12 @@ const effectiveClustersArtifact = computed(() => (
 
 const effectiveSensitivityArtifact = computed(() => (
   embeddedReportContext.value?.sensitivity || sensitivityArtifact.value
+))
+const hasViewableReportContext = computed(() => (
+  Boolean(embeddedReportContext.value)
+  || Boolean(effectiveSummaryArtifact.value)
+  || Boolean(effectiveClustersArtifact.value)
+  || Boolean(effectiveSensitivityArtifact.value)
 ))
 
 const reportContextState = computed(() => deriveProbabilisticReportContextState({
@@ -393,16 +407,18 @@ const shouldRender = computed(() => (
 ))
 
 const contextEyebrow = computed(() => (
-  hybridWorkspace.value ? 'Forecast Addendum' : 'Scoped Evidence'
+  hybridWorkspace.value || evidenceSummary.value.forecastObject ? 'Forecast Object' : 'Scoped Evidence'
 ))
 
 const contextTitle = computed(() => (
-  hybridWorkspace.value ? 'Hybrid Forecast Addendum' : 'Scoped Simulation Evidence'
+  hybridWorkspace.value || evidenceSummary.value.forecastObject
+    ? 'Forecast Object And Supporting Evidence'
+    : 'Scoped Simulation Evidence'
 ))
 
 const contextCopy = computed(() => {
-  if (hybridWorkspace.value) {
-    return 'This report addendum can surface the forecast question, evidence bundle, prediction ledger, forecast answer, evaluation results, and worker comparison when those artifacts are present. It distinguishes evidence availability, evaluation availability, earned calibration, and simulation-only scenario exploration. Calibration is only earned on supported evaluated question lanes with type-correct evidence, and simulation remains supporting scenario analysis only.'
+  if (hybridWorkspace.value || evidenceSummary.value.forecastObject) {
+    return 'This Step 4 surface now leads with the forecast object when it exists: question, latest answer, bounded simulation-market support, provenance, resolution, and scoring. The report body remains downstream narrative. Calibration is only earned on supported evaluated question lanes with type-correct evidence, and simulation remains supporting scenario analysis only.'
   }
   return 'The report body remains the legacy simulation-scoped artifact. These cards add empirical ensemble or scenario-family summaries, observed run facts, and observational sensitivity only. They do not turn simulation frequencies into real-world probability or imply calibrated or causal claims.'
 })
@@ -416,6 +432,7 @@ const historicalNotice = computed(() => (
 ))
 
 const hybridWorkspace = computed(() => evidenceSummary.value.hybridWorkspace || null)
+const localCompareId = ref(props.compareId || null)
 
 const analyticsCards = computed(() => deriveProbabilisticAnalyticsCards({
   summaryArtifact: effectiveSummaryArtifact.value,
@@ -430,9 +447,23 @@ const evidenceSummary = computed(() => deriveProbabilisticEvidenceSummary({
   ensembleId: props.ensembleId,
   clusterId: props.clusterId,
   runId: props.runId,
-  compareId: props.compareId,
+  compareId: localCompareId.value,
   reportContext: embeddedReportContext.value
 }))
+
+const reconcileCompareSelection = (requestedCompareId = null) => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: normalizedRuntimeMode.value,
+    ensembleId: props.ensembleId,
+    clusterId: props.clusterId,
+    runId: props.runId,
+    compareId: requestedCompareId || localCompareId.value || props.compareId || null,
+    reportContext: embeddedReportContext.value
+  })
+
+  localCompareId.value = summary.selectedCompare?.compareId || null
+  return localCompareId.value
+}
 
 const contextError = computed(() => {
   if (!shouldRender.value) {
@@ -479,6 +510,29 @@ const evidenceEntries = computed(() => {
   }
 
   const entries = [
+    ...(evidenceSummary.value.forecastObject ? [
+      {
+        key: 'forecast-object',
+        title: 'Forecast Object',
+        headline: evidenceSummary.value.forecastObject.questionText || `Forecast ${evidenceSummary.value.forecastObject.forecastId || '-'}`,
+        body: [
+          evidenceSummary.value.forecastObject.resolution?.status
+            ? `Resolution status: ${evidenceSummary.value.forecastObject.resolution.status}.`
+            : 'Resolution is still pending.',
+          typeof evidenceSummary.value.forecastObject.scoring?.eventCount === 'number'
+            ? `Scoring events: ${evidenceSummary.value.forecastObject.scoring.eventCount}.`
+            : null,
+          evidenceSummary.value.forecastObject.scoring?.latestMethod
+            ? `Latest scoring method: ${evidenceSummary.value.forecastObject.scoring.latestMethod}.`
+            : null
+        ].filter(Boolean).join(' '),
+        chips: [
+          evidenceSummary.value.forecastObject.status ? `Status ${evidenceSummary.value.forecastObject.status}` : null,
+          evidenceSummary.value.forecastObject.resolution?.status || null,
+          evidenceSummary.value.forecastObject.scoring?.latestMethod || null
+        ].filter(Boolean)
+      }
+    ] : []),
     ...(hybridWorkspace.value ? [
       {
         key: 'hybrid-question',
@@ -685,13 +739,27 @@ const evidenceEntries = computed(() => {
   }
 
   if (evidenceSummary.value.selectedRun) {
+    const selectedRun = evidenceSummary.value.selectedRun
+    const selectedRunMarketSummary = selectedRun.marketSummary || null
     entries.push({
       key: 'selected-run',
       title: 'Selected Run Evidence',
-      headline: `Run ${evidenceSummary.value.selectedRun.runId || '-'}`,
-      body: `${evidenceSummary.value.selectedRun.supportLabel}. ${evidenceSummary.value.selectedRun.assumptionSummary}.`,
+      headline: `Run ${selectedRun.runId || '-'}`,
+      body: [
+        `${selectedRun.supportLabel}.`,
+        selectedRun.assumptionSummary,
+        selectedRunMarketSummary?.syntheticConsensusProbability != null
+          ? `Synthetic consensus ${formatHybridPercent(selectedRunMarketSummary.syntheticConsensusProbability)}.`
+          : null,
+        selectedRunMarketSummary?.disagreementIndex != null
+          ? `Disagreement ${formatHybridPercent(selectedRunMarketSummary.disagreementIndex)}.`
+          : null
+      ].filter(Boolean).join(' '),
       chips: [
-        evidenceSummary.value.selectedRun.qualityStatus
+        selectedRun.qualityStatus,
+        selectedRun.marketProvenance?.status
+          ? `Provenance ${selectedRun.marketProvenance.status}`
+          : null
       ].filter(Boolean)
     })
   }
@@ -934,6 +1002,14 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => [props.compareId, props.runtimeMode, props.ensembleId, props.clusterId, props.runId, embeddedReportContext.value],
+  ([nextCompareId]) => {
+    reconcileCompareSelection(nextCompareId)
+  },
+  { immediate: true }
+)
+
 const formatAnalyticsStatus = (status) => {
   const labels = {
     loading: 'Loading',
@@ -973,12 +1049,14 @@ const buildCompareScopeIdentityParts = (snapshot) => {
 }
 
 const selectCompareOption = (compareId) => {
-  emit('update:compareId', compareId === props.compareId ? null : compareId)
+  const requestedCompareId = compareId === localCompareId.value ? null : compareId
+  emit('update:compareId', reconcileCompareSelection(requestedCompareId))
 }
 
 const handoffCompare = (compareId) => {
-  emit('update:compareId', compareId || null)
-  emit('handoff-compare', compareId || null)
+  const resolvedCompareId = reconcileCompareSelection(compareId || localCompareId.value)
+  emit('update:compareId', resolvedCompareId)
+  emit('handoff-compare', resolvedCompareId)
 }
 </script>
 

@@ -50,6 +50,7 @@
       <!-- Right Panel: Step 5 Deep Interaction -->
       <div class="panel-wrapper right" :style="rightPanelStyle">
         <Step5Interaction
+          :key="interactionSurfaceKey"
           :reportId="currentReportId"
           :simulationId="simulationId"
           :runtimeMode="runtimeMode"
@@ -130,6 +131,53 @@ const statusText = computed(() => {
   if (currentStatus.value === 'processing') return 'Processing'
   return 'Ready'
 })
+
+const interactionContextHydrationKey = computed(() => {
+  const context = currentReport.value?.probabilistic_context
+  if (!context || typeof context !== 'object') {
+    return 'no-probabilistic-context'
+  }
+
+  const scope = (
+    context.scope
+    && typeof context.scope === 'object'
+  )
+    ? context.scope
+    : {}
+  const compareCatalog = (
+    context.compare_catalog
+    && typeof context.compare_catalog === 'object'
+  )
+    ? context.compare_catalog
+    : {}
+  const compareCount = Array.isArray(compareCatalog.options)
+    ? compareCatalog.options.length
+    : 0
+
+  return [
+    context.generated_at || 'generated',
+    context.ensemble_id || scope.ensemble_id || '',
+    context.cluster_id || scope.cluster_id || '',
+    context.run_id || scope.run_id || '',
+    scope.level || '',
+    context.forecast_workspace ? 'forecast-workspace' : 'no-forecast-workspace',
+    context.forecast_object ? 'forecast-object' : 'no-forecast-object',
+    context.aggregate_summary ? 'aggregate-summary' : 'no-aggregate-summary',
+    context.scenario_clusters ? 'scenario-clusters' : 'no-scenario-clusters',
+    context.sensitivity ? 'sensitivity' : 'no-sensitivity',
+    `compare-${compareCount}`
+  ].join(':')
+})
+
+const interactionSurfaceKey = computed(() => ([
+  currentReportId.value || 'no-report',
+  runtimeMode.value,
+  ensembleId.value || '-',
+  clusterId.value || '-',
+  runId.value || '-',
+  compareId.value || '-',
+  interactionContextHydrationKey.value
+].join('|')))
 
 // --- Helpers ---
 const addLog = (msg) => {

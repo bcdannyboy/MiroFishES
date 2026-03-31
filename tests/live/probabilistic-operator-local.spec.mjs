@@ -14,6 +14,7 @@ const smokeFixtureMarkerFilename = 'probabilistic_smoke_fixture.json'
 const actionTimeout = 30_000
 const readinessTimeout = 5_000
 const reportTimeout = 300_000
+const liveStep45Timeout = 600_000
 const liveBackendPort = process.env.PLAYWRIGHT_BACKEND_PORT || '50141'
 const liveBackendBaseURL = process.env.PLAYWRIGHT_BACKEND_BASE_URL || `http://127.0.0.1:${liveBackendPort}`
 
@@ -45,20 +46,48 @@ const isProbabilisticPrepared = (snapshot) => {
   )
 }
 
-const resolveLiveSimulationSelection = () => {
-  if (process.env.PLAYWRIGHT_LIVE_SIMULATION_ID) {
-    return {
-      simulationId: process.env.PLAYWRIGHT_LIVE_SIMULATION_ID,
-      source: 'env'
-    }
+const readLiveSimulationRecord = (simulationId) => {
+  if (!simulationId) {
+    return null
   }
 
+  const simulationDir = path.join(simulationsRoot, simulationId)
+  if (!fs.existsSync(simulationDir) || !fs.statSync(simulationDir).isDirectory()) {
+    return null
+  }
+  if (fs.existsSync(path.join(simulationDir, smokeFixtureMarkerFilename))) {
+    return null
+  }
+  if (fs.existsSync(path.join(simulationDir, 'forecast_archive.json'))) {
+    return null
+  }
+
+  const preparedSnapshot = safeReadJson(path.join(simulationDir, 'prepared_snapshot.json'))
+  const groundingBundle = safeReadJson(path.join(simulationDir, 'grounding_bundle.json'))
+  const state = safeReadJson(path.join(simulationDir, 'state.json'))
+  const configReasoning = typeof state?.config_reasoning === 'string'
+    ? state.config_reasoning
+    : ''
+  const sourceRequirement = groundingBundle?.source_summary?.simulation_requirement
+
+  return {
+    simulationId,
+    createdAt: state?.created_at || state?.updated_at || null,
+    preparedGrounded: (
+      isProbabilisticPrepared(preparedSnapshot)
+      && groundingBundle?.status === 'ready'
+      && !configReasoning.includes('Synthetic smoke-fixture configuration')
+      && !(
+        typeof sourceRequirement === 'string'
+        && sourceRequirement.includes('Smoke-test the probabilistic Step 2 to Step 3 handoff')
+      )
+    )
+  }
+}
+
+const listLiveSimulationCandidates = () => {
   if (!fs.existsSync(simulationsRoot)) {
-    return {
-      simulationId: null,
-      source: 'auto',
-      reason: `No simulation storage root found at ${simulationsRoot}`
-    }
+    return []
   }
 
   const candidates = []
@@ -67,45 +96,11 @@ const resolveLiveSimulationSelection = () => {
       continue
     }
 
-    const simulationDir = path.join(simulationsRoot, entry)
-    if (!fs.statSync(simulationDir).isDirectory()) {
+    const record = readLiveSimulationRecord(entry)
+    if (!record?.preparedGrounded) {
       continue
     }
-    if (fs.existsSync(path.join(simulationDir, smokeFixtureMarkerFilename))) {
-      continue
-    }
-    if (fs.existsSync(path.join(simulationDir, 'forecast_archive.json'))) {
-      continue
-    }
-
-    const preparedSnapshot = safeReadJson(path.join(simulationDir, 'prepared_snapshot.json'))
-    if (!isProbabilisticPrepared(preparedSnapshot)) {
-      continue
-    }
-
-    const groundingBundle = safeReadJson(path.join(simulationDir, 'grounding_bundle.json'))
-    if (!groundingBundle || groundingBundle.status !== 'ready') {
-      continue
-    }
-
-    const state = safeReadJson(path.join(simulationDir, 'state.json'))
-    const configReasoning = typeof state?.config_reasoning === 'string'
-      ? state.config_reasoning
-      : ''
-    if (configReasoning.includes('Synthetic smoke-fixture configuration')) {
-      continue
-    }
-    const sourceRequirement = groundingBundle?.source_summary?.simulation_requirement
-    if (
-      typeof sourceRequirement === 'string'
-      && sourceRequirement.includes('Smoke-test the probabilistic Step 2 to Step 3 handoff')
-    ) {
-      continue
-    }
-    candidates.push({
-      simulationId: entry,
-      createdAt: state?.created_at || state?.updated_at || null
-    })
+    candidates.push(record)
   }
 
   candidates.sort((left, right) => {
@@ -114,11 +109,25 @@ const resolveLiveSimulationSelection = () => {
     return rightKey.localeCompare(leftKey) || right.simulationId.localeCompare(left.simulationId)
   })
 
+  return candidates
+}
+
+const resolveLiveSimulationSelection = () => {
+  if (process.env.PLAYWRIGHT_LIVE_SIMULATION_ID) {
+    return {
+      simulationId: process.env.PLAYWRIGHT_LIVE_SIMULATION_ID,
+      source: 'env'
+    }
+  }
+
+  const candidates = listLiveSimulationCandidates()
   if (candidates.length === 0) {
     return {
       simulationId: null,
       source: 'auto',
-      reason: 'No active prepared-and-grounded simulation was found under backend/uploads/simulations.'
+      reason: fs.existsSync(simulationsRoot)
+        ? 'No active prepared-and-grounded simulation was found under backend/uploads/simulations.'
+        : `No simulation storage root found at ${simulationsRoot}`
     }
   }
 
@@ -131,24 +140,45 @@ const resolveLiveSimulationSelection = () => {
 const resolvedSimulationSelection = resolveLiveSimulationSelection()
 const defaultSimulationId = resolvedSimulationSelection.simulationId
 
-const resolveLiveProbabilisticReportScope = (simulationId) => {
-  if (!simulationId) {
-    return {
-      source: 'auto',
-      reportId: null,
-      reason: 'No live simulation was selected for report verification.'
-    }
+const hasSavedReportInferenceEvidence = (probabilisticContext) => {
+  if (!probabilisticContext || typeof probabilisticContext !== 'object') {
+    return false
   }
 
+  const selectedRun = probabilisticContext.selected_run
+  const simulationMarket = (
+    selectedRun
+    && typeof selectedRun === 'object'
+    && selectedRun.simulation_market
+    && typeof selectedRun.simulation_market === 'object'
+  )
+    ? selectedRun.simulation_market
+    : null
+  const answerPayload = (
+    probabilisticContext.forecast_workspace
+    && typeof probabilisticContext.forecast_workspace === 'object'
+    && probabilisticContext.forecast_workspace.forecast_answer
+    && typeof probabilisticContext.forecast_workspace.forecast_answer === 'object'
+    && probabilisticContext.forecast_workspace.forecast_answer.answer_payload
+    && typeof probabilisticContext.forecast_workspace.forecast_answer.answer_payload === 'object'
+  )
+    ? probabilisticContext.forecast_workspace.forecast_answer.answer_payload
+    : null
+
+  return Boolean(
+    probabilisticContext.simulation_market_summary
+    && probabilisticContext.signal_provenance_summary
+    && simulationMarket?.market_snapshot
+    && answerPayload?.best_estimate
+  )
+}
+
+const listCompletedProbabilisticReportScopes = ({ simulationId = null } = {}) => {
   if (!fs.existsSync(reportsRoot)) {
-    return {
-      source: 'auto',
-      reportId: null,
-      reason: `No report storage root found at ${reportsRoot}`
-    }
+    return []
   }
 
-  const candidates = []
+  const reportScopes = []
   for (const entry of fs.readdirSync(reportsRoot)) {
     if (!entry || entry.startsWith('.') || entry.startsWith('smoke-')) {
       continue
@@ -160,7 +190,15 @@ const resolveLiveProbabilisticReportScope = (simulationId) => {
     }
 
     const meta = safeReadJson(path.join(reportDir, 'meta.json'))
-    if (!meta || meta.simulation_id !== simulationId || meta.status !== 'completed') {
+    if (!meta || meta.status !== 'completed') {
+      continue
+    }
+    if (simulationId && meta.simulation_id !== simulationId) {
+      continue
+    }
+
+    const simulationRecord = readLiveSimulationRecord(meta.simulation_id)
+    if (!simulationRecord) {
       continue
     }
 
@@ -170,13 +208,20 @@ const resolveLiveProbabilisticReportScope = (simulationId) => {
     )
       ? meta.probabilistic_context
       : null
+    if (!probabilisticContext) {
+      continue
+    }
+    if (!hasSavedReportInferenceEvidence(probabilisticContext)) {
+      continue
+    }
     const ensembleId = meta.ensemble_id || probabilisticContext?.ensemble_id || null
     if (!ensembleId) {
       continue
     }
 
-    candidates.push({
-      source: 'auto',
+    reportScopes.push({
+      source: 'saved-report',
+      simulationId: meta.simulation_id,
       reportId: entry,
       ensembleId,
       clusterId: meta.cluster_id || probabilisticContext?.cluster_id || null,
@@ -185,7 +230,7 @@ const resolveLiveProbabilisticReportScope = (simulationId) => {
     })
   }
 
-  candidates.sort((left, right) => {
+  reportScopes.sort((left, right) => {
     const leftRunScoped = left.runId ? 1 : 0
     const rightRunScoped = right.runId ? 1 : 0
     if (rightRunScoped !== leftRunScoped) {
@@ -196,18 +241,330 @@ const resolveLiveProbabilisticReportScope = (simulationId) => {
     return rightKey.localeCompare(leftKey) || right.reportId.localeCompare(left.reportId)
   })
 
-  if (candidates.length === 0) {
-    return {
-      source: 'auto',
-      reportId: null,
-      reason: `No completed live probabilistic report scope was found for ${simulationId}.`
+  return reportScopes
+}
+
+const listCompletedRunScopeCandidates = (simulationId) => {
+  if (!simulationId) {
+    return []
+  }
+
+  const simulationDir = path.join(simulationsRoot, simulationId)
+  const ensembleRoot = path.join(simulationDir, 'ensemble')
+  if (!fs.existsSync(ensembleRoot)) {
+    return []
+  }
+
+  const runScopes = []
+  for (const ensembleEntry of fs.readdirSync(ensembleRoot)) {
+    if (!ensembleEntry.startsWith('ensemble_')) {
+      continue
+    }
+
+    const ensembleDir = path.join(ensembleRoot, ensembleEntry)
+    if (!fs.statSync(ensembleDir).isDirectory()) {
+      continue
+    }
+
+    const ensembleId = ensembleEntry.replace(/^ensemble_/, '')
+    const runsDir = path.join(ensembleDir, 'runs')
+    if (!fs.existsSync(runsDir)) {
+      continue
+    }
+
+    for (const runEntry of fs.readdirSync(runsDir)) {
+      if (!runEntry.startsWith('run_')) {
+        continue
+      }
+
+      const runDir = path.join(runsDir, runEntry)
+      if (!fs.statSync(runDir).isDirectory()) {
+        continue
+      }
+
+      const runState = safeReadJson(path.join(runDir, 'run_state.json'))
+      const runManifest = safeReadJson(path.join(runDir, 'run_manifest.json'))
+      if (runState?.runner_status !== 'completed' || runManifest?.status !== 'completed') {
+        continue
+      }
+      const marketManifest = safeReadJson(path.join(runDir, 'simulation_market_manifest.json'))
+      if (
+        !marketManifest
+        || marketManifest.extraction_status !== 'ready'
+        || marketManifest.forecast_workspace_linked !== true
+        || marketManifest.scope_linked_to_run !== true
+      ) {
+        continue
+      }
+
+      const graphId = (
+        runManifest?.base_graph_id
+        || runManifest?.graph_id
+        || runState?.base_graph_id
+        || runState?.graph_id
+      )
+      if (!graphId) {
+        continue
+      }
+
+      const hasRunMetrics = fs.existsSync(path.join(runDir, 'metrics.json'))
+      const hasEnsembleAnalytics = (
+        fs.existsSync(path.join(ensembleDir, 'aggregate_summary.json'))
+        || fs.existsSync(path.join(ensembleDir, 'scenario_clusters.json'))
+      )
+      if (!hasRunMetrics && !hasEnsembleAnalytics) {
+        continue
+      }
+
+      runScopes.push({
+        source: 'completed-run',
+        simulationId,
+        reportId: null,
+        ensembleId,
+        clusterId: null,
+        runId: runEntry.replace(/^run_/, ''),
+        scopeLinkedToRun: marketManifest.scope_linked_to_run === true,
+        createdAt: (
+          runState?.completed_at
+          || runManifest?.completed_at
+          || runManifest?.updated_at
+          || runManifest?.generated_at
+          || null
+        )
+      })
     }
   }
 
-  return candidates[0]
+  runScopes.sort((left, right) => {
+    const leftRunLinked = left.scopeLinkedToRun ? 1 : 0
+    const rightRunLinked = right.scopeLinkedToRun ? 1 : 0
+    if (rightRunLinked !== leftRunLinked) {
+      return rightRunLinked - leftRunLinked
+    }
+    const leftKey = left.createdAt || ''
+    const rightKey = right.createdAt || ''
+    return rightKey.localeCompare(leftKey) || right.runId.localeCompare(left.runId)
+  })
+
+  return runScopes
 }
 
-const resolvedReportScopeSelection = resolveLiveProbabilisticReportScope(defaultSimulationId)
+const resolveLiveProbabilisticReportScope = (simulationId) => {
+  if (!simulationId) {
+    return {
+      source: 'auto',
+      reportId: null,
+      reason: 'No live simulation was selected for report verification.'
+    }
+  }
+
+  const savedReportScopes = listCompletedProbabilisticReportScopes({ simulationId })
+  if (savedReportScopes.length > 0) {
+    return savedReportScopes[0]
+  }
+
+  const completedRunScopes = listCompletedRunScopeCandidates(simulationId)
+  if (completedRunScopes.length > 0) {
+    return completedRunScopes[0]
+  }
+
+  return {
+    source: 'auto',
+    reportId: null,
+    reason: (
+      `No completed live probabilistic report scope or report-generatable completed `
+      + `run scope was found for ${simulationId}.`
+    )
+  }
+}
+
+const resolveLiveStep45Selection = () => {
+  const preferFreshGeneration = process.env.PLAYWRIGHT_LIVE_ALLOW_MUTATION === 'true'
+
+  if (process.env.PLAYWRIGHT_LIVE_SIMULATION_ID) {
+    const envSimulationId = process.env.PLAYWRIGHT_LIVE_SIMULATION_ID
+    const reportScopeSelection = resolveLiveProbabilisticReportScope(envSimulationId)
+    return {
+      simulationId: reportScopeSelection.simulationId || envSimulationId,
+      simulationSelection: {
+        simulationId: envSimulationId,
+        source: 'env'
+      },
+      reportScopeSelection
+    }
+  }
+
+  if (resolvedSimulationSelection.simulationId) {
+    const preferredSelection = resolveLiveProbabilisticReportScope(
+      resolvedSimulationSelection.simulationId
+    )
+    if (preferredSelection.ensembleId) {
+      return {
+        simulationId: preferredSelection.simulationId || resolvedSimulationSelection.simulationId,
+        simulationSelection: resolvedSimulationSelection,
+        reportScopeSelection: preferredSelection
+      }
+    }
+  }
+
+  const simulationCandidates = listLiveSimulationCandidates()
+  if (!preferFreshGeneration) {
+    const savedReportScopes = listCompletedProbabilisticReportScopes()
+    if (savedReportScopes.length > 0) {
+      return {
+        simulationId: savedReportScopes[0].simulationId,
+        simulationSelection: {
+          simulationId: savedReportScopes[0].simulationId,
+          source: 'saved-report-catalog'
+        },
+        reportScopeSelection: savedReportScopes[0]
+      }
+    }
+  }
+
+  if (simulationCandidates.length === 0) {
+    return {
+      simulationId: null,
+      simulationSelection: resolvedSimulationSelection,
+      reportScopeSelection: {
+        source: 'auto',
+        reportId: null,
+        reason: resolvedSimulationSelection.reason
+          || 'No active prepared-and-grounded simulation was available for Step 4/5 verification.'
+      }
+    }
+  }
+
+  const reasons = []
+  for (const candidate of simulationCandidates) {
+    if (candidate.simulationId === resolvedSimulationSelection.simulationId) {
+      continue
+    }
+    const reportScopeSelection = resolveLiveProbabilisticReportScope(candidate.simulationId)
+    if (reportScopeSelection.ensembleId) {
+      return {
+        simulationId: candidate.simulationId,
+        simulationSelection: candidate,
+        reportScopeSelection
+      }
+    }
+    reasons.push(`${candidate.simulationId}: ${reportScopeSelection.reason}`)
+  }
+
+  return {
+    simulationId: resolvedSimulationSelection.simulationId || simulationCandidates[0].simulationId,
+    simulationSelection: resolvedSimulationSelection.simulationId
+      ? resolvedSimulationSelection
+      : simulationCandidates[0],
+    reportScopeSelection: {
+      source: 'auto',
+      reportId: null,
+      reason: reasons.join(' | ')
+    }
+  }
+}
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const readLiveRunScopeEvidence = ({ simulationId, ensembleId, runId }) => {
+  if (!simulationId || !ensembleId || !runId) {
+    return null
+  }
+
+  const runDir = path.join(
+    simulationsRoot,
+    simulationId,
+    'ensemble',
+    `ensemble_${ensembleId}`,
+    'runs',
+    `run_${runId}`
+  )
+  if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) {
+    return null
+  }
+
+  const runState = safeReadJson(path.join(runDir, 'run_state.json'))
+  const runManifest = safeReadJson(path.join(runDir, 'run_manifest.json'))
+  const marketManifest = safeReadJson(path.join(runDir, 'simulation_market_manifest.json'))
+  const marketSnapshot = safeReadJson(path.join(runDir, 'market_snapshot.json'))
+  const metrics = safeReadJson(path.join(runDir, 'metrics.json'))
+  const actionLogPaths = ['twitter', 'reddit']
+    .map((platform) => ({
+      platform,
+      relativePath: `${platform}/actions.jsonl`,
+      absolutePath: path.join(runDir, platform, 'actions.jsonl')
+    }))
+    .filter((entry) => fs.existsSync(entry.absolutePath) && fs.statSync(entry.absolutePath).size > 0)
+    .map((entry) => entry.relativePath)
+  const signalCounts = marketManifest?.signal_counts || {}
+  const hasExtractedSignals = (
+    (signalCounts.agent_beliefs || 0) > 0
+    || (signalCounts.belief_updates || 0) > 0
+  )
+
+  return {
+    simulationId,
+    ensembleId,
+    runId,
+    runDir,
+    runState,
+    runManifest,
+    marketManifest,
+    marketSnapshot,
+    metrics,
+    actionLogPaths,
+    ready: Boolean(
+      runState?.runner_status === 'completed'
+      && runManifest?.status === 'completed'
+      && marketManifest?.extraction_status === 'ready'
+      && marketManifest?.forecast_workspace_linked === true
+      && marketManifest?.scope_linked_to_run === true
+      && actionLogPaths.length > 0
+      && hasExtractedSignals
+      && marketSnapshot
+      && metrics
+    )
+  }
+}
+
+const waitForLiveRunScopeEvidence = async (
+  { simulationId, ensembleId, runId },
+  {
+    timeoutMs = liveStep45Timeout,
+    pollIntervalMs = 2_000
+  } = {}
+) => {
+  const deadline = Date.now() + timeoutMs
+  let lastEvidence = readLiveRunScopeEvidence({ simulationId, ensembleId, runId })
+
+  while (Date.now() < deadline) {
+    lastEvidence = readLiveRunScopeEvidence({ simulationId, ensembleId, runId }) || lastEvidence
+    if (lastEvidence?.ready) {
+      return lastEvidence
+    }
+    await delay(pollIntervalMs)
+  }
+
+  const timeoutSummary = lastEvidence
+    ? {
+      runnerStatus: lastEvidence.runState?.runner_status || null,
+      runStatus: lastEvidence.runManifest?.status || null,
+      extractionStatus: lastEvidence.marketManifest?.extraction_status || null,
+      forecastWorkspaceLinked: lastEvidence.marketManifest?.forecast_workspace_linked === true,
+      scopeLinkedToRun: lastEvidence.marketManifest?.scope_linked_to_run === true,
+      actionLogs: lastEvidence.actionLogPaths,
+      signalCounts: lastEvidence.marketManifest?.signal_counts || null,
+      hasMarketSnapshot: Boolean(lastEvidence.marketSnapshot),
+      hasMetrics: Boolean(lastEvidence.metrics)
+    }
+    : null
+
+  throw new Error(
+    `Timed out waiting for live run-scoped report evidence ${simulationId}/${ensembleId}/${runId}: ${
+      JSON.stringify(timeoutSummary)
+    }`
+  )
+}
 
 const buildEvidencePath = (basename = 'operator-pass', latestName = 'latest.json') => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -608,15 +965,21 @@ test.describe('local-only probabilistic operator pass', () => {
   })
 
   test('Step 4 report and Step 5 report-agent work on a live probabilistic report', async ({ page }) => {
-    test.setTimeout(reportTimeout)
+    test.setTimeout(liveStep45Timeout)
+
+    const resolvedStep45Selection = resolveLiveStep45Selection()
+    const step45SimulationId = resolvedStep45Selection.simulationId
+    const step45SimulationSelection = resolvedStep45Selection.simulationSelection
+    const step45ReportScopeSelection = resolvedStep45Selection.reportScopeSelection
 
     const evidence = {
       evidenceClass: 'local-only non-fixture step4-step5',
       mutationAllowed: process.env.PLAYWRIGHT_LIVE_ALLOW_MUTATION === 'true',
-      simulationId: defaultSimulationId,
-      simulationSelection: resolvedSimulationSelection,
-      reportScopeSelection: resolvedReportScopeSelection,
+      simulationId: step45SimulationId,
+      simulationSelection: step45SimulationSelection,
+      reportScopeSelection: step45ReportScopeSelection,
       startedAt: new Date().toISOString(),
+      forecastBootstrap: null,
       reportGeneration: null,
       step4: null,
       step5: null,
@@ -637,28 +1000,193 @@ test.describe('local-only probabilistic operator pass', () => {
     })
 
     try {
-      if (!defaultSimulationId) {
+      if (!step45SimulationId) {
         throw new Error(
-          `Live Step 4/5 verification could not select a prepared-and-grounded simulation: ${resolvedSimulationSelection.reason}`
+          `Live Step 4/5 verification could not select a report-ready prepared-and-grounded simulation: ${
+            step45ReportScopeSelection.reason || resolvedSimulationSelection.reason
+          }`
         )
       }
 
-      if (!resolvedReportScopeSelection.reportId || !resolvedReportScopeSelection.ensembleId) {
-        throw new Error(
-          `Live Step 4/5 verification could not resolve a completed probabilistic report scope: ${resolvedReportScopeSelection.reason}`
+      const executionNonce = Date.now().toString(36)
+      const liveOutcomeLabels = ['labor market', 'cybersecurity', 'regulatory']
+      const liveForecastId = [
+        'live-forecast',
+        step45SimulationId,
+        executionNonce
+      ].join('-')
+      const liveSimulationWorkerId = `worker-sim-${step45SimulationId}-${executionNonce}`
+      const liveForecastRequestedAt = new Date().toISOString()
+      const liveForecastQuestion = (
+        `Which topic dominates the fresh live probabilistic discussion for ${step45SimulationId}: `
+        + `${liveOutcomeLabels.join(', ')}?`
+      )
+
+      const createForecastResponse = await page.request.post(
+        buildLiveBackendApiUrl('/api/forecast/questions'),
+        {
+          data: {
+            forecast_id: liveForecastId,
+            project_id: `live-${step45SimulationId}`,
+            title: `Live probabilistic report proof ${step45SimulationId}`,
+            question: liveForecastQuestion,
+            question_text: liveForecastQuestion,
+            question_type: 'categorical',
+            question_spec: {
+              outcome_labels: liveOutcomeLabels
+            },
+            status: 'active',
+            source: 'live-operator-local',
+            horizon: { type: 'date', value: '2026-12-31' },
+            primary_simulation_id: step45SimulationId,
+            issue_timestamp: liveForecastRequestedAt,
+            created_at: liveForecastRequestedAt,
+            updated_at: liveForecastRequestedAt,
+            forecast_workers: [
+              {
+                worker_id: liveSimulationWorkerId,
+                forecast_id: liveForecastId,
+                kind: 'simulation',
+                label: 'Live scenario simulation worker',
+                status: 'ready',
+                capabilities: ['scenario_generation', 'scenario_analysis'],
+                primary_output_semantics: 'scenario_evidence'
+              }
+            ],
+            simulation_worker_contract: {
+              forecast_id: liveForecastId,
+              worker_id: liveSimulationWorkerId,
+              simulation_id: step45SimulationId
+            }
+          }
+        }
+      )
+      expect(createForecastResponse.status()).toBe(201)
+      const createForecastResult = await createForecastResponse.json()
+      expect(createForecastResult?.success).toBeTruthy()
+
+      const createEnsembleResponse = await page.request.post(
+        buildLiveBackendApiUrl(`/api/simulation/${step45SimulationId}/ensembles`),
+        {
+          data: {
+            run_count: 1,
+            max_concurrency: 1,
+            root_seed: Date.now() % 2_147_483_647,
+            forecast_id: liveForecastId
+          }
+        }
+      )
+      expect(createEnsembleResponse.status()).toBe(200)
+      const createEnsembleResult = await createEnsembleResponse.json()
+      expect(createEnsembleResult?.success).toBeTruthy()
+
+      const liveEnsembleId = createEnsembleResult?.data?.ensemble_id
+      const liveRunId = createEnsembleResult?.data?.runs?.[0]?.run_id
+      expect(liveEnsembleId).toBeTruthy()
+      expect(liveRunId).toBeTruthy()
+
+      const startRunResponse = await page.request.post(
+        buildLiveBackendApiUrl(
+          `/api/simulation/${step45SimulationId}/ensembles/${liveEnsembleId}/runs/${liveRunId}/start`
+        ),
+        {
+          data: {
+            platform: 'parallel',
+            close_environment_on_complete: true,
+            max_rounds: 8,
+            forecast_id: liveForecastId
+          }
+        }
+      )
+      expect(startRunResponse.status()).toBe(200)
+      const startRunResult = await startRunResponse.json()
+      expect(startRunResult?.success).toBeTruthy()
+
+      const liveRunEvidence = await waitForLiveRunScopeEvidence({
+        simulationId: step45SimulationId,
+        ensembleId: liveEnsembleId,
+        runId: liveRunId
+      })
+
+      const generateForecastAnswerResponse = await page.request.post(
+        buildLiveBackendApiUrl(`/api/forecast/questions/${liveForecastId}/forecast-answers/generate`),
+        {
+          data: {
+            requested_at: liveForecastRequestedAt
+          }
+        }
+      )
+      expect(generateForecastAnswerResponse.status()).toBe(200)
+      const generateForecastAnswerResult = await generateForecastAnswerResponse.json()
+      expect(generateForecastAnswerResult?.success).toBeTruthy()
+      expect(generateForecastAnswerResult?.forecast_answer?.answer_type).toBe('hybrid_forecast')
+
+      const workerContributionTrace = (
+        generateForecastAnswerResult?.forecast_answer?.answer_payload?.worker_contribution_trace || []
+      )
+      const simulationWorkerTrace = (
+        workerContributionTrace
+      ).find((item) => item?.worker_id === liveSimulationWorkerId)
+      const simulationMarketTrace = workerContributionTrace.find(
+        (item) => item?.worker_kind === 'simulation_market'
+      )
+      expect(simulationWorkerTrace).toBeTruthy()
+      expect(simulationMarketTrace).toBeTruthy()
+      expect(generateForecastAnswerResult?.forecast_answer?.answer_payload?.best_estimate).toBeTruthy()
+
+      const liveForecastWorkspaceResponse = await page.request.get(
+        buildLiveBackendApiUrl(`/api/forecast/questions/${liveForecastId}`)
+      )
+      expect(liveForecastWorkspaceResponse.status()).toBe(200)
+      const liveForecastWorkspaceResult = await liveForecastWorkspaceResponse.json()
+      expect(liveForecastWorkspaceResult?.success).toBeTruthy()
+      expect(
+        liveForecastWorkspaceResult?.workspace?.forecast_question?.primary_simulation_id
+      ).toBe(step45SimulationId)
+      expect(
+        liveForecastWorkspaceResult?.workspace?.simulation_scope?.latest_ensemble_id
+      ).toBe(liveEnsembleId)
+      expect(
+        liveForecastWorkspaceResult?.workspace?.simulation_scope?.latest_run_id
+      ).toBe(liveRunId)
+
+      const liveReportScopeSelection = {
+        source: 'fresh-live-run',
+        simulationId: step45SimulationId,
+        reportId: null,
+        ensembleId: liveEnsembleId,
+        clusterId: null,
+        runId: liveRunId,
+        createdAt: (
+          liveRunEvidence.runState?.completed_at
+          || liveRunEvidence.runManifest?.completed_at
+          || liveRunEvidence.runManifest?.updated_at
+          || null
         )
       }
+      evidence.reportScopeSelection = liveReportScopeSelection
 
+      evidence.forecastBootstrap = {
+        forecastId: liveForecastId,
+        simulationWorkerId: liveSimulationWorkerId,
+        ensembleId: liveEnsembleId,
+        runId: liveRunId,
+        startResponseStatus: startRunResponse.status(),
+        actionLogs: liveRunEvidence.actionLogPaths,
+        extractionStatus: liveRunEvidence.marketManifest?.extraction_status || null,
+        signalCounts: liveRunEvidence.marketManifest?.signal_counts || null,
+        latestAnswerId: generateForecastAnswerResult?.forecast_answer?.answer_id || null,
+        workerTraceCount: workerContributionTrace.length,
+        simulationTraceWorkerId: simulationWorkerTrace?.worker_id || null,
+        simulationMarketWorkerId: simulationMarketTrace?.worker_id || null
+      }
+
+      const deadline = Date.now() + liveStep45Timeout
       const generatePayload = {
-        simulation_id: defaultSimulationId,
-        ensemble_id: resolvedReportScopeSelection.ensembleId,
+        simulation_id: step45SimulationId,
+        ensemble_id: liveEnsembleId,
+        run_id: liveRunId,
         force_regenerate: true
-      }
-      if (resolvedReportScopeSelection.clusterId) {
-        generatePayload.cluster_id = resolvedReportScopeSelection.clusterId
-      }
-      if (resolvedReportScopeSelection.runId) {
-        generatePayload.run_id = resolvedReportScopeSelection.runId
       }
 
       // The app runtime targets the backend API base directly via VITE_API_BASE_URL.
@@ -678,18 +1206,18 @@ test.describe('local-only probabilistic operator pass', () => {
       expect(taskId).toBeTruthy()
 
       evidence.reportGeneration = {
-        sourceReportId: resolvedReportScopeSelection.reportId,
+        sourceReportId: null,
         generatedReportId: reportId,
         taskId,
+        reusedCompletedScope: false,
         scope: {
           ensembleId: generatePayload.ensemble_id,
-          clusterId: generatePayload.cluster_id || null,
+          clusterId: null,
           runId: generatePayload.run_id || null
         }
       }
 
       let statusPayload = null
-      const deadline = Date.now() + reportTimeout
       while (Date.now() < deadline) {
         const statusResponse = await page.request.post(buildLiveBackendApiUrl('/api/report/generate/status'), {
           data: {
@@ -748,11 +1276,40 @@ test.describe('local-only probabilistic operator pass', () => {
         )
       }
 
+      const reportContext = reportPayload?.probabilistic_context || null
+      const forecastWorkspace = reportContext?.forecast_workspace || null
+      const forecastAnswer = forecastWorkspace?.forecast_answer || null
+      const forecastObject = reportContext?.forecast_object || null
+      const simulationMarketSummary = reportContext?.simulation_market_summary || null
+      const signalProvenanceSummary = reportContext?.signal_provenance_summary || null
+
+      expect(forecastWorkspace).toBeTruthy()
+      expect(forecastAnswer).toBeTruthy()
+      expect(forecastAnswer?.answer_payload?.best_estimate).toBeTruthy()
+      expect(forecastObject?.latest_answer_id).toBeTruthy()
+      expect(simulationMarketSummary).toBeTruthy()
+      expect(signalProvenanceSummary).toBeTruthy()
+      expect(reportContext?.selected_run?.simulation_market?.market_snapshot).toBeTruthy()
+
+      evidence.reportGeneration.contextSummary = {
+        selectedRunId: reportContext?.selected_run?.run_id || null,
+        forecastAnswerId: forecastAnswer?.answer_id || null,
+        latestAnswerId: forecastObject?.latest_answer_id || null,
+        predictionLedgerEntryCount: forecastWorkspace?.prediction_ledger?.entry_count ?? null,
+        provenanceStatus: signalProvenanceSummary?.status || null
+      }
+
+      const expectedStep4Title = (
+        forecastWorkspace || forecastObject
+          ? 'Forecast Object And Supporting Evidence'
+          : 'Scoped Simulation Evidence'
+      )
+
       await page.goto(`/report/${reportId}`)
       await expect(page.getByTestId('probabilistic-report-context')).toBeVisible({
         timeout: actionTimeout
       })
-      await expect(page.getByText('Scoped Simulation Evidence')).toBeVisible({
+      await expect(page.getByText(expectedStep4Title)).toBeVisible({
         timeout: actionTimeout
       })
       await expect(page.getByText('Upstream Grounding')).toBeVisible({

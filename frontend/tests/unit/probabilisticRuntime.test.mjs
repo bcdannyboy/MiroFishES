@@ -361,6 +361,64 @@ test('deriveProbabilisticReportRouteState preserves session-local compare select
   )
 })
 
+test('Step 4 compare handoff route preserves compareId alongside the probabilistic Step 5 scope query', () => {
+  const handoffQuery = buildSimulationRunRouteQuery({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    clusterId: 'cluster_0002',
+    runId: '0002',
+    compareId: 'run-0002__ensemble-0004'
+  })
+
+  assert.deepEqual(handoffQuery, {
+    mode: 'probabilistic',
+    ensembleId: '0004',
+    scope: 'run',
+    clusterId: 'cluster_0002',
+    runId: '0002',
+    compareId: 'run-0002__ensemble-0004'
+  })
+
+  assert.deepEqual(normalizeSimulationRunRouteQuery(handoffQuery), {
+    maxRounds: null,
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    clusterId: 'cluster_0002',
+    runId: '0002',
+    compareId: 'run-0002__ensemble-0004',
+    scopeLevel: 'run',
+    probabilisticRuntimeActive: true
+  })
+
+  assert.deepEqual(
+    deriveProbabilisticReportRouteState({
+      routeQuery: handoffQuery,
+      reportRecord: {
+        ensemble_id: '0004',
+        cluster_id: 'cluster_0002',
+        run_id: '0002',
+        probabilistic_context: {
+          artifact_type: 'probabilistic_report_context',
+          scope: {
+            level: 'run',
+            cluster_id: 'cluster_0002',
+            run_id: '0002'
+          }
+        }
+      }
+    }),
+    {
+      runtimeMode: 'probabilistic',
+      ensembleId: '0004',
+      clusterId: 'cluster_0002',
+      runId: '0002',
+      compareId: 'run-0002__ensemble-0004',
+      scopeLevel: 'run',
+      probabilisticReportActive: true
+    }
+  )
+})
+
 test('getStep2PrepareBootstrapState makes forecast prepare primary when available', () => {
   assert.deepEqual(
     getStep2PrepareBootstrapState({
@@ -1334,7 +1392,7 @@ test('getStep3ReportState disables Step 4 for probabilistic runtime mode', () =>
     {
       enabled: true,
       buttonLabel: 'Start generating the result report',
-      helperText: 'Step 4 will keep the legacy report body and add scoped evidence cards when available: forecast question, evidence bundle, prediction ledger, evaluation status, and simulation-backed scenario analysis.'
+      helperText: 'Step 4 will lead with the forecast object when available and keep bounded simulation evidence in support: question, latest answer, simulation-market summary, provenance, resolution, and scoring.'
     }
   )
 })
@@ -1482,17 +1540,109 @@ test('getStep5InteractionState keeps probabilistic Step 5 honest about missing e
               }
             }
           }],
+          resolution_record: {
+            status: 'resolved_true',
+            resolved_at: '2026-07-01T10:00:00',
+            resolution_note: 'Observed yes.'
+          },
+          scoring_events: [
+            {
+              scoring_method: 'brier_score',
+              score_value: 0.1521
+            }
+          ],
           evaluation_cases: [{ case_id: 'case-1', status: 'resolved' }]
+        },
+        selected_run: {
+          simulation_market: {
+            summary: {
+              synthetic_consensus_probability: 0.61,
+              disagreement_index: 0.18
+            },
+            provenance_validation: {
+              status: 'partial'
+            }
+          }
         }
       }
     }),
     {
       showNotice: true,
       title: 'Hybrid report evidence available',
-      body: 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope. Evidence available. Evaluation available. Calibrated confidence not yet earned. Supported question templates: binary-resolution. Best estimate: 61%. Interviews and surveys still use the legacy interaction path.',
+      body: 'Report Agent chat can inspect the saved report plus scoped forecast evidence for this selected scope. Evidence available. Evaluation available. Calibrated confidence not yet earned. Supported question templates: binary-resolution. Best estimate: 61%. Resolution status: resolved_true. Scoring events: 1. Simulation-market summary and signal provenance remain attached to this scope. Interviews and surveys still use the legacy interaction path.',
       hybridWorkspaceStatus: {
         evidenceAvailable: true,
         evaluationAvailable: true,
+        calibratedConfidenceEarned: false,
+        simulationOnlyScenarioExploration: false
+      }
+    }
+  )
+
+  assert.deepEqual(
+    getStep5InteractionState('probabilistic', {
+      ensembleId: '0004',
+      runId: '0002',
+      hasSavedProbabilisticContext: true,
+      reportContext: {
+        scope: {
+          level: 'run',
+          ensemble_id: '0004',
+          cluster_id: 'cluster_0002',
+          run_id: '0002'
+        },
+        forecast_workspace: {
+          forecast_question: {
+            question_text: 'Will the run-scoped hybrid surface stay honest?',
+            supported_question_templates: ['numeric-interval']
+          },
+          evidence_bundle: {
+            status: 'ready',
+            source_entries: [{ source_id: 'source-1' }]
+          },
+          prediction_ledger: {
+            entries: [{ entry_id: 'entry-1' }]
+          },
+          forecast_workers: [
+            { worker_id: 'worker-sim', kind: 'simulation' },
+            { worker_id: 'worker-base', kind: 'base_rate' }
+          ],
+          forecast_answers: [{
+            confidence_semantics: 'uncalibrated',
+            calibration_summary: {
+              status: 'not_applicable'
+            },
+            answer_payload: {
+              abstain: false,
+              best_estimate: { value: 0.58, semantics: 'forecast_probability' },
+              confidence_basis: {
+                status: 'available',
+                benchmark_status: 'available',
+                calibration_status: 'not_applicable'
+              }
+            }
+          }]
+        },
+        selected_run: {
+          simulation_market: {
+            summary: {
+              synthetic_consensus_probability: 0.58,
+              disagreement_index: 0.22
+            },
+            provenance_validation: {
+              status: 'partial'
+            }
+          }
+        }
+      }
+    }),
+    {
+      showNotice: true,
+      title: 'Hybrid report evidence available',
+      body: 'Report Agent chat can inspect the saved report plus scoped forecast evidence for this selected scope. Evidence available. Evaluation is not yet available. Calibrated confidence not yet earned. Supported question templates: numeric-interval. Best estimate: 58%. Resolution status: pending. Scoring events: 0. Simulation-market summary and signal provenance remain attached to this scope. Interviews and surveys still use the legacy interaction path.',
+      hybridWorkspaceStatus: {
+        evidenceAvailable: true,
+        evaluationAvailable: false,
         calibratedConfidenceEarned: false,
         simulationOnlyScenarioExploration: false
       }
@@ -1624,6 +1774,22 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
             metric_id: 'simulation.total_actions'
           }
         ],
+        simulation_market: {
+          summary: {
+            artifact_type: 'simulation_market_summary',
+            synthetic_consensus_probability: 0.58,
+            disagreement_index: 0.24,
+            participant_count: 2,
+            support_status: 'ready'
+          },
+          provenance_validation: {
+            status: 'partial',
+            allow_best_estimate: true,
+            weight_multiplier: 0.65,
+            issues: [],
+            downgrade_reasons: ['partial_provenance:belief_momentum']
+          }
+        },
         support: {
           key_metric_count: 1
         },
@@ -1801,6 +1967,17 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
         evaluation_cases: [
           { case_id: 'case-1', status: 'resolved' },
           { case_id: 'case-2', status: 'pending' }
+        ],
+        resolution_record: {
+          status: 'resolved_true',
+          resolved_at: '2026-07-01T10:00:00',
+          resolution_note: 'Observed yes.'
+        },
+        scoring_events: [
+          {
+            scoring_method: 'brier_score',
+            score_value: 0.1369
+          }
         ]
       },
       scenario_families: [
@@ -1919,6 +2096,9 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
   assert.equal(summary.selectedCluster.clusterId, 'cluster_1')
   assert.deepEqual(summary.selectedRun.assumptionTemplates, ['baseline-watch'])
   assert.match(summary.selectedRun.assumptionSummary, /baseline-watch/i)
+  assert.equal(summary.selectedRun.marketSummary.syntheticConsensusProbability, 0.58)
+  assert.equal(summary.selectedRun.marketSummary.disagreementIndex, 0.24)
+  assert.equal(summary.selectedRun.marketProvenance.status, 'partial')
   assert.equal(summary.grounding.status, 'ready')
   assert.equal(summary.grounding.citationCounts.source, 1)
   assert.equal(summary.grounding.citationCounts.graph, 1)
@@ -1954,6 +2134,9 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
   assert.equal(summary.hybridWorkspace.evidenceBundle.qualityScore, 0.9)
   assert.equal(summary.hybridWorkspace.predictionLedger.entryCount, 2)
   assert.equal(summary.hybridWorkspace.evaluation.available, true)
+  assert.equal(summary.hybridWorkspace.resolution.status, 'resolved_true')
+  assert.equal(summary.hybridWorkspace.scoring.eventCount, 1)
+  assert.equal(summary.hybridWorkspace.scoring.latestMethod, 'brier_score')
   assert.equal(summary.hybridWorkspace.statusSurface.calibratedConfidenceEarned, false)
   assert.equal(summary.hybridWorkspace.simulationScenarioAnalysis.onlyScenarioExploration, false)
   assert.deepEqual(summary.compareOptions[0].left.clusterId, 'cluster_1')
@@ -1967,6 +2150,63 @@ test('deriveProbabilisticEvidenceSummary exposes provenance, support, calibratio
     summary.comparePrompts.some((prompt) => /observed run share/i.test(prompt.prompt))
   )
   assert.match(summary.comparePrompts[0].prompt, /run 0001 differs from ensemble 0004/i)
+})
+
+test('deriveProbabilisticEvidenceSummary keeps Step 4 compare selection visible when hydrated report context uses camelCase compare ids', () => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: 'probabilistic',
+    ensembleId: '0004',
+    compareId: 'run-0001__ensemble-0004',
+    reportContext: {
+      ensemble_id: '0004',
+      compare_options: [
+        {
+          compareId: 'cluster-cluster_1__cluster-cluster_2',
+          label: 'Cluster 1 vs Cluster 2',
+          left: {
+            level: 'cluster',
+            cluster_id: 'cluster_1'
+          },
+          right: {
+            level: 'cluster',
+            cluster_id: 'cluster_2'
+          },
+          prompt: 'Compare scenario family cluster_1 against cluster_2.'
+        }
+      ],
+      compare_catalog: {
+        boundary_note: 'Compare only within one saved report context and one ensemble.',
+        options: [
+          {
+            compareId: 'run-0001__ensemble-0004',
+            label: 'Run 0001 vs ensemble',
+            reason: 'Selected run against ensemble baseline',
+            left_scope: {
+              level: 'run',
+              ensemble_id: '0004',
+              cluster_id: 'cluster_1',
+              run_id: '0001'
+            },
+            right_scope: {
+              level: 'ensemble',
+              ensemble_id: '0004',
+              cluster_id: null,
+              run_id: null
+            },
+            comparison_summary: {
+              boundary_note: 'Do not treat this comparison as causal or globally calibrated.'
+            },
+            prompt: 'Explain how run 0001 differs from ensemble 0004.'
+          }
+        ]
+      }
+    }
+  })
+
+  assert.equal(summary.compareOptions[0].compareId, 'cluster-cluster_1__cluster-cluster_2')
+  assert.equal(summary.compareCatalog.options[0].compareId, 'run-0001__ensemble-0004')
+  assert.equal(summary.selectedCompare.compareId, 'run-0001__ensemble-0004')
+  assert.equal(summary.selectedCompare.label, 'Run 0001 vs ensemble')
 })
 
 test('deriveProbabilisticEvidenceSummary surfaces absent backtest provenance plainly', () => {

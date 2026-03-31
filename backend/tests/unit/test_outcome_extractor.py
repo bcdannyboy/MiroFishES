@@ -45,6 +45,23 @@ def _configure_runtime_roots(monkeypatch, simulation_data_dir):
     )
 
 
+def _configure_forecast_roots(monkeypatch, forecast_data_dir):
+    config_module = importlib.import_module("app.config")
+    monkeypatch.setattr(
+        config_module.Config,
+        "FORECAST_DATA_DIR",
+        str(forecast_data_dir),
+        raising=False,
+    )
+    manager_module = importlib.import_module("app.services.forecast_manager")
+    monkeypatch.setattr(
+        manager_module.ForecastManager,
+        "FORECAST_DATA_DIR",
+        str(forecast_data_dir),
+    )
+    return manager_module
+
+
 def _write_probabilistic_run_root(
     simulation_data_dir: Path,
     simulation_id: str,
@@ -128,6 +145,77 @@ def _write_probabilistic_run_root(
         },
     )
     return run_dir
+
+
+def _write_simulation_state(
+    simulation_data_dir: Path,
+    simulation_id: str,
+    *,
+    forecast_id: str,
+) -> None:
+    _write_json(
+        simulation_data_dir / simulation_id / "state.json",
+        {
+            "simulation_id": simulation_id,
+            "project_id": "proj-1",
+            "graph_id": "graph-1",
+            "forecast_id": forecast_id,
+            "base_graph_id": "graph-1",
+            "runtime_graph_id": None,
+            "enable_twitter": True,
+            "enable_reddit": True,
+            "status": "ready",
+            "entities_count": 2,
+            "profiles_count": 2,
+            "entity_types": ["Person"],
+            "config_generated": True,
+            "config_reasoning": "",
+            "current_round": 0,
+            "twitter_status": "not_started",
+            "reddit_status": "not_started",
+            "created_at": "2026-03-08T11:00:00",
+            "updated_at": "2026-03-08T11:00:00",
+            "error": None,
+        },
+    )
+
+
+def _create_forecast_workspace(
+    forecast_data_dir: Path,
+    monkeypatch,
+    *,
+    forecast_id: str,
+    simulation_id: str,
+) -> None:
+    manager_module = _configure_forecast_roots(monkeypatch, forecast_data_dir)
+    forecasting_module = importlib.import_module("app.models.forecasting")
+    manager = manager_module.ForecastManager(forecast_data_dir=str(forecast_data_dir))
+    manager.create_question(
+        forecasting_module.ForecastQuestion.from_dict(
+            {
+                "forecast_id": forecast_id,
+                "project_id": "proj-1",
+                "title": "Rates lower by June",
+                "question": "Will the policy rate move lower by June?",
+                "question_type": "binary",
+                "status": "active",
+                "horizon": {"type": "date", "value": "2026-06-30"},
+                "issue_timestamp": "2026-03-08T10:00:00",
+                "created_at": "2026-03-08T10:00:00",
+                "updated_at": "2026-03-08T10:00:00",
+                "primary_simulation_id": simulation_id,
+            }
+        )
+    )
+    manager.attach_simulation_scope(
+        forecast_id,
+        simulation_id=simulation_id,
+        ensemble_ids=["0001"],
+        run_ids=["0001"],
+        latest_ensemble_id="0001",
+        latest_run_id="0001",
+        source_stage="test_link",
+    )
 
 
 def test_extract_run_metrics_computes_first_pass_catalog_from_run_logs(
@@ -930,3 +1018,102 @@ def test_monitor_completion_persists_metrics_json_for_run_scope(
     payload = json.loads(metrics_path.read_text(encoding="utf-8"))
     assert payload["metric_values"]["simulation.total_actions"]["value"] == 1
     assert payload["quality_checks"]["run_status"] == "completed"
+
+
+def test_monitor_completion_persists_simulation_market_artifacts_for_run_scope(
+    simulation_data_dir, forecast_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    _create_forecast_workspace(
+        forecast_data_dir,
+        monkeypatch,
+        forecast_id="forecast-market-persist",
+        simulation_id="sim-market-persist",
+    )
+    _write_simulation_state(
+        simulation_data_dir,
+        "sim-market-persist",
+        forecast_id="forecast-market-persist",
+    )
+    runner_module = _load_runner_module()
+    monkeypatch.setattr(
+        runner_module.SimulationRunner,
+        "RUN_STATE_DIR",
+        str(simulation_data_dir),
+    )
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-market-persist",
+        run_status="prepared",
+    )
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "I put this near 68%.",
+                    "forecast_probability": 0.68,
+                    "confidence": 0.61,
+                    "rationale_tags": ["base_rate"],
+                    "missing_information_requests": ["Need services CPI"],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:10:00",
+                "platform": "twitter",
+                "total_rounds": 1,
+                "total_actions": 1,
+            },
+        ],
+    )
+
+    class _ExitedProcess:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    runner = runner_module.SimulationRunner
+    run_key = "sim-market-persist::0001::0001"
+    runner._run_states.clear()
+    runner._processes.clear()
+    runner._action_queues.clear()
+    runner._monitor_threads.clear()
+    runner._stdout_files.clear()
+    runner._stderr_files.clear()
+    runner._graph_memory_enabled.clear()
+
+    state = runner_module.SimulationRunState(
+        simulation_id="sim-market-persist",
+        ensemble_id="0001",
+        run_id="0001",
+        run_key=run_key,
+        run_dir=str(run_dir),
+        config_path=str(run_dir / "resolved_config.json"),
+        runner_status=runner_module.RunnerStatus.RUNNING,
+        twitter_running=True,
+    )
+    runner._run_states[run_key] = state
+    runner._processes[run_key] = _ExitedProcess()
+
+    runner._monitor_simulation("sim-market-persist", "0001", "0001")
+
+    manifest_path = run_dir / "simulation_market_manifest.json"
+    snapshot_path = run_dir / "market_snapshot.json"
+    run_manifest_path = run_dir / "run_manifest.json"
+    assert manifest_path.exists()
+    assert snapshot_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+    assert manifest["extraction_status"] == "ready"
+    assert manifest["forecast_id"] == "forecast-market-persist"
+    assert run_manifest["artifact_paths"]["simulation_market_manifest"] == "simulation_market_manifest.json"
+    assert run_manifest["artifact_paths"]["market_snapshot"] == "market_snapshot.json"

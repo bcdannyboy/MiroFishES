@@ -293,6 +293,27 @@ def _prediction_ledger_payload(final_resolution_state: str = "pending"):
     }
 
 
+def test_workspace_payload_includes_canonical_lifecycle_metadata_and_simulation_scope():
+    workspace = ForecastWorkspaceRecord.from_dict(_workspace_payload())
+
+    payload = workspace.to_dict()
+
+    assert payload["lifecycle_metadata"]["current_stage"] == "forecast_answer"
+    assert payload["lifecycle_metadata"]["latest_answer_id"] == "answer-1"
+    assert payload["lifecycle_metadata"]["resolution_record_status"] == "pending"
+    assert payload["lifecycle_metadata"]["scoring_event_count"] == 0
+
+    assert payload["simulation_scope"]["forecast_id"] == QUESTION_ID
+    assert payload["simulation_scope"]["simulation_id"] == "sim-001"
+    assert payload["simulation_scope"]["ensemble_ids"] == ["0001"]
+    assert payload["simulation_scope"]["latest_ensemble_id"] == "0001"
+    assert payload["simulation_scope"]["run_ids"] == []
+
+    assert payload["resolution_record"]["forecast_id"] == QUESTION_ID
+    assert payload["resolution_record"]["status"] == "pending"
+    assert payload["scoring_events"] == []
+
+
 def _evaluation_case_payload():
     return {
         "case_id": "case-1",

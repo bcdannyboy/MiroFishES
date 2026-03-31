@@ -55,3 +55,28 @@ def test_phase_timing_recorder_persists_stable_contract_and_merges_phases(tmp_pa
         "entity_type_count": 1,
         "edge_type_count": 1,
     }
+
+
+def test_phase_timing_recorder_recovers_from_malformed_existing_payload(tmp_path):
+    module = _load_phase_timing_module()
+    artifact_path = tmp_path / "ensemble_phase_timings.json"
+    artifact_path.write_text('{"artifact_type":"phase_timings","phases":{}}}', encoding="utf-8")
+    recorder = module.PhaseTimingRecorder(
+        artifact_path=str(artifact_path),
+        scope_kind="ensemble",
+        scope_id="sim_test::0001",
+    )
+
+    payload = recorder.record_completed_phase(
+        "clustering",
+        duration_ms=9.5,
+        started_at="2026-03-31T08:00:00",
+        completed_at="2026-03-31T08:00:01",
+        metadata={"cluster_count": 2},
+    )
+
+    assert payload["scope_kind"] == "ensemble"
+    assert payload["scope_id"] == "sim_test::0001"
+    assert payload["phases"]["clustering"]["duration_ms"] == 9.5
+    persisted = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert persisted["phases"]["clustering"]["metadata"] == {"cluster_count": 2}

@@ -22,6 +22,7 @@ from ..models.forecasting import (
     get_forecast_capabilities_domain,
 )
 from ..services.forecast_manager import ForecastManager
+from ..services.forecast_resolution_manager import ForecastResolutionManager
 
 
 def _json_error(message: str, status_code: int):
@@ -131,10 +132,24 @@ def _workspace_from_request(data: dict) -> ForecastWorkspaceRecord:
 
 
 def _question_request_payload(data: dict) -> dict:
-    payload = dict(data.get("question") or data.get("forecast_question") or {})
+    question_value = data.get("question")
+    forecast_question_value = data.get("forecast_question")
+
+    if isinstance(question_value, dict):
+        payload = dict(question_value)
+    elif isinstance(forecast_question_value, dict):
+        payload = dict(forecast_question_value)
+    else:
+        payload = dict(data)
     if not payload:
         payload = dict(data)
+    if isinstance(question_value, str):
+        normalized_question = question_value.strip()
+        if normalized_question:
+            payload.setdefault("question", normalized_question)
+            payload.setdefault("question_text", normalized_question)
     payload.setdefault("question", payload.get("question_text", payload.get("title", "")))
+    payload.setdefault("question_text", payload.get("question", payload.get("title", "")))
     payload.setdefault("title", payload.get("title", payload.get("question", "")))
     payload.setdefault("project_id", payload.get("project_id") or payload.get("owner") or _new_id("project"))
     payload.setdefault("forecast_id", payload.get("forecast_id") or _new_id("forecast"))
@@ -201,28 +216,16 @@ def _question_workspace_from_request(data: dict) -> ForecastWorkspaceRecord:
             simulation_worker_contract["worker_id"] = _new_id("simulation_worker")
 
     prediction_ledger = dict(data.get("prediction_ledger") or {})
-    prediction_ledger.setdefault("forecast_id", forecast_id)
-    prediction_ledger.setdefault("entries", [])
-    prediction_ledger.setdefault("worker_outputs", [])
-    prediction_ledger.setdefault("resolution_history", [])
-    prediction_ledger.setdefault("final_resolution_state", "pending")
-    prediction_ledger.setdefault("resolved_at", None)
-    prediction_ledger.setdefault("resolution_note", "")
+    prediction_ledger["forecast_id"] = forecast_id
+    prediction_ledger["entries"] = []
+    prediction_ledger["worker_outputs"] = []
+    prediction_ledger["resolution_history"] = []
+    prediction_ledger["final_resolution_state"] = "pending"
+    prediction_ledger["resolved_at"] = None
+    prediction_ledger["resolution_note"] = ""
 
     evaluation_cases = []
-    for index, item in enumerate(data.get("evaluation_cases") or []):
-        case = dict(item or {})
-        case.setdefault("case_id", _new_id(f"case{index + 1}"))
-        case.setdefault("forecast_id", forecast_id)
-        evaluation_cases.append(case)
-
     forecast_answers = []
-    for index, item in enumerate(data.get("forecast_answers") or []):
-        answer = dict(item or {})
-        answer.setdefault("answer_id", _new_id(f"answer{index + 1}"))
-        answer.setdefault("forecast_id", forecast_id)
-        answer.setdefault("created_at", now)
-        forecast_answers.append(answer)
 
     return ForecastWorkspaceRecord(
         forecast_question=ForecastQuestion.from_dict(question_payload),
@@ -300,6 +303,9 @@ def _question_response(workspace: ForecastWorkspaceRecord) -> dict:
         "ledger": ledger_payload,
         "prediction_ledger": ledger_payload,
         "resolution_criteria": [item.to_dict() for item in workspace.resolution_criteria],
+        "resolution_record": workspace.resolution_record.to_dict(),
+        "scoring_events": [item.to_dict() for item in workspace.scoring_events],
+        "forecast_object": _forecast_object_response(workspace),
         "workspace": _workspace_response(workspace),
     }
 
@@ -324,6 +330,25 @@ def _workspace_response(workspace: ForecastWorkspaceRecord) -> dict:
             evidence_bundle
         )
     return workspace_payload
+
+
+def _forecast_object_response(workspace: ForecastWorkspaceRecord) -> dict:
+    latest_answer = workspace.forecast_answers[-1] if workspace.forecast_answers else None
+    latest_scoring = workspace.scoring_events[-1] if workspace.scoring_events else None
+    return {
+        "forecast_id": workspace.forecast_question.forecast_id,
+        "status": "available",
+        "question_text": workspace.forecast_question.question_text,
+        "question_type": workspace.forecast_question.question_type,
+        "latest_answer_id": latest_answer.answer_id if latest_answer is not None else None,
+        "latest_answer_type": latest_answer.answer_type if latest_answer is not None else None,
+        "resolution": workspace.resolution_record.to_dict(),
+        "scoring": {
+            "event_count": len(workspace.scoring_events),
+            "latest_method": latest_scoring.scoring_method if latest_scoring is not None else None,
+            "latest_score_value": latest_scoring.score_value if latest_scoring is not None else None,
+        },
+    }
 
 
 def _normalize_public_evidence_provider_id(provider_id: str | None) -> str | None:
@@ -616,6 +641,45 @@ def resolve_question(forecast_id: str):
         return jsonify({"success": True, **_question_response(workspace)})
     except ValueError as exc:
         return _json_error(str(exc), 400 if "Unknown forecast question" not in str(exc) else 404)
+    except Exception as exc:  # pragma: no cover - defensive
+        return _json_error(str(exc), 500)
+
+
+@forecast_bp.route("/questions/<forecast_id>/score", methods=["POST"])
+def score_question(forecast_id: str):
+    try:
+        data = request.get_json(force=True) or {}
+        if "observed_outcome" not in data:
+            return _json_error("observed_outcome is required to score a forecast answer", 400)
+        workspace = ForecastResolutionManager().score_forecast(
+            forecast_id,
+            observed_outcome=data.get("observed_outcome"),
+            scoring_methods=data.get("scoring_methods"),
+            recorded_at=data.get("recorded_at"),
+            notes=data.get("notes"),
+        )
+        return jsonify({"success": True, **_question_response(workspace)})
+    except ValueError as exc:
+        return _json_error(str(exc), 400 if "Unknown forecast question" not in str(exc) else 404)
+    except Exception as exc:  # pragma: no cover - defensive
+        return _json_error(str(exc), 500)
+
+
+@forecast_bp.route("/questions/<forecast_id>/scoring-events", methods=["GET"])
+def get_question_scoring_events(forecast_id: str):
+    try:
+        workspace = ForecastManager().get_workspace(forecast_id)
+        if workspace is None:
+            return _json_error(f"Unknown forecast question: {forecast_id}", 404)
+        return jsonify(
+            {
+                "success": True,
+                "question": workspace.forecast_question.to_dict(),
+                "resolution_record": workspace.resolution_record.to_dict(),
+                "scoring_events": [item.to_dict() for item in workspace.scoring_events],
+                "forecast_object": _forecast_object_response(workspace),
+            }
+        )
     except Exception as exc:  # pragma: no cover - defensive
         return _json_error(str(exc), 500)
 

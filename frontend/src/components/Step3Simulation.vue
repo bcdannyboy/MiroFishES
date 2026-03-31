@@ -246,6 +246,35 @@
             <p class="probabilistic-status-copy">{{ probabilisticOperatorGuidance }}</p>
           </div>
           <div
+            v-if="selectedRunMarketSummary"
+            class="probabilistic-status-panel tone-neutral"
+            data-testid="probabilistic-market-summary"
+          >
+            <span class="metric-label">Simulation-Market Summary</span>
+            <p class="probabilistic-status-copy">
+              Synthetic consensus
+              <span class="mono">{{ formatMarketPercent(selectedRunMarketSummary.syntheticConsensusProbability) }}</span>,
+              disagreement
+              <span class="mono">{{ formatMarketPercent(selectedRunMarketSummary.disagreementIndex) }}</span>,
+              participants
+              <span class="mono">{{ selectedRunMarketSummary.participantCount }}</span>,
+              support
+              <span class="mono">{{ selectedRunMarketSummary.supportStatus || 'unknown' }}</span>.
+            </p>
+            <p
+              v-if="selectedRunMarketProvenance"
+              class="probabilistic-status-copy"
+            >
+              Signal provenance
+              <span class="mono">{{ selectedRunMarketProvenance.status }}</span>
+              <span v-if="selectedRunMarketProvenance.weightMultiplier !== null">
+                with weight multiplier
+                <span class="mono">{{ selectedRunMarketProvenance.weightMultiplier }}</span>
+              </span>.
+              Step 4 and Step 5 can use this scope as bounded inference support, not as an earned real-world probability claim by itself.
+            </p>
+          </div>
+          <div
             v-if="probabilisticPlatformSkewNotice"
             class="probabilistic-status-panel tone-warning"
             data-testid="probabilistic-platform-skew-notice"
@@ -1191,6 +1220,16 @@ const probabilisticOperatorGuidance = computed(() => (
   probabilisticOperatorActions.value.guidance
 ))
 
+const selectedRunMarketSummary = computed(() => {
+  const summary = selectedRunDetail.value?.simulation_market_summary
+  return summary && typeof summary === 'object' ? summary : null
+})
+
+const selectedRunMarketProvenance = computed(() => {
+  const provenance = selectedRunDetail.value?.simulation_market_provenance
+  return provenance && typeof provenance === 'object' ? provenance : null
+})
+
 const twitterElapsedTime = computed(() => (
   formatElapsedTime(runStatus.value.twitter_current_round || 0)
 ))
@@ -1202,6 +1241,13 @@ const redditElapsedTime = computed(() => (
 // Methods
 const addLog = (msg) => {
   emit('add-log', msg)
+}
+
+const formatMarketPercent = (value) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '-'
+  }
+  return `${Math.round(value * 100)}%`
 }
 
 const loadPrepareCapabilities = async () => {

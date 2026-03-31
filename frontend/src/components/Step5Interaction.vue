@@ -165,7 +165,7 @@
             <div class="tools-card-info">
               <div class="tools-card-name">Hybrid Forecast Workspace</div>
               <div class="tools-card-subtitle">
-                The report can show the forecast question, evidence bundle, prediction ledger, evaluation results, and worker comparison when those artifacts exist. Calibration is only earned on supported evaluated question lanes with type-correct evidence, and simulation remains supporting scenario analysis only.
+                This lane now centers the forecast object first, then uses the report body and bounded simulation evidence in support. Resolution, scoring, simulation-market summary, and signal provenance stay attached when the saved context includes them.
               </div>
             </div>
           </div>
@@ -235,6 +235,9 @@
                 <div class="tool-desc">
                   Final state: {{ hybridWorkspace.predictionLedger.finalResolutionState }}.
                 </div>
+                <div class="tool-desc" v-if="hybridWorkspace.resolution.status">
+                  Resolution record: {{ hybridWorkspace.resolution.status }}<span v-if="hybridWorkspace.resolution.resolvedAt"> at {{ hybridWorkspace.resolution.resolvedAt }}</span>.
+                </div>
                 <div class="tool-desc" v-if="hybridWorkspace.evaluation.caseCount">
                   {{ hybridWorkspace.evaluation.caseCount }} evaluation cases, {{ hybridWorkspace.evaluation.resolvedCaseCount }} resolved.
                 </div>
@@ -267,6 +270,9 @@
                 <div class="tool-desc">
                   Calibrated confidence earned: {{ hybridWorkspace.statusSurface.calibratedConfidenceEarned ? 'yes' : 'no' }}.
                 </div>
+                <div class="tool-desc" v-if="hybridWorkspace.scoring.eventCount">
+                  Scoring events: {{ hybridWorkspace.scoring.eventCount }}<span v-if="hybridWorkspace.scoring.latestMethod"> via {{ hybridWorkspace.scoring.latestMethod }}</span>.
+                </div>
                 <div class="tool-desc" v-if="hybridWorkspace.supportedQuestionTemplates.length">
                   Templates: {{ hybridWorkspace.supportedQuestionTemplates.join(', ') }}.
                 </div>
@@ -278,8 +284,25 @@
                 <div class="tool-desc">
                   {{ hybridWorkspace.simulationScenarioAnalysis.onlyScenarioExploration ? 'Simulation-only scenario exploration.' : 'Simulation remains supporting scenario analysis.' }}
                 </div>
-                <div class="tool-desc" v-if="hybridWorkspace.simulationScenarioAnalysis.observedRunShare !== null">
+                <div class="tool-desc" v-if="hybridWorkspace.simulationScenarioAnalysis.observedRunShare != null">
                   Observed run share {{ formatHybridPercent(hybridWorkspace.simulationScenarioAnalysis.observedRunShare) }}.
+                </div>
+                <div
+                  class="tool-desc"
+                  v-if="hybridWorkspace.simulationMarketSummary && (
+                    hybridWorkspace.simulationMarketSummary.syntheticConsensusProbability != null
+                    || hybridWorkspace.simulationMarketSummary.disagreementIndex != null
+                  )"
+                >
+                  <span v-if="hybridWorkspace.simulationMarketSummary.syntheticConsensusProbability != null">
+                    Synthetic consensus {{ formatHybridPercent(hybridWorkspace.simulationMarketSummary.syntheticConsensusProbability) }}<span v-if="hybridWorkspace.simulationMarketSummary.disagreementIndex != null">, </span>
+                  </span>
+                  <span v-if="hybridWorkspace.simulationMarketSummary.disagreementIndex != null">
+                    disagreement {{ formatHybridPercent(hybridWorkspace.simulationMarketSummary.disagreementIndex) }}.
+                  </span>
+                </div>
+                <div class="tool-desc" v-if="hybridWorkspace.signalProvenanceSummary?.status">
+                  Signal provenance {{ hybridWorkspace.signalProvenanceSummary.status }}<span v-if="hybridWorkspace.signalProvenanceSummary.weightMultiplier != null"> with weight multiplier {{ hybridWorkspace.signalProvenanceSummary.weightMultiplier }}</span>.
                 </div>
               </div>
             </div>
@@ -294,6 +317,12 @@
             </span>
             <span class="probabilistic-step5-chip epistemic">
               Calibrated confidence {{ hybridWorkspace.statusSurface.calibratedConfidenceEarned ? 'earned' : 'not earned' }}
+            </span>
+            <span
+              v-if="hybridWorkspace.signalProvenanceSummary?.status"
+              class="probabilistic-step5-chip epistemic"
+            >
+              Provenance {{ hybridWorkspace.signalProvenanceSummary.status }}
             </span>
             <span class="probabilistic-step5-chip capability">
               {{ hybridWorkspace.statusSurface.simulationOnlyScenarioExploration ? 'Simulation-only scenario exploration' : 'Simulation as supporting scenario analysis' }}
@@ -489,7 +518,7 @@
               <div class="tools-card-avatar">R</div>
               <div class="tools-card-info">
               <div class="tools-card-name">Report Agent Scope</div>
-                <div class="tools-card-subtitle">This lane reads the saved report plus any scoped evidence attached to this session. When the hybrid workspace is present, it can show the question, ledger, evaluation, and worker comparison directly. It still does not widen scope or turn simulation frequency into a probability claim on its own.</div>
+                <div class="tools-card-subtitle">This lane reads the saved report plus any scoped forecast object and supporting evidence attached to this session. When the hybrid workspace is present, it can inspect the latest answer, simulation-market support, provenance, resolution, and scoring directly. It still does not widen scope or turn simulation frequency into a probability claim on its own.</div>
               </div>
               <button class="tools-card-toggle" @click="showToolsDetail = !showToolsDetail">
                 <svg :class="{ 'is-expanded': showToolsDetail }" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -800,13 +829,28 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
+const resolvedProbabilisticContext = ref(null)
+const effectiveProbabilisticContext = computed(() => (
+  props.probabilisticContext
+  && typeof props.probabilisticContext === 'object'
+  && Object.keys(props.probabilisticContext).length > 0
+    ? props.probabilisticContext
+    : resolvedProbabilisticContext.value
+))
+const effectiveRuntimeMode = computed(() => (
+  props.runtimeMode === 'probabilistic'
+    || Boolean(effectiveProbabilisticContext.value)
+    || Boolean(props.ensembleId || props.clusterId || props.runId)
+    ? 'probabilistic'
+    : 'legacy'
+))
 const reportTagLabel = computed(() => (
-  props.probabilisticContext && typeof props.probabilisticContext === 'object'
+  effectiveProbabilisticContext.value
   && (
-    props.probabilisticContext.forecast_workspace
-    || props.probabilisticContext.forecast_question
-    || props.probabilisticContext.prediction_ledger
-    || props.probabilisticContext.forecast_answers
+    effectiveProbabilisticContext.value.forecast_workspace
+    || effectiveProbabilisticContext.value.forecast_question
+    || effectiveProbabilisticContext.value.prediction_ledger
+    || effectiveProbabilisticContext.value.forecast_answers
   )
     ? 'Hybrid Forecast Report'
     : 'Simulation Report'
@@ -860,12 +904,7 @@ const activeReportScope = ref({
 const activeCompareId = ref(props.compareId || null)
 
 const scopeCatalog = computed(() => {
-  const context = (
-    props.probabilisticContext
-    && typeof props.probabilisticContext === 'object'
-  )
-    ? props.probabilisticContext
-    : {}
+  const context = effectiveProbabilisticContext.value || {}
   const catalog = (
     context.scope_catalog
     && typeof context.scope_catalog === 'object'
@@ -931,13 +970,23 @@ const applyScopeOption = (option) => {
   }
 }
 
+const reconcileCompareSelection = (requestedCompareId = null) => {
+  const summary = deriveProbabilisticEvidenceSummary({
+    runtimeMode: effectiveRuntimeMode.value,
+    ensembleId: activeReportScope.value.ensembleId,
+    clusterId: activeReportScope.value.clusterId,
+    runId: activeReportScope.value.runId,
+    scopeLevel: activeReportScope.value.level,
+    compareId: requestedCompareId || activeCompareId.value || props.compareId || null,
+    reportContext: effectiveProbabilisticContext.value
+  })
+
+  activeCompareId.value = summary.selectedCompare?.compareId || null
+  return activeCompareId.value
+}
+
 const resetProbabilisticSelectionState = () => {
-  const context = (
-    props.probabilisticContext
-    && typeof props.probabilisticContext === 'object'
-  )
-    ? props.probabilisticContext
-    : {}
+  const context = effectiveProbabilisticContext.value || {}
   const baseLevel = (
     context.scope
     && typeof context.scope === 'object'
@@ -961,30 +1010,27 @@ const resetProbabilisticSelectionState = () => {
       runId: baseLevel === 'run' ? (props.runId || context.run_id || context.scope?.run_id || null) : null
     }
   }
-  activeCompareId.value = props.compareId || null
+  reconcileCompareSelection(props.compareId)
 }
 
 const probabilisticEvidenceSummary = computed(() => deriveProbabilisticEvidenceSummary({
-  runtimeMode: props.runtimeMode,
+  runtimeMode: effectiveRuntimeMode.value,
   ensembleId: activeReportScope.value.ensembleId,
   clusterId: activeReportScope.value.clusterId,
   runId: activeReportScope.value.runId,
   scopeLevel: activeReportScope.value.level,
   compareId: activeCompareId.value,
-  reportContext: props.probabilisticContext
+  reportContext: effectiveProbabilisticContext.value
 }))
 const hybridWorkspace = computed(() => probabilisticEvidenceSummary.value.hybridWorkspace || null)
 const step5InteractionState = computed(() => getStep5InteractionState(
-  props.runtimeMode,
+  effectiveRuntimeMode.value,
   {
     ensembleId: activeReportScope.value.ensembleId,
     clusterId: activeReportScope.value.clusterId,
     runId: activeReportScope.value.runId,
-    reportContext: props.probabilisticContext,
-    hasSavedProbabilisticContext: (
-      props.probabilisticContext
-      && typeof props.probabilisticContext === 'object'
-    )
+    reportContext: effectiveProbabilisticContext.value,
+    hasSavedProbabilisticContext: Boolean(effectiveProbabilisticContext.value)
   }
 ))
 
@@ -1203,13 +1249,13 @@ const sendToReportAgent = async (message) => {
     ...buildReportAgentChatRequest({
       simulationId: props.simulationId,
       reportId: props.reportId,
-      runtimeMode: props.runtimeMode,
+      runtimeMode: effectiveRuntimeMode.value,
       ensembleId: activeReportScope.value.ensembleId,
       clusterId: activeReportScope.value.clusterId,
       runId: activeReportScope.value.runId,
       scopeLevel: activeReportScope.value.level,
       compareId: activeCompareId.value,
-      reportContext: props.probabilisticContext,
+      reportContext: effectiveProbabilisticContext.value,
       message,
       chatHistory: historyForApi
     })
@@ -1399,6 +1445,13 @@ const loadReportData = async () => {
     // Get report info
     const reportRes = await getReport(props.reportId)
     if (reportRes.success && reportRes.data) {
+      resolvedProbabilisticContext.value = (
+        reportRes.data.probabilistic_context
+        && typeof reportRes.data.probabilistic_context === 'object'
+      )
+        ? reportRes.data.probabilistic_context
+        : resolvedProbabilisticContext.value
+      resetProbabilisticSelectionState()
       // Load agent logs to get report outline and sections
       await loadAgentLogs()
     }
@@ -1480,7 +1533,7 @@ watch(() => props.simulationId, (newId) => {
 }, { immediate: true })
 
 watch(
-  () => [props.runtimeMode, props.ensembleId, props.clusterId, props.runId, props.compareId, props.probabilisticContext],
+  () => [props.runtimeMode, props.ensembleId, props.clusterId, props.runId, props.compareId, props.probabilisticContext, resolvedProbabilisticContext.value],
   () => {
     resetProbabilisticSelectionState()
   },

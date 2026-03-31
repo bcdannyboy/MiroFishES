@@ -1240,7 +1240,7 @@ export const getStep3ReportState = (runtimeMode, capabilities = {}) => {
       return {
         enabled: true,
         buttonLabel: 'Start generating the result report',
-        helperText: 'Step 4 will keep the legacy report body and add scoped evidence cards when available: forecast question, evidence bundle, prediction ledger, evaluation status, and simulation-backed scenario analysis.'
+        helperText: 'Step 4 will lead with the forecast object when available and keep bounded simulation evidence in support: question, latest answer, simulation-market summary, provenance, resolution, and scoring.'
       }
     }
 
@@ -1300,11 +1300,15 @@ export const getStep5InteractionState = (
             ? 'Scenario-family report evidence available'
             : 'Ensemble report evidence available')
       )
-    let body = 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope.'
-    if (scopeLevel === 'cluster') {
-      body = 'Report Agent chat can inspect the saved report plus ensemble and scenario-family evidence for this selected scope.'
-    } else if (scopeLevel === 'run') {
-      body = 'Report Agent chat can inspect the saved report plus ensemble, scenario-family, and run evidence for this selected scope.'
+    let body = hybridWorkspace?.available
+      ? 'Report Agent chat can inspect the saved report plus scoped forecast evidence for this selected scope.'
+      : 'Report Agent chat can inspect the saved report plus scoped evidence for this selected scope.'
+    if (!hybridWorkspace?.available) {
+      if (scopeLevel === 'cluster') {
+        body = 'Report Agent chat can inspect the saved report plus ensemble and scenario-family evidence for this selected scope.'
+      } else if (scopeLevel === 'run') {
+        body = 'Report Agent chat can inspect the saved report plus ensemble, scenario-family, and run evidence for this selected scope.'
+      }
     }
     if (hybridWorkspace?.available) {
       const surfaceStatus = hybridWorkspace.statusSurface || {}
@@ -1336,8 +1340,14 @@ export const getStep5InteractionState = (
       } else if (hybridWorkspace.latestAnswer?.bestEstimateDisplay) {
         body += ` Best estimate: ${hybridWorkspace.latestAnswer.bestEstimateDisplay}.`
       }
-      if (Array.isArray(hybridWorkspace.latestAnswer?.counterevidence) && hybridWorkspace.latestAnswer.counterevidence.length) {
-        body += ` Counterevidence is explicitly retained.`
+      if (hybridWorkspace.resolution?.status) {
+        body += ` Resolution status: ${hybridWorkspace.resolution.status}.`
+      }
+      if (typeof hybridWorkspace.scoring?.eventCount === 'number') {
+        body += ` Scoring events: ${hybridWorkspace.scoring.eventCount}.`
+      }
+      if (hybridWorkspace.simulationMarketSummary || hybridWorkspace.signalProvenanceSummary) {
+        body += ' Simulation-market summary and signal provenance remain attached to this scope.'
       }
     } else if (Array.isArray(evidenceSummary.calibration?.readyMetricIds) && evidenceSummary.calibration.readyMetricIds.length) {
       body += ` Schema-valid backtest-linked calibration artifacts are attached for ${evidenceSummary.calibration.readyMetricIds.join(', ')}, so only that metric may be described as calibrated.`
@@ -2094,6 +2104,43 @@ const buildGroundingSummary = (reportContext = null) => {
   }
 }
 
+const buildSimulationMarketSummary = (summary = null) => {
+  const normalizedSummary = normalizeAnalyticsRecord(summary)
+  if (!normalizedSummary) {
+    return null
+  }
+
+  return {
+    artifactType: normalizeOptionalString(normalizedSummary.artifact_type) || 'simulation_market_summary',
+    syntheticConsensusProbability: normalizeOptionalNumber(
+      normalizedSummary.synthetic_consensus_probability
+    ),
+    disagreementIndex: normalizeOptionalNumber(normalizedSummary.disagreement_index),
+    argumentClusterDistribution: normalizedSummary.argument_cluster_distribution || {},
+    beliefMomentum: normalizeOptionalNumber(normalizedSummary.belief_momentum),
+    minorityWarningSignal: normalizeOptionalString(normalizedSummary.minority_warning_signal) || '',
+    missingInformationSignal: normalizeOptionalString(normalizedSummary.missing_information_signal) || '',
+    scenarioSplitDistribution: normalizedSummary.scenario_split_distribution || {},
+    supportStatus: normalizeOptionalString(normalizedSummary.support_status) || 'unknown',
+    participantCount: normalizeNonNegativeInteger(normalizedSummary.participant_count) ?? 0
+  }
+}
+
+const buildSignalProvenanceSummary = (summary = null) => {
+  const normalizedSummary = normalizeAnalyticsRecord(summary)
+  if (!normalizedSummary) {
+    return null
+  }
+
+  return {
+    status: normalizeOptionalString(normalizedSummary.status) || 'unknown',
+    allowBestEstimate: normalizedSummary.allow_best_estimate === true,
+    weightMultiplier: normalizeOptionalNumber(normalizedSummary.weight_multiplier),
+    issues: normalizeStringList(normalizedSummary.issues),
+    downgradeReasons: normalizeStringList(normalizedSummary.downgrade_reasons)
+  }
+}
+
 const buildHybridWorkspaceSummary = (reportContext = null) => {
   const normalizedContext = normalizeAnalyticsRecord(reportContext) || {}
   const normalizedWorkspace = normalizeAnalyticsRecord(
@@ -2103,6 +2150,27 @@ const buildHybridWorkspaceSummary = (reportContext = null) => {
   const truthfulnessSurface = normalizeAnalyticsRecord(
     normalizedWorkspace.truthfulness_surface
   ) || {}
+  const resolutionRecord = normalizeAnalyticsRecord(normalizedWorkspace.resolution_record) || {}
+  const scoringEvents = Array.isArray(normalizedWorkspace.scoring_events)
+    ? normalizedWorkspace.scoring_events
+    : []
+  const latestScoringEvent = (
+    scoringEvents.length
+      && scoringEvents[scoringEvents.length - 1]
+      && typeof scoringEvents[scoringEvents.length - 1] === 'object'
+  )
+    ? scoringEvents[scoringEvents.length - 1]
+    : {}
+  const simulationMarketSummary = buildSimulationMarketSummary(
+    normalizedContext.simulation_market_summary
+    || normalizedWorkspace.simulation_market_summary
+    || normalizedContext.selected_run?.simulation_market?.summary
+  )
+  const signalProvenanceSummary = buildSignalProvenanceSummary(
+    normalizedContext.signal_provenance_summary
+    || normalizedWorkspace.signal_provenance_summary
+    || normalizedContext.selected_run?.simulation_market?.provenance_validation
+  )
 
   if (
     !workspaceSummary.forecastId
@@ -2351,6 +2419,17 @@ const buildHybridWorkspaceSummary = (reportContext = null) => {
       calibratedConfidenceEarned: truthfulnessMatrix.calibratedConfidenceEarned,
       confidenceBasis
     },
+    resolution: {
+      status: normalizeOptionalString(resolutionRecord.status) || workspaceSummary.resolutionStatus || workspaceSummary.finalResolutionState,
+      resolvedAt: normalizeOptionalString(resolutionRecord.resolved_at) || workspaceSummary.resolvedAt || '',
+      resolutionNote: normalizeOptionalString(resolutionRecord.resolution_note) || workspaceSummary.resolutionNote || ''
+    },
+    scoring: {
+      eventCount: scoringEvents.length,
+      latestMethod: normalizeOptionalString(latestScoringEvent.scoring_method) || workspaceSummary.latestScoringMethod || '',
+      latestScoreValue: normalizeOptionalNumber(latestScoringEvent.score_value ?? workspaceSummary.latestScoreValue),
+      latestEvent: normalizeAnalyticsRecord(latestScoringEvent) || null
+    },
     truthfulnessSurface: {
       ...truthfulnessMatrix,
       boundaryNote: normalizeOptionalString(truthfulnessSurface.boundary_note) || ''
@@ -2359,6 +2438,8 @@ const buildHybridWorkspaceSummary = (reportContext = null) => {
     statusSurface: truthfulnessMatrix,
     supportedQuestionTemplates: supportedQuestionTemplateLabels,
     supportedQuestionTemplateDetails: supportedQuestionTemplates,
+    simulationMarketSummary,
+    signalProvenanceSummary,
     simulationScenarioAnalysis: {
       available: truthfulnessMatrix.simulationOnlyScenarioExploration || Boolean(workspaceSummary.latestSimulationContext),
       onlyScenarioExploration: truthfulnessMatrix.simulationOnlyScenarioExploration,
@@ -2372,9 +2453,9 @@ const normalizeCompareScope = (scope = {}) => {
   const normalizedScope = normalizeAnalyticsRecord(scope) || {}
   return {
     level: normalizeOptionalString(normalizedScope.level) || null,
-    ensembleId: normalizeOptionalString(normalizedScope.ensemble_id) || null,
-    clusterId: normalizeOptionalString(normalizedScope.cluster_id) || null,
-    runId: normalizeOptionalString(normalizedScope.run_id) || null
+    ensembleId: normalizeOptionalString(normalizedScope.ensemble_id ?? normalizedScope.ensembleId) || null,
+    clusterId: normalizeOptionalString(normalizedScope.cluster_id ?? normalizedScope.clusterId) || null,
+    runId: normalizeOptionalString(normalizedScope.run_id ?? normalizedScope.runId) || null
   }
 }
 
@@ -2386,7 +2467,7 @@ const normalizeCompareOptions = (compareOptions = []) => {
   return compareOptions
     .filter((option) => option && typeof option === 'object')
     .map((option) => ({
-      compareId: normalizeOptionalString(option.compare_id) || null,
+      compareId: normalizeOptionalString(option.compare_id ?? option.compareId) || null,
       reason: normalizeOptionalString(option.reason) || '',
       label: normalizeOptionalString(option.label) || 'Compare current evidence',
       prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.',
@@ -2400,22 +2481,22 @@ const normalizeCompareSnapshot = (snapshot = {}) => {
   return {
     scope: normalizeCompareScope(normalizedSnapshot.scope),
     headline: normalizeOptionalString(normalizedSnapshot.headline) || 'Unavailable scope',
-    supportLabel: normalizeOptionalString(normalizedSnapshot.support_label) || 'Support unavailable',
+    supportLabel: normalizeOptionalString(normalizedSnapshot.support_label ?? normalizedSnapshot.supportLabel) || 'Support unavailable',
     semantics: normalizeOptionalString(normalizedSnapshot.semantics) || 'empirical',
-    representativeRunIds: normalizeStringList(normalizedSnapshot.representative_run_ids),
+    representativeRunIds: normalizeStringList(normalizedSnapshot.representative_run_ids ?? normalizedSnapshot.representativeRunIds),
     warnings: normalizeWarningList(normalizedSnapshot.warnings),
-    evidenceHighlights: normalizeStringList(normalizedSnapshot.evidence_highlights),
-    confidenceStatus: normalizeOptionalString(normalizedSnapshot.confidence_status) || null,
-    groundingStatus: normalizeOptionalString(normalizedSnapshot.grounding_status) || null
+    evidenceHighlights: normalizeStringList(normalizedSnapshot.evidence_highlights ?? normalizedSnapshot.evidenceHighlights),
+    confidenceStatus: normalizeOptionalString(normalizedSnapshot.confidence_status ?? normalizedSnapshot.confidenceStatus) || null,
+    groundingStatus: normalizeOptionalString(normalizedSnapshot.grounding_status ?? normalizedSnapshot.groundingStatus) || null
   }
 }
 
 const normalizeCompareSummary = (summary = {}) => {
   const normalizedSummary = normalizeAnalyticsRecord(summary) || {}
   return {
-    whatDiffers: normalizeStringList(normalizedSummary.what_differs),
-    weakSupport: normalizeStringList(normalizedSummary.weak_support),
-    boundaryNote: normalizeOptionalString(normalizedSummary.boundary_note) || ''
+    whatDiffers: normalizeStringList(normalizedSummary.what_differs ?? normalizedSummary.whatDiffers),
+    weakSupport: normalizeStringList(normalizedSummary.weak_support ?? normalizedSummary.weakSupport),
+    boundaryNote: normalizeOptionalString(normalizedSummary.boundary_note ?? normalizedSummary.boundaryNote) || ''
   }
 }
 
@@ -2429,19 +2510,19 @@ const normalizeCompareCatalog = (compareCatalog = null) => {
   }
 
   return {
-    boundaryNote: normalizeOptionalString(normalizedCatalog.boundary_note) || '',
+    boundaryNote: normalizeOptionalString(normalizedCatalog.boundary_note ?? normalizedCatalog.boundaryNote) || '',
     options: Array.isArray(normalizedCatalog.options)
       ? normalizedCatalog.options
         .filter((option) => option && typeof option === 'object')
         .map((option) => ({
-          compareId: normalizeOptionalString(option.compare_id) || null,
+          compareId: normalizeOptionalString(option.compare_id ?? option.compareId) || null,
           label: normalizeOptionalString(option.label) || 'Compare current evidence',
           reason: normalizeOptionalString(option.reason) || '',
-          leftScope: normalizeCompareScope(option.left_scope),
-          rightScope: normalizeCompareScope(option.right_scope),
-          leftSnapshot: normalizeCompareSnapshot(option.left_snapshot),
-          rightSnapshot: normalizeCompareSnapshot(option.right_snapshot),
-          comparisonSummary: normalizeCompareSummary(option.comparison_summary),
+          leftScope: normalizeCompareScope(option.left_scope ?? option.leftScope),
+          rightScope: normalizeCompareScope(option.right_scope ?? option.rightScope),
+          leftSnapshot: normalizeCompareSnapshot(option.left_snapshot ?? option.leftSnapshot),
+          rightSnapshot: normalizeCompareSnapshot(option.right_snapshot ?? option.rightSnapshot),
+          comparisonSummary: normalizeCompareSummary(option.comparison_summary ?? option.comparisonSummary),
           warnings: normalizeWarningList(option.warnings),
           prompt: normalizeOptionalString(option.prompt) || 'Compare the current probabilistic scopes using only persisted evidence, support counts, warnings, and representative runs.'
         }))
@@ -2571,6 +2652,12 @@ export const deriveProbabilisticEvidenceSummary = ({
   const selectedRun = normalizeAnalyticsRecord(normalizedContext.selected_run)
   const selectedCluster = normalizeAnalyticsRecord(normalizedContext.selected_cluster)
   const selectedRunLedger = normalizeAnalyticsRecord(selectedRun?.assumption_ledger) || {}
+  const selectedRunMarketSummary = buildSimulationMarketSummary(
+    selectedRun?.simulation_market?.summary
+  )
+  const selectedRunMarketProvenance = buildSignalProvenanceSummary(
+    selectedRun?.simulation_market?.provenance_validation
+  )
   const confidenceStatus = normalizeConfidenceStatus(normalizedContext)
   const calibrationProvenance = normalizeAnalyticsRecord(normalizedContext.calibration_provenance)
   const calibrationMetric = getReadyCalibrationMetric(normalizedContext)
@@ -2629,6 +2716,8 @@ export const deriveProbabilisticEvidenceSummary = ({
           supportLabel: buildSelectedRunSupportLabel(selectedRun),
           assumptionTemplates: selectedRunTemplates,
           assumptionNotes: selectedRunNotes,
+          marketSummary: selectedRunMarketSummary,
+          marketProvenance: selectedRunMarketProvenance,
           assumptionSummary: selectedRunTemplates.length
             ? `Templates: ${selectedRunTemplates.join(', ')}`
             : (selectedRunNotes[0] || 'No assumption ledger details stored')
@@ -2650,6 +2739,9 @@ export const deriveProbabilisticEvidenceSummary = ({
       }
       : null,
     hybridWorkspace,
+    forecastObject: normalizeAnalyticsRecord(normalizedContext.forecast_object),
+    simulationMarketSummary: buildSimulationMarketSummary(normalizedContext.simulation_market_summary),
+    signalProvenanceSummary: buildSignalProvenanceSummary(normalizedContext.signal_provenance_summary),
     grounding: groundingSummary,
     compareOptions,
     compareCatalog,

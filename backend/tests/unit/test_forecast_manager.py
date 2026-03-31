@@ -663,6 +663,10 @@ def test_forecast_manager_persists_question_primary_fields_through_workspace_sto
     assert (workspace_dir / "evidence_bundles.json").exists()
     assert (workspace_dir / "forecast_workers.json").exists()
     assert (workspace_dir / "simulation_worker_contract.json").exists()
+    assert (workspace_dir / "simulation_scope.json").exists()
+    assert (workspace_dir / "lifecycle_metadata.json").exists()
+    assert (workspace_dir / "resolution_record.json").exists()
+    assert (workspace_dir / "scoring_events.json").exists()
     assert (workspace_dir / "prediction_ledger.json").exists()
     assert (workspace_dir / "evaluation_cases.json").exists()
     assert (workspace_dir / "forecast_answers.json").exists()
@@ -685,7 +689,37 @@ def test_forecast_manager_persists_question_primary_fields_through_workspace_sto
     assert loaded.to_summary_dict()["resolution_history_count"] == 0
     assert loaded.to_summary_dict()["evidence_bundle_id"] == "bundle-1"
     assert loaded.to_summary_dict()["evidence_bundle_status"] == "unavailable"
+    assert loaded.to_summary_dict()["lifecycle_stage"] == "forecast_answer"
+    assert loaded.to_summary_dict()["simulation_scope_status"] == "linked"
     assert "sparse_evidence" in loaded.to_summary_dict()["evidence_uncertainty_causes"]
+
+
+def test_forecast_manager_can_attach_prepare_ensemble_and_run_scope(
+    forecast_data_dir,
+    monkeypatch,
+):
+    monkeypatch.setattr(ForecastManager, "FORECAST_DATA_DIR", str(forecast_data_dir))
+    manager = ForecastManager()
+    manager.create_workspace(_build_workspace())
+
+    updated = manager.attach_simulation_scope(
+        QUESTION_ID,
+        simulation_id="sim-001",
+        prepare_artifact_paths=["uploads/simulations/sim-001/prepared_snapshot.json"],
+        ensemble_ids=["0001"],
+        run_ids=["0001"],
+        latest_ensemble_id="0001",
+        latest_run_id="0001",
+        source_stage="ensemble_run_start",
+    )
+
+    payload = updated.to_dict()
+    assert payload["forecast_question"]["primary_simulation_id"] == "sim-001"
+    assert payload["simulation_scope"]["ensemble_ids"] == ["0001"]
+    assert payload["simulation_scope"]["run_ids"] == ["0001"]
+    assert payload["simulation_scope"]["latest_ensemble_id"] == "0001"
+    assert payload["simulation_scope"]["latest_run_id"] == "0001"
+    assert payload["simulation_scope"]["last_attached_stage"] == "ensemble_run_start"
 
 
 def test_forecast_manager_generates_hybrid_answer_and_revises_worker_predictions(

@@ -70,6 +70,7 @@ class SimulationState:
     simulation_id: str
     project_id: str
     graph_id: str
+    forecast_id: Optional[str] = None
     base_graph_id: str = ""
     runtime_graph_id: Optional[str] = None
     
@@ -113,6 +114,7 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "forecast_id": self.forecast_id,
             "base_graph_id": self.base_graph_id,
             "runtime_graph_id": self.runtime_graph_id,
             "enable_twitter": self.enable_twitter,
@@ -137,6 +139,7 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "forecast_id": self.forecast_id,
             "base_graph_id": self.base_graph_id,
             "runtime_graph_id": self.runtime_graph_id,
             "status": self.status.value,
@@ -1871,6 +1874,7 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=data.get("project_id", ""),
             graph_id=data.get("graph_id", ""),
+            forecast_id=data.get("forecast_id"),
             base_graph_id=data.get("base_graph_id", data.get("graph_id", "")),
             runtime_graph_id=data.get("runtime_graph_id"),
             enable_twitter=data.get("enable_twitter", True),
@@ -1896,6 +1900,7 @@ class SimulationManager:
         self,
         project_id: str,
         graph_id: str,
+        forecast_id: Optional[str] = None,
         enable_twitter: bool = True,
         enable_reddit: bool = True,
     ) -> SimulationState:
@@ -1918,6 +1923,7 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=project_id,
             graph_id=graph_id,
+            forecast_id=forecast_id,
             base_graph_id=graph_id,
             enable_twitter=enable_twitter,
             enable_reddit=enable_reddit,

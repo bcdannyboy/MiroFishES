@@ -2,6 +2,7 @@
 MiroFishES backend Flask application factory.
 """
 
+import importlib
 import os
 import warnings
 
@@ -65,8 +66,19 @@ def create_app(config_class=Config):
         logger.debug(f"Response: {response.status_code}")
         return response
     
-    # Register blueprints.
-    from .api import graph_bp, simulation_bp, report_bp, forecast_bp
+    # Prefer route-module blueprints when available, but fall back to the
+    # package-level stubs used by the backend test harness.
+    from . import api as api_package
+
+    graph_module = importlib.import_module(".api.graph", __name__)
+    simulation_module = importlib.import_module(".api.simulation", __name__)
+    report_module = importlib.import_module(".api.report", __name__)
+    forecast_module = importlib.import_module(".api.forecast", __name__)
+
+    graph_bp = getattr(graph_module, "graph_bp", api_package.graph_bp)
+    simulation_bp = getattr(simulation_module, "simulation_bp", api_package.simulation_bp)
+    report_bp = getattr(report_module, "report_bp", api_package.report_bp)
+    forecast_bp = getattr(forecast_module, "forecast_bp", api_package.forecast_bp)
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')

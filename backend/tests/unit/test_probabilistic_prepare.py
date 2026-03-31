@@ -1451,6 +1451,151 @@ def test_prepare_endpoint_accepts_probabilistic_inputs_and_reports_requested_met
     ]
 
 
+def test_prepare_endpoint_can_create_or_reopen_forecast_workspace_for_inference_ready_path(
+    probabilistic_prepare_enabled,
+    monkeypatch,
+):
+    simulation_module = _load_simulation_api_module()
+    captured = {"created": [], "attached": []}
+
+    class _FakeWorkspace:
+        def __init__(self, forecast_id):
+            self.forecast_question = type(
+                "Question",
+                (),
+                {"forecast_id": forecast_id, "primary_simulation_id": "sim-test"},
+            )()
+
+        def to_summary_dict(self):
+            return {
+                "forecast_id": self.forecast_question.forecast_id,
+                "primary_simulation_id": self.forecast_question.primary_simulation_id,
+                "lifecycle_stage": "forecast_workspace",
+                "simulation_scope_status": "linked",
+            }
+
+    class _FakeForecastManager:
+        workspaces = {}
+
+        def get_workspace(self, forecast_id):
+            return self.workspaces.get(forecast_id)
+
+        def create_question(self, question):
+            captured["created"].append(question.to_dict())
+            workspace = _FakeWorkspace(question.forecast_id)
+            self.workspaces[question.forecast_id] = workspace
+            return workspace
+
+        def attach_simulation_scope(self, forecast_id, **kwargs):
+            captured["attached"].append({"forecast_id": forecast_id, **kwargs})
+            workspace = self.workspaces[forecast_id]
+            workspace.forecast_question.primary_simulation_id = kwargs.get("simulation_id")
+            return workspace
+
+    class _FakeManager:
+        derive_prepare_readiness = staticmethod(
+            _load_manager_module().SimulationManager.derive_prepare_readiness
+        )
+
+        def get_simulation(self, simulation_id):
+            return type(
+                "State",
+                (),
+                {
+                    "simulation_id": simulation_id,
+                    "project_id": "proj-1",
+                    "graph_id": "graph-1",
+                    "status": "created",
+                    "entities_count": 0,
+                    "entity_types": [],
+                },
+            )()
+
+        def _save_simulation_state(self, state):
+            return None
+
+        def prepare_simulation(self, **kwargs):
+            return type(
+                "ResultState",
+                (),
+                {
+                    "to_simple_dict": lambda self: {
+                        "simulation_id": kwargs["simulation_id"],
+                        "status": "ready",
+                    }
+                },
+            )()
+
+        def get_prepare_artifact_summary(self, simulation_id):
+            return {
+                "simulation_id": simulation_id,
+                "mode": "probabilistic",
+                "forecast_brief": None,
+                "artifacts": {},
+            }
+
+    class _FakeReader:
+        def filter_defined_entities(self, *args, **kwargs):
+            return _fake_filtered_entities()
+
+    monkeypatch.setattr(simulation_module, "SimulationManager", _FakeManager)
+    monkeypatch.setattr(simulation_module, "ForecastManager", _FakeForecastManager)
+    monkeypatch.setattr(simulation_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(
+        simulation_module.ProjectManager,
+        "get_project",
+        staticmethod(lambda _project_id: type("Project", (), {"simulation_requirement": "Forecast discussion spread"})()),
+    )
+    monkeypatch.setattr(
+        simulation_module.ProjectManager,
+        "get_extracted_text",
+        staticmethod(lambda _project_id: "seed text"),
+    )
+    monkeypatch.setattr(
+        simulation_module,
+        "_check_simulation_prepared",
+        lambda _simulation_id, require_probabilistic_artifacts=False: (False, {}),
+    )
+    monkeypatch.setattr(
+        simulation_module,
+        "threading",
+        type("ThreadingModule", (), {"Thread": _FakeThread}),
+    )
+
+    client = _build_test_client(simulation_module)
+
+    response = client.post(
+        "/api/simulation/prepare",
+        json={
+            "simulation_id": "sim-test",
+            "probabilistic_mode": True,
+            "uncertainty_profile": "balanced",
+            "outcome_metrics": ["simulation.total_actions"],
+            "forecast_question": {
+                "forecast_id": "forecast-inference",
+                "project_id": "proj-1",
+                "title": "Question-first prepare path",
+                "question": "Will the system complete the bounded run?",
+                "question_type": "binary",
+                "status": "active",
+                "horizon": "2026-06-30",
+                "issue_timestamp": "2026-03-30T09:00:00",
+                "created_at": "2026-03-30T09:00:00",
+                "updated_at": "2026-03-30T09:00:00",
+                "source": "manual-entry",
+                "resolution_criteria_ids": [],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["forecast_workspace"]["forecast_id"] == "forecast-inference"
+    assert captured["created"][0]["forecast_id"] == "forecast-inference"
+    assert captured["attached"][0]["forecast_id"] == "forecast-inference"
+    assert captured["attached"][0]["simulation_id"] == "sim-test"
+
+
 def test_prepare_capabilities_endpoint_reports_backend_registry(
     probabilistic_prepare_enabled, monkeypatch
 ):

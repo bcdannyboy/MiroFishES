@@ -1291,6 +1291,82 @@ def test_ensemble_run_start_endpoint_launches_one_member_run(
     assert payload["close_environment_on_complete"] is True
 
 
+def test_ensemble_run_start_endpoint_attaches_run_scope_to_forecast_workspace(
+    simulation_data_dir, monkeypatch
+):
+    state = _prepare_simulation(simulation_data_dir, monkeypatch, probabilistic_mode=True)
+    simulation_module = _load_simulation_api_module()
+    monkeypatch.setattr(
+        simulation_module.Config,
+        "PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED",
+        True,
+        raising=False,
+    )
+    client = _build_test_client(simulation_module)
+
+    create_response = client.post(
+        f"/api/simulation/{state.simulation_id}/ensembles",
+        json={
+            "run_count": 1,
+            "max_concurrency": 1,
+            "root_seed": 31,
+            "forecast_id": "forecast-001",
+        },
+    )
+    ensemble_id = create_response.get_json()["data"]["ensemble_id"]
+    captures = {"attached": []}
+
+    class _FakeForecastManager:
+        def attach_simulation_scope(self, forecast_id, **kwargs):
+            captures["attached"].append({"forecast_id": forecast_id, **kwargs})
+            return type(
+                "Workspace",
+                (),
+                {
+                    "to_summary_dict": lambda self: {
+                        "forecast_id": forecast_id,
+                        "primary_simulation_id": kwargs.get("simulation_id"),
+                        "lifecycle_stage": "forecast_workspace",
+                        "simulation_scope_status": "linked",
+                    }
+                },
+            )()
+
+    def _fake_start_simulation(**kwargs):
+        return _FakeRunState(
+            simulation_id=kwargs["simulation_id"],
+            ensemble_id=kwargs["ensemble_id"],
+            run_id=kwargs["run_id"],
+            runner_status="running",
+        )
+
+    monkeypatch.setattr(simulation_module, "ForecastManager", _FakeForecastManager)
+    monkeypatch.setattr(
+        simulation_module.SimulationRunner,
+        "start_simulation",
+        _fake_start_simulation,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        simulation_module.SimulationRunner,
+        "get_run_state",
+        lambda simulation_id, ensemble_id=None, run_id=None: None,
+        raising=False,
+    )
+
+    response = client.post(
+        f"/api/simulation/{state.simulation_id}/ensembles/{ensemble_id}/runs/0001/start",
+        json={"platform": "parallel", "forecast_id": "forecast-001"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["forecast_workspace"]["forecast_id"] == "forecast-001"
+    assert captures["attached"][0]["forecast_id"] == "forecast-001"
+    assert captures["attached"][0]["ensemble_ids"] == [ensemble_id]
+    assert captures["attached"][0]["run_ids"] == ["0001"]
+
+
 def test_ensemble_run_start_endpoint_rejects_launch_when_concurrency_is_full(
     simulation_data_dir, monkeypatch
 ):

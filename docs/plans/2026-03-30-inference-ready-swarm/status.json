@@ -1,0 +1,319 @@
+{
+  "plan_id": "2026-03-30-inference-ready-swarm",
+  "prompt_chain_step": 6,
+  "status": "not_ready",
+  "updated_at": "2026-03-30T20:57:49-07:00",
+  "ready_for_next_prompt": false,
+  "active_swarm": {
+    "swarm_id": "swarm-1774818185510-bscyl8",
+    "topology": "hierarchical-mesh",
+    "strategy": "specialized",
+    "coordination_mode": "workspace-local-ruflo-state-mirror"
+  },
+  "deliverables": {
+    "master_status": "00-master-status.md",
+    "gap_analysis": "01-code-truth-gap-analysis.md",
+    "target_architecture": "02-target-architecture.md",
+    "task_graph": "03-task-graph.md",
+    "swarm_board": "04-swarm-board.json",
+    "readiness_report": "05-readiness-report.md",
+    "readiness_status": "06-readiness-status.json"
+  },
+  "completed_outputs": [
+    "shared handoff directory created",
+    "code-truth gap analysis completed",
+    "target architecture completed",
+    "task graph completed",
+    "machine-readable swarm board completed",
+    "local Ruflo mirror plan prepared",
+    "P1 claimed in local Ruflo task store",
+    "canonical forecast lifecycle metadata implemented",
+    "forecast workspace simulation scope persistence implemented",
+    "simulation prepare and Step 3 ensemble/run APIs can attach forecast workspace scope",
+    "prompt 2 targeted backend verification passed",
+    "P2 claimed in local Ruflo task store",
+    "simulation-market artifact schemas implemented",
+    "run-completion persistence now emits simulation-market artifacts",
+    "ensemble run loading exposes simulation-market artifacts",
+    "probabilistic report context exposes selected-run simulation-market snapshots",
+    "prompt 3 targeted backend verification passed",
+    "simulation-market summary and signal schema implemented",
+    "simulation-market provenance validator implemented",
+    "hybrid forecast engine consumes simulation-market signals with contribution trace",
+    "prompt 4 targeted backend verification passed",
+    "resolution/scoring lifecycle implemented for final forecast objects",
+    "forecast-object-first report/API/frontend integration implemented",
+    "prompt 5 backend verification passed",
+    "prompt 5 frontend verification passed",
+    "prompt 6 focused backend verification passed",
+    "prompt 6 focused frontend verification passed",
+    "prompt 6 broad forecasting verification passed",
+    "prompt 6 final readiness verification failed closed",
+    "prompt 6 readiness report generated"
+  ],
+  "key_findings": [
+    "Forecast workspace scaffolding already exists in code and should be extended rather than replaced.",
+    "The primary missing layer is simulation-market extraction, aggregation, provenance, and integration.",
+    "Report and operator flow are still simulation-led and need forecast-object-first integration for the new path."
+  ],
+  "blockers": [
+    {
+      "kind": "tooling",
+      "status": "workaround_active",
+      "detail": "Ruflo MCP write APIs resolve /.claude-flow instead of workspace-local .claude-flow paths."
+    },
+    {
+      "kind": "readiness",
+      "status": "open",
+      "detail": "Step 4 compare selection still fails to surface probabilistic compare handoff in smoke."
+    },
+    {
+      "kind": "readiness",
+      "status": "open",
+      "detail": "Step 5 still fails to surface the hybrid workspace consistently in smoke."
+    },
+    {
+      "kind": "readiness",
+      "status": "open",
+      "detail": "Categorical and numeric hybrid-answer smoke expectations remain red."
+    },
+    {
+      "kind": "readiness",
+      "status": "open",
+      "detail": "Live local Step 4/5 verification still cannot resolve a completed probabilistic report scope."
+    }
+  ],
+  "next_prompt_focus": {
+    "phase": "follow_up_required",
+    "title": "Fix Step 4/5 report-context readiness blockers before any certification",
+    "owner": "Volta/Dirac/Carver",
+    "task_id": "task-20260330-inference-010",
+    "stage": "blocked_on_code_fixes"
+  },
+  "active_work": {
+    "claimed_task_id": null,
+    "claimed_task_ids": [],
+    "claimed_at": "2026-03-30T20:57:49-07:00",
+    "current_focus": [
+      "Prompt 6 complete",
+      "final readiness ladder executed and failed closed",
+      "report-context Step 4/5 blockers must be fixed before certification"
+    ]
+  },
+  "final_readiness": {
+    "verdict": "NOT_READY",
+    "ready_for_internal_research_use": false,
+    "gates_passed": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      7
+    ],
+    "gates_failed": [
+      6,
+      8,
+      9
+    ],
+    "blocked_by_environment": false
+  },
+  "prompt_6_completion": {
+    "phase": "P9 final readiness verification and hardening",
+    "completed_at": "2026-03-30T20:57:49-07:00",
+    "verdict": "NOT_READY",
+    "touched_files": [
+      "backend/tests/unit/test_scan_forecasting_artifacts_script.py",
+      "frontend/src/components/ProbabilisticReportContext.vue",
+      "frontend/src/components/Step4Report.vue",
+      "frontend/src/components/Step5Interaction.vue",
+      "frontend/src/components/HistoryDatabase.vue"
+    ],
+    "validation": [
+      {
+        "command": "pytest -q backend/tests/unit/test_forecasting_schema.py backend/tests/unit/test_forecast_manager.py backend/tests/unit/test_forecast_api.py backend/tests/unit/test_simulation_market_schema.py backend/tests/unit/test_simulation_market_extractor.py backend/tests/unit/test_simulation_market_aggregator.py backend/tests/unit/test_forecast_signal_provenance.py backend/tests/unit/test_forecast_engine.py backend/tests/unit/test_hybrid_forecast_service.py backend/tests/unit/test_forecast_resolution_manager.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_probabilistic_operator_flow.py",
+        "result": "passed",
+        "tests_passed": 114
+      },
+      {
+        "command": "node --test frontend/tests/unit/forecastRuntime.test.mjs frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "result": "passed",
+        "tests_passed": 79
+      },
+      {
+        "command": "pytest -q backend/tests/unit/test_scan_forecasting_artifacts_script.py",
+        "result": "passed",
+        "tests_passed": 8
+      },
+      {
+        "command": "npm run verify:forecasting",
+        "result": "passed"
+      },
+      {
+        "command": "npm run verify:smoke",
+        "result": "failed",
+        "summary": "4 passed, 6 failed"
+      },
+      {
+        "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+        "result": "failed",
+        "summary": "1 passed, 1 failed"
+      }
+    ],
+    "failing_tests": [
+      "tests/smoke/probabilistic-runtime.spec.mjs:189",
+      "tests/smoke/probabilistic-runtime.spec.mjs:200",
+      "tests/smoke/probabilistic-runtime.spec.mjs:215",
+      "tests/smoke/probabilistic-runtime.spec.mjs:229",
+      "tests/smoke/probabilistic-runtime.spec.mjs:243",
+      "tests/smoke/probabilistic-runtime.spec.mjs:297",
+      "tests/live/probabilistic-operator-local.spec.mjs:610"
+    ],
+    "remaining_blockers": [
+      "Step 4 compare handoff detail does not reliably render after selection.",
+      "Step 5 hybrid workspace still does not reliably render from saved report context.",
+      "Categorical and numeric hybrid-answer smoke cases remain red.",
+      "History reopen smoke expectation is stale after preserving probabilistic query state.",
+      "Live local Step 4/5 validation still cannot resolve a completed probabilistic report scope."
+    ]
+  },
+  "prompt_5_completion": {
+    "phase": "P7-P8 resolution/scoring lifecycle plus report/API/frontend integration",
+    "completed_at": "2026-03-30T20:29:36-07:00",
+    "touched_files": [
+      "backend/app/__init__.py",
+      "backend/app/api/forecast.py",
+      "backend/app/services/ensemble_manager.py",
+      "backend/app/services/forecast_manager.py",
+      "backend/app/services/forecast_resolution_manager.py",
+      "backend/app/services/probabilistic_report_context.py",
+      "backend/app/services/report_agent.py",
+      "backend/app/models/forecasting.py",
+      "frontend/src/utils/forecastRuntime.js",
+      "frontend/src/utils/probabilisticRuntime.js",
+      "frontend/src/components/Step2EnvSetup.vue",
+      "frontend/src/components/Step3Simulation.vue",
+      "frontend/src/components/ProbabilisticReportContext.vue",
+      "frontend/src/components/Step5Interaction.vue",
+      "backend/tests/unit/test_forecast_api.py",
+      "backend/tests/unit/test_forecast_resolution_manager.py",
+      "backend/tests/unit/test_probabilistic_report_context.py",
+      "backend/tests/unit/test_probabilistic_report_api.py",
+      "backend/tests/integration/test_probabilistic_operator_flow.py",
+      "frontend/tests/unit/probabilisticRuntime.test.mjs"
+    ],
+    "validation": [
+      {
+        "command": "pytest -q backend/tests/unit/test_forecast_api.py backend/tests/unit/test_forecast_resolution_manager.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_probabilistic_operator_flow.py",
+        "result": "passed",
+        "tests_passed": 64
+      },
+      {
+        "command": "node --test frontend/tests/unit/probabilisticRuntime.test.mjs",
+        "result": "passed",
+        "tests_passed": 70
+      }
+    ],
+    "remaining_blockers_for_next_prompt": [
+      "final readiness verification against explicit gates is still outstanding",
+      "live local end-to-end validation remains downstream of Prompt 6 environment checks",
+      "semantic debt cleanup remains for duplicated helper paths and broader truthfulness surfaces"
+    ]
+  },
+  "prompt_4_completion": {
+    "phase": "P3-P6 signal schema, aggregation, forecast-engine integration, and provenance validation",
+    "completed_at": "2026-03-30T19:39:00-07:00",
+    "touched_files": [
+      "backend/app/models/forecasting.py",
+      "backend/app/models/simulation_market.py",
+      "backend/app/services/simulation_market_aggregator.py",
+      "backend/app/services/forecast_signal_provenance.py",
+      "backend/app/services/forecast_engine.py",
+      "backend/app/services/hybrid_forecast_service.py",
+      "backend/tests/unit/test_simulation_market_aggregator.py",
+      "backend/tests/unit/test_forecast_signal_provenance.py",
+      "backend/tests/unit/test_forecast_engine.py",
+      "backend/tests/unit/test_hybrid_forecast_service.py",
+      "backend/tests/integration/test_probabilistic_operator_flow.py"
+    ],
+    "validation": [
+      {
+        "command": "pytest -q backend/tests/unit/test_simulation_market_schema.py backend/tests/unit/test_simulation_market_extractor.py backend/tests/unit/test_simulation_market_aggregator.py backend/tests/unit/test_forecast_signal_provenance.py backend/tests/unit/test_forecast_engine.py backend/tests/unit/test_hybrid_forecast_service.py backend/tests/unit/test_forecast_manager.py backend/tests/integration/test_probabilistic_operator_flow.py",
+        "result": "passed",
+        "tests_passed": 40
+      },
+      {
+        "command": "pytest -q backend/tests/unit/test_forecasting_schema.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/unit/test_outcome_extractor.py backend/tests/unit/test_simulation_runner_run_scope.py",
+        "result": "passed",
+        "tests_passed": 80
+      }
+    ],
+    "remaining_blockers_for_next_prompt": [
+      "final forecast resolution_record and scoring_event flows are not yet implemented end to end",
+      "report context, report agent, and Step 2-5 frontend surfaces do not yet consume the forecast object first",
+      "simulation-market provenance health is engine-visible but not yet exposed cleanly to report/UI layers",
+      "semantic debt cleanup remains for duplicated helper paths and broader truthfulness surfaces"
+    ]
+  },
+  "prompt_3_completion": {
+    "phase": "P2 simulation-market extraction artifacts",
+    "completed_at": "2026-03-30T19:08:24-07:00",
+    "touched_files": [
+      "backend/app/models/simulation_market.py",
+      "backend/app/services/simulation_market_extractor.py",
+      "backend/app/services/simulation_runner.py",
+      "backend/app/services/ensemble_manager.py",
+      "backend/app/services/probabilistic_report_context.py",
+      "backend/app/api/simulation.py",
+      "backend/tests/unit/test_simulation_market_schema.py",
+      "backend/tests/unit/test_simulation_market_extractor.py",
+      "backend/tests/unit/test_outcome_extractor.py",
+      "backend/tests/unit/test_simulation_runner_run_scope.py",
+      "backend/tests/unit/test_probabilistic_report_context.py",
+      "backend/tests/integration/test_probabilistic_operator_flow.py"
+    ],
+    "validation": {
+      "command": "pytest -q backend/tests/unit/test_simulation_market_schema.py backend/tests/unit/test_simulation_market_extractor.py backend/tests/unit/test_outcome_extractor.py backend/tests/unit/test_simulation_runner_run_scope.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_probabilistic_operator_flow.py",
+      "result": "passed",
+      "tests_passed": 73
+    },
+    "remaining_blockers_for_next_prompt": [
+      "simulation-market signals are persisted but not yet aggregated into canonical forecast-engine inputs",
+      "signal-level provenance and rejection/downgrade gating are still missing",
+      "simulation-market extraction remains heuristic because runtime logs do not emit native belief objects",
+      "numeric questions remain explicitly unsupported in the extraction lane"
+    ]
+  },
+  "prompt_2_completion": {
+    "phase": "P1 canonical forecast control plane",
+    "completed_at": "2026-03-30T18:43:30-07:00",
+    "touched_files": [
+      "backend/app/models/forecasting.py",
+      "backend/app/services/forecast_manager.py",
+      "backend/app/services/simulation_manager.py",
+      "backend/app/api/forecast.py",
+      "backend/app/api/simulation.py",
+      "backend/tests/unit/test_forecasting_schema.py",
+      "backend/tests/unit/test_forecast_manager.py",
+      "backend/tests/unit/test_forecast_api.py",
+      "backend/tests/unit/test_probabilistic_prepare.py",
+      "backend/tests/unit/test_probabilistic_ensemble_api.py",
+      "backend/tests/integration/test_probabilistic_operator_flow.py"
+    ],
+    "validation": {
+      "command": "pytest -q backend/tests/unit/test_forecasting_schema.py backend/tests/unit/test_forecast_manager.py backend/tests/unit/test_forecast_api.py backend/tests/unit/test_probabilistic_prepare.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_probabilistic_operator_flow.py",
+      "result": "passed",
+      "tests_passed": 116
+    },
+    "remaining_blockers_for_next_prompt": [
+      "simulation-market extraction artifacts still do not exist",
+      "forecast engine still does not consume simulation-derived inference signals",
+      "signal-level provenance and scoring lifecycle remain unimplemented"
+    ]
+  },
+  "truthfulness_boundaries": [
+    "simulation-derived signals are not calibrated probabilities by default",
+    "scenario clustering and sensitivity remain observational, not causal",
+    "the simulated marketplace is a feature generator, not the sole source of truth"
+  ]
+}

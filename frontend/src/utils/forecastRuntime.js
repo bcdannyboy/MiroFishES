@@ -293,6 +293,17 @@ export const summarizeForecastWorkspace = (workspace = {}) => {
   const forecastQuestion = normalizeRecord(workspace?.forecast_question || workspace?.question)
   const predictionLedger = normalizeRecord(workspace?.prediction_ledger || workspace?.predictionLedger)
   const evidenceBundle = normalizeRecord(workspace?.evidence_bundle || workspace?.evidence)
+  const resolutionRecord = normalizeRecord(workspace?.resolution_record)
+  const scoringEvents = Array.isArray(workspace?.scoring_events)
+    ? workspace.scoring_events
+    : []
+  const latestScoringEvent = (
+    scoringEvents.length
+      && scoringEvents[scoringEvents.length - 1]
+      && typeof scoringEvents[scoringEvents.length - 1] === 'object'
+  )
+    ? scoringEvents[scoringEvents.length - 1]
+    : {}
   const workers = Array.isArray(workspace?.forecast_workers) ? workspace.forecast_workers : []
   const workerKinds = workers
     .map(worker => String(worker?.kind || '').trim())
@@ -318,7 +329,12 @@ export const summarizeForecastWorkspace = (workspace = {}) => {
   const finalResolutionStateRaw = predictionLedger?.final_resolution_state
   const finalResolutionState = typeof finalResolutionStateRaw === 'string'
     ? finalResolutionStateRaw
-    : String(finalResolutionStateRaw?.status || predictionLedger?.resolution_status || 'pending')
+    : String(
+      resolutionRecord?.status
+      || finalResolutionStateRaw?.status
+      || predictionLedger?.resolution_status
+      || 'pending'
+    )
   const evidenceUncertaintyCauses = Array.isArray(evidenceBundle?.uncertainty_summary?.causes)
     ? evidenceBundle.uncertainty_summary.causes
       .map(cause => String(cause || '').trim())
@@ -443,7 +459,20 @@ export const summarizeForecastWorkspace = (workspace = {}) => {
     supportedQuestionTemplates,
     supportedQuestionTemplateDetails,
     finalResolutionState,
-    resolutionNote: String(predictionLedger.resolution_note || ''),
+    resolutionStatus: String(resolutionRecord.status || finalResolutionState),
+    resolvedAt: String(
+      resolutionRecord.resolved_at
+      || predictionLedger.resolved_at
+      || ''
+    ),
+    resolutionNote: String(
+      resolutionRecord.resolution_note
+      || predictionLedger.resolution_note
+      || ''
+    ),
+    scoringEventCount: scoringEvents.length,
+    latestScoringMethod: String(latestScoringEvent.scoring_method || ''),
+    latestScoreValue: normalizeOptionalNumber(latestScoringEvent.score_value),
     workerCount: workers.length,
     simulationWorkerCount,
     simulationIsOnlyWorker: simulationWorkerCount > 0 && simulationWorkerCount === workers.length,
@@ -506,6 +535,8 @@ export const summarizeForecastWorkspace = (workspace = {}) => {
     latestAnswerPayload,
     latestAnswer,
     forecastAnswer: latestAnswer,
-    predictionLedger
+    predictionLedger,
+    resolutionRecord,
+    scoringEvents
   }
 }

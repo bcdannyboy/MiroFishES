@@ -300,6 +300,48 @@
             </p>
           </div>
 
+          <div
+            v-if="preparedForecastWorkspaceSummary"
+            class="prepare-summary-panel"
+            data-testid="forecast-workspace-summary"
+          >
+            <div class="config-block-header">
+              <span class="config-block-title">Forecast Workspace</span>
+              <span class="config-block-badge mono">{{ preparedForecastWorkspaceSummary.forecastId || '-' }}</span>
+            </div>
+            <div class="summary-grid">
+              <div class="summary-card summary-card-span-full">
+                <span class="summary-label">Question</span>
+                <span class="summary-value">{{ preparedForecastWorkspaceSummary.questionText || preparedForecastWorkspaceSummary.title || 'Question unavailable' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Question Type</span>
+                <span class="summary-value">{{ preparedForecastWorkspaceSummary.questionType || '-' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Workspace Status</span>
+                <span class="summary-value">{{ preparedForecastWorkspaceSummary.forecastWorkspaceStatus || '-' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Resolution</span>
+                <span class="summary-value">{{ preparedForecastWorkspaceSummary.resolutionStatus || preparedForecastWorkspaceSummary.finalResolutionState || 'pending' }}</span>
+              </div>
+              <div class="summary-card">
+                <span class="summary-label">Scoring Events</span>
+                <span class="summary-value">{{ preparedForecastWorkspaceSummary.scoringEventCount }}</span>
+              </div>
+            </div>
+            <p class="summary-note">
+              Step 2 is now attached to a forecast workspace. Step 3 will persist ensemble and run scope back onto this workspace before Step 4 and Step 5 consume the forecast object.
+            </p>
+            <p
+              v-if="preparedForecastWorkspaceSummary.supportedQuestionTemplates.length"
+              class="summary-note"
+            >
+              Supported templates: {{ preparedForecastWorkspaceSummary.supportedQuestionTemplates.join(', ') }}
+            </p>
+          </div>
+
           <!-- Profiles Stats -->
           <div v-if="profiles.length > 0" class="stats-grid">
             <div class="stat-card">
@@ -907,6 +949,7 @@ import {
   deriveProbabilisticCapabilityState,
   getStep2StartSimulationState
 } from '../utils/probabilisticRuntime'
+import { summarizeForecastWorkspace } from '../utils/forecastRuntime'
 
 const props = defineProps({
   simulationId: String,
@@ -939,6 +982,7 @@ const selectedProbabilisticRunCount = ref(
   buildProbabilisticEnsembleRequest().run_count
 )
 const preparedArtifactSummary = ref(null)
+const preparedForecastWorkspace = ref(null)
 const prepareError = ref('')
 const hasStartedPrepare = ref(false)
 const capabilitiesError = ref('')
@@ -1168,6 +1212,14 @@ const showPreparedArtifactSummary = computed(() => (
     && hasProbabilisticArtifactSummary.value
 ))
 
+const preparedForecastWorkspaceSummary = computed(() => {
+  const summary = summarizeForecastWorkspace(preparedForecastWorkspace.value || {})
+  if (!summary.forecastId && !summary.questionText && !summary.title) {
+    return null
+  }
+  return summary
+})
+
 const preparedArtifactRows = computed(() => (
   Object.entries(preparedArtifactSummary.value?.artifacts || {}).map(([name, artifact]) => ({
     name,
@@ -1316,6 +1368,11 @@ const syncPrepareMetadata = (payload = {}) => {
   const summary = payload.prepared_artifact_summary || payload.prepare_info?.prepared_artifact_summary
   if (summary) {
     preparedArtifactSummary.value = summary
+  }
+
+  const forecastWorkspace = payload.forecast_workspace || payload.prepare_info?.forecast_workspace
+  if (forecastWorkspace && typeof forecastWorkspace === 'object') {
+    preparedForecastWorkspace.value = forecastWorkspace
   }
 
   const outcomeMetrics = payload.outcome_metrics || summary?.outcome_metrics
@@ -1468,6 +1525,10 @@ const handleStartSimulation = async () => {
 
       const ensembleId = response.data.ensemble_id
       const runId = response.data.runs?.[0]?.run_id || response.data.state?.run_ids?.[0]
+
+      if (response.data.forecast_workspace && typeof response.data.forecast_workspace === 'object') {
+        preparedForecastWorkspace.value = response.data.forecast_workspace
+      }
 
       if (!ensembleId || !runId) {
         throw new Error('The backend did not return a stored run identifier for Step 3')

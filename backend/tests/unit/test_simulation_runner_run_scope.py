@@ -156,6 +156,34 @@ def test_get_actions_and_cleanup_are_run_scoped(
     (run_dir / "run_state.json").write_text("{}", encoding="utf-8")
     (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
     (run_dir / "run_phase_timings.json").write_text("{}", encoding="utf-8")
+    (run_dir / "simulation_market_manifest.json").write_text("{}", encoding="utf-8")
+    (run_dir / "market_snapshot.json").write_text("{}", encoding="utf-8")
+    (run_dir / "argument_map.json").write_text("{}", encoding="utf-8")
+    (run_dir / "belief_update_trace.json").write_text("{}", encoding="utf-8")
+    (run_dir / "agent_belief_book.json").write_text("{}", encoding="utf-8")
+    (run_dir / "disagreement_summary.json").write_text("{}", encoding="utf-8")
+    (run_dir / "missing_information_signals.json").write_text("{}", encoding="utf-8")
+    (run_dir / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "status": "completed",
+                "artifact_paths": {
+                    "metrics": "metrics.json",
+                    "simulation_market_manifest": "simulation_market_manifest.json",
+                    "market_snapshot": "market_snapshot.json",
+                    "argument_map": "argument_map.json",
+                    "belief_update_trace": "belief_update_trace.json",
+                    "agent_belief_book": "agent_belief_book.json",
+                    "disagreement_summary": "disagreement_summary.json",
+                    "missing_information_signals": "missing_information_signals.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     scoped_actions = runner.get_actions(
         simulation_id=simulation_id,
@@ -175,7 +203,13 @@ def test_get_actions_and_cleanup_are_run_scoped(
     assert run_actions.exists() is False
     assert (run_dir / "metrics.json").exists() is False
     assert (run_dir / "run_phase_timings.json").exists() is False
+    assert (run_dir / "simulation_market_manifest.json").exists() is False
+    assert (run_dir / "market_snapshot.json").exists() is False
     assert root_actions.exists() is True
+    updated_manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "metrics" not in updated_manifest["artifact_paths"]
+    assert "simulation_market_manifest" not in updated_manifest["artifact_paths"]
+    assert "market_snapshot" not in updated_manifest["artifact_paths"]
 
 
 def test_read_action_log_tracks_inflight_round_and_last_progress(
