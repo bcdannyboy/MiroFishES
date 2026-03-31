@@ -330,6 +330,299 @@ def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
     assert project_payload["grounding_artifacts"]["graph_entity_index"]["exists"] is True
 
 
+def test_build_graph_persists_layered_graph_index_with_provenance(monkeypatch, tmp_path):
+    graph_module = _load_graph_api_module()
+    project_module, projects_dir = _configure_projects_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(graph_module.Config, "ZEP_API_KEY", "test-key", raising=False)
+
+    project = project_module.ProjectManager.create_project(name="Layered Graph Grounding")
+    project.simulation_requirement = "Forecast whether payroll weakness drives a June cut."
+    project.status = project_module.ProjectStatus.ONTOLOGY_GENERATED
+    project.ontology = {
+        "schema_mode": "forecast_layered",
+        "actor_types": ["Person", "Organization"],
+        "analytical_types": ["Claim", "Evidence", "Event", "Topic"],
+        "entity_types": [
+            {"name": "Person", "attributes": []},
+            {"name": "Claim", "attributes": []},
+            {"name": "Evidence", "attributes": []},
+            {"name": "Event", "attributes": []},
+            {"name": "Topic", "attributes": []},
+            {"name": "Organization", "attributes": []},
+        ],
+        "edge_types": [{"name": "SUPPORTED_BY", "source_targets": []}],
+    }
+    project.analysis_summary = "The seed documents emphasize labor-policy debate."
+    project.chunk_size = 180
+    project.chunk_overlap = 20
+    project_module.ProjectManager.save_project(project)
+    project_module.ProjectManager.save_extracted_text(
+        project.project_id,
+        "Rate cut rumor spread quickly.\n\nAnalyst note cites payroll slowdown.",
+    )
+    _write_json(
+        projects_dir / project.project_id / "source_manifest.json",
+        {
+            "artifact_type": "source_manifest",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project.project_id,
+            "created_at": "2026-03-29T09:00:00",
+            "simulation_requirement": project.simulation_requirement,
+            "boundary_note": "Uploaded project sources only; this artifact does not claim live-web coverage.",
+            "source_count": 1,
+            "sources": [
+                {
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "original_filename": "memo.md",
+                    "saved_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "size_bytes": 10,
+                    "sha256": "abc123",
+                    "content_kind": "document",
+                    "extraction_status": "succeeded",
+                    "extracted_text_length": 66,
+                    "combined_text_start": 0,
+                    "combined_text_end": 66,
+                    "parser_warnings": [],
+                    "excerpt": "Rate cut rumor spread quickly.",
+                    "source_order": 1,
+                }
+            ],
+        },
+    )
+    _write_json(
+        projects_dir / project.project_id / "source_units.json",
+        {
+            "artifact_type": "source_units",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project.project_id,
+            "created_at": "2026-03-29T09:00:00",
+            "simulation_requirement": project.simulation_requirement,
+            "boundary_note": "Uploaded project sources only; this artifact does not claim live-web coverage.",
+            "source_artifacts": {"source_manifest": "source_manifest.json"},
+            "source_count": 1,
+            "unit_count": 2,
+            "unit_type_counts": {"paragraph": 2},
+            "sources": [
+                {
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "sha256": "abc123",
+                    "unit_count": 2,
+                    "extraction_warnings": [],
+                }
+            ],
+            "units": [
+                {
+                    "unit_id": "su-alpha-0001",
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "source_sha256": "abc123",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 1,
+                    "unit_type": "paragraph",
+                    "char_start": 0,
+                    "char_end": 29,
+                    "combined_text_start": 0,
+                    "combined_text_end": 29,
+                    "text": "Rate cut rumor spread quickly.",
+                    "metadata": {},
+                    "extraction_warnings": [],
+                },
+                {
+                    "unit_id": "su-alpha-0002",
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "source_sha256": "abc123",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 2,
+                    "unit_type": "paragraph",
+                    "char_start": 31,
+                    "char_end": 66,
+                    "combined_text_start": 31,
+                    "combined_text_end": 66,
+                    "text": "Analyst note cites payroll slowdown.",
+                    "metadata": {},
+                    "extraction_warnings": [],
+                },
+            ],
+        },
+    )
+
+    class _FakeThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self.target = target
+            self.args = args
+            self.kwargs = kwargs or {}
+            self.daemon = daemon
+
+        def start(self):
+            self.target(*self.args, **self.kwargs)
+
+    class _FakeBuilder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_graph(self, name):
+            return "graph-layered"
+
+        def set_ontology(self, graph_id, ontology):
+            return None
+
+        def add_text_batches(self, graph_id, chunks, batch_size=3, progress_callback=None):
+            assert len(chunks) == 2
+            assert chunks[0].startswith("Rate cut rumor spread quickly")
+            assert chunks[1].startswith("Analyst note cites payroll slowdown")
+            return ["ep-1", "ep-2"]
+
+        def _wait_for_episodes(
+            self, graph_id, episode_uuids, progress_callback=None, timeout=600
+        ):
+            return None
+
+        def get_graph_snapshot(self, graph_id):
+            return {
+                "graph_id": graph_id,
+                "node_count": 5,
+                "edge_count": 3,
+                "entity_types": ["Claim", "Event", "Evidence", "Person", "Topic"],
+                "nodes": [
+                    {
+                        "uuid": "node-1",
+                        "name": "Analyst",
+                        "labels": ["Entity", "Person"],
+                        "summary": "Tracked participant",
+                        "attributes": {"role": "analyst"},
+                    },
+                    {
+                        "uuid": "node-2",
+                        "name": "Rate cut likely by June",
+                        "labels": ["Entity", "Claim"],
+                        "summary": "Primary forecast claim",
+                        "attributes": {"confidence": "medium"},
+                    },
+                    {
+                        "uuid": "node-3",
+                        "name": "Payroll slowdown note",
+                        "labels": ["Entity", "Evidence"],
+                        "summary": "Supporting evidence",
+                        "attributes": {"kind": "report"},
+                    },
+                    {
+                        "uuid": "node-4",
+                        "name": "Central bank briefing",
+                        "labels": ["Entity", "Event"],
+                        "summary": "Relevant macro event",
+                        "attributes": {"timing": "June"},
+                    },
+                    {
+                        "uuid": "node-5",
+                        "name": "Labor market",
+                        "labels": ["Entity", "Topic"],
+                        "summary": "Tracked topic",
+                        "attributes": {"domain": "macro"},
+                    },
+                ],
+                "edges": [
+                    {
+                        "uuid": "edge-1",
+                        "name": "MAKES_CLAIM",
+                        "fact": "Analyst says a June cut is likely",
+                        "source_node_uuid": "node-1",
+                        "target_node_uuid": "node-2",
+                        "attributes": {},
+                        "episodes": ["ep-1"],
+                    },
+                    {
+                        "uuid": "edge-2",
+                        "name": "SUPPORTED_BY",
+                        "fact": "The claim is supported by the payroll slowdown note",
+                        "source_node_uuid": "node-2",
+                        "target_node_uuid": "node-3",
+                        "attributes": {},
+                        "episodes": ["ep-2"],
+                    },
+                    {
+                        "uuid": "edge-3",
+                        "name": "ABOUT_TOPIC",
+                        "fact": "The claim is about the labor market",
+                        "source_node_uuid": "node-2",
+                        "target_node_uuid": "node-5",
+                        "attributes": {},
+                        "episodes": ["ep-2"],
+                    },
+                ],
+                "graph_counts": {
+                    "actor_count": 1,
+                    "analytical_object_count": 4,
+                    "node_type_counts": {
+                        "Person": 1,
+                        "Claim": 1,
+                        "Evidence": 1,
+                        "Event": 1,
+                        "Topic": 1,
+                    },
+                    "edge_type_counts": {
+                        "MAKES_CLAIM": 1,
+                        "SUPPORTED_BY": 1,
+                        "ABOUT_TOPIC": 1,
+                    },
+                    "analytical_types": ["Claim", "Event", "Evidence", "Topic"],
+                },
+            }
+
+    monkeypatch.setattr(graph_module, "GraphBuilderService", _FakeBuilder)
+    monkeypatch.setattr(graph_module.threading, "Thread", _FakeThread)
+
+    client = _build_test_client(graph_module)
+    response = client.post(
+        "/api/graph/build",
+        json={"project_id": project.project_id},
+    )
+
+    assert response.status_code == 200
+    summary = json.loads(
+        (projects_dir / project.project_id / "graph_build_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entity_index = json.loads(
+        (projects_dir / project.project_id / "graph_entity_index.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert summary["chunking_strategy"] == "semantic_source_units"
+    assert summary["graph_counts"]["actor_count"] == 1
+    assert summary["graph_counts"]["analytical_object_count"] == 4
+    assert summary["graph_counts"]["node_type_counts"]["Claim"] == 1
+    assert summary["graph_counts"]["edge_type_counts"]["SUPPORTED_BY"] == 1
+    assert summary["citation_coverage"]["source_unit_backed_edge_count"] == 3
+    assert entity_index["artifact_type"] == "graph_entity_index"
+    assert entity_index["entity_types"] == ["Person"]
+    assert entity_index["analytical_types"] == ["Claim", "Event", "Evidence", "Topic"]
+    assert entity_index["analytical_object_count"] == 4
+    claim_object = next(
+        item
+        for item in entity_index["analytical_objects"]
+        if item["object_type"] == "Claim"
+    )
+    assert claim_object["provenance"]["source_unit_ids"] == [
+        "su-alpha-0001",
+        "su-alpha-0002",
+    ]
+    assert claim_object["provenance"]["citations"][0]["original_filename"] == "memo.md"
+
+
 def test_grounding_bundle_builder_marks_ready_vs_partial_without_code_analysis(
     monkeypatch, tmp_path
 ):

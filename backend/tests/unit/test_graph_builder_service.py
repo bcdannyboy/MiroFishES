@@ -143,6 +143,61 @@ def test_wait_for_episodes_uses_graph_level_polling(monkeypatch):
     assert get_by_graph_id_calls == [("graph-1", 2)]
 
 
+def test_build_chunk_records_uses_combined_source_unit_offsets():
+    module = importlib.import_module("app.services.graph_builder")
+
+    text = "alpha one.\n\nbeta two."
+    source_units = [
+        {
+            "unit_id": "su-src1-0001",
+            "source_id": "src-1",
+            "stable_source_id": "src-alpha",
+            "original_filename": "alpha.md",
+            "relative_path": "files/alpha.md",
+            "source_order": 1,
+            "unit_order": 1,
+            "unit_type": "paragraph",
+            "char_start": 0,
+            "char_end": 10,
+            "combined_text_start": 0,
+            "combined_text_end": 10,
+            "text": "alpha one.",
+            "metadata": {},
+            "extraction_warnings": [],
+        },
+        {
+            "unit_id": "su-src2-0001",
+            "source_id": "src-2",
+            "stable_source_id": "src-beta",
+            "original_filename": "beta.md",
+            "relative_path": "files/beta.md",
+            "source_order": 2,
+            "unit_order": 1,
+            "unit_type": "paragraph",
+            "char_start": 0,
+            "char_end": 9,
+            "combined_text_start": 12,
+            "combined_text_end": 21,
+            "text": "beta two.",
+            "metadata": {},
+            "extraction_warnings": [],
+        },
+    ]
+
+    records = module.build_chunk_records(
+        text,
+        chunk_size=12,
+        overlap=0,
+        source_units=source_units,
+    )
+
+    assert [record["text"] for record in records] == ["alpha one.", "beta two."]
+    assert records[0]["source_unit_ids"] == ["su-src1-0001"]
+    assert records[1]["source_unit_ids"] == ["su-src2-0001"]
+    assert records[1]["char_start"] == 12
+    assert records[1]["char_end"] == 21
+
+
 def test_get_graph_snapshot_returns_exact_counts_and_entity_types(monkeypatch):
     module = importlib.import_module("app.services.graph_builder")
     service = _build_service(module)
@@ -181,6 +236,49 @@ def test_get_graph_snapshot_returns_exact_counts_and_entity_types(monkeypatch):
     assert snapshot["edges"][0]["uuid"] == "edge-1"
     assert snapshot["edges"][0]["source_node_uuid"] == "node-1"
     assert snapshot["edges"][0]["target_node_uuid"] == "node-2"
+
+
+def test_get_graph_snapshot_returns_layered_counts_and_type_breakdown(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+
+    monkeypatch.setattr(
+        module,
+        "fetch_all_nodes",
+        lambda client, graph_id, max_items=None: [
+            _FakeNode("node-1", "Analyst", ["Entity", "Person"], summary="summary"),
+            _FakeNode("node-2", "June cut likely", ["Entity", "Claim"], summary="summary"),
+            _FakeNode("node-3", "Payroll report", ["Entity", "Evidence"], summary="summary"),
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_all_edges",
+        lambda client, graph_id, max_items=None: [
+            _FakeEdge(
+                "edge-1",
+                "SUPPORTED_BY",
+                "June cut likely is supported by payroll report",
+                "node-2",
+                "node-3",
+            )
+        ],
+        raising=False,
+    )
+
+    snapshot = service.get_graph_snapshot("graph-1")
+
+    assert snapshot["graph_id"] == "graph-1"
+    assert snapshot["graph_counts"]["actor_count"] == 1
+    assert snapshot["graph_counts"]["analytical_object_count"] == 2
+    assert snapshot["graph_counts"]["node_type_counts"] == {
+        "Claim": 1,
+        "Evidence": 1,
+        "Person": 1,
+    }
+    assert snapshot["graph_counts"]["edge_type_counts"] == {"SUPPORTED_BY": 1}
+    assert snapshot["graph_counts"]["analytical_types"] == ["Claim", "Evidence"]
 
 
 def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation(monkeypatch):

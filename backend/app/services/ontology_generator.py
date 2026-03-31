@@ -8,6 +8,7 @@ import json
 import re
 from typing import Dict, Any, List, Optional
 from ..utils.llm_client import LLMClient
+from .forecast_graph import ensure_layered_ontology
 
 
 # System prompt for ontology generation
@@ -22,21 +23,24 @@ We are building a **social media public-opinion simulation system**. In this sys
 - Entities can influence, repost, comment on, and respond to one another
 - We need to simulate how different parties react to opinion-driven events and how information spreads
 
-Therefore, **entities must be real-world actors that can speak and interact on social media**:
+Therefore, **the graph must include both actors and forecast-native analytical objects**:
 
-**Allowed**:
-- Specific individuals such as public figures, involved parties, opinion leaders, experts, scholars, or ordinary people
-- Companies and businesses, including their official accounts
-- Organizations such as universities, associations, NGOs, and unions
-- Government departments and regulators
-- Media organizations such as newspapers, TV stations, self-media accounts, and websites
-- Social media platforms themselves
-- Representatives of specific groups such as alumni associations, fan communities, or rights-defense groups
+**Actor layer**:
+- `Person`
+- `Organization`
 
-**Not allowed**:
-- Abstract concepts such as "public opinion", "emotion", or "trend"
-- Topics or themes such as "academic integrity" or "education reform"
-- Opinions or stances such as "supporters" or "opponents"
+**Analytical layer**:
+- `Event`
+- `Claim`
+- `Evidence`
+- `Topic`
+- `Metric`
+- `TimeWindow`
+- `Scenario`
+- `UncertaintyFactor`
+
+Actors should represent the people or institutions making statements or influencing outcomes.
+Analytical objects should represent the developments, assertions, evidence, topics, metrics, windows, scenarios, and risks that later forecast retrieval and simulation phases need.
 
 ## Output format
 
@@ -78,33 +82,24 @@ Output JSON using the following structure:
 
 **Quantity requirement: exactly 10 entity types**
 
-**Hierarchy requirement (must include both specific types and fallback types)**:
+Your 10 entity types must be the layered forecast schema:
+- `Event`
+- `Claim`
+- `Evidence`
+- `Topic`
+- `Metric`
+- `TimeWindow`
+- `Scenario`
+- `UncertaintyFactor`
+- `Person`
+- `Organization`
 
-Your 10 entity types must follow this structure:
-
-A. **Fallback types (required, placed as the last 2 items)**:
-   - `Person`: fallback type for any natural person who does not fit a more specific person type.
-   - `Organization`: fallback type for any organization that does not fit a more specific organization type.
-
-B. **Specific types (8, designed from the text)**:
-   - Design more specific types for the main roles that appear in the text
-   - Example: for an academic incident, you might use `Student`, `Professor`, `University`
-   - Example: for a business incident, you might use `Company`, `CEO`, `Employee`
-
-**Why fallback types are needed**:
-- The text may include many kinds of people, such as teachers, bystanders, or anonymous netizens
-- If no specialized type fits them, they should be assigned to `Person`
-- Likewise, small organizations or temporary groups should fall under `Organization`
-
-**Design principles for specific types**:
-- Identify high-frequency or central role types from the text
-- Each specific type should have clear boundaries and avoid overlap
-- The description must clearly explain how the type differs from the fallback type
+Use attributes and examples to adapt these types to the uploaded material.
 
 ### 2. Relationship type design
 
 - Quantity: 6-10
-- Relationships should reflect realistic social-media interactions
+- Relationships should connect actors and analytical objects in a forecast-relevant way
 - Make sure `source_targets` covers the entity types you define
 
 ### 3. Attribute design
@@ -113,47 +108,17 @@ B. **Specific types (8, designed from the text)**:
 - **Note**: attribute names cannot use `name`, `uuid`, `group_id`, `created_at`, or `summary` because those are reserved words
 - Recommended options include `full_name`, `title`, `role`, `position`, `location`, and `description`
 
-## Entity type references
-
-**Person types (specific)**:
-- Student: student
-- Professor: professor or scholar
-- Journalist: journalist
-- Celebrity: celebrity or influencer
-- Executive: executive
-- Official: government official
-- Lawyer: lawyer
-- Doctor: doctor
-
-**Person type (fallback)**:
-- Person: any natural person not covered by the specific types above
-
-**Organization types (specific)**:
-- University: university
-- Company: company or business
-- GovernmentAgency: government agency
-- MediaOutlet: media organization
-- Hospital: hospital
-- School: primary or secondary school
-- NGO: non-governmental organization
-
-**Organization type (fallback)**:
-- Organization: any organization not covered by the specific types above
-
 ## Relationship type references
 
-- WORKS_FOR: works for
-- STUDIES_AT: studies at
-- AFFILIATED_WITH: is affiliated with
-- REPRESENTS: represents
-- REGULATES: regulates
-- REPORTS_ON: reports on
-- COMMENTS_ON: comments on
-- RESPONDS_TO: responds to
-- SUPPORTS: supports
-- OPPOSES: opposes
-- COLLABORATES_WITH: collaborates with
-- COMPETES_WITH: competes with
+- INVOLVES_ACTOR: event, claim, or scenario involves an actor
+- MAKES_CLAIM: actor makes a claim
+- SUPPORTED_BY: claim, scenario, or metric is supported by evidence
+- REFERS_TO_EVENT: claim, evidence, or scenario refers to an event
+- ABOUT_TOPIC: analytical object is about a topic
+- MEASURES: metric measures an event, scenario, or topic
+- OCCURS_DURING: analytical object occurs during a time window
+- HAS_UNCERTAINTY: analytical object has an uncertainty factor
+- INFORMS_SCENARIO: analytical object informs a scenario
 """
 
 
@@ -249,13 +214,13 @@ class OntologyGenerator:
 """
 
         message += """
-Based on the information above, design entity types and relationship types suitable for social opinion simulation.
+Based on the information above, design a layered forecast graph ontology.
 
 **Rules that must be followed**:
 1. Output exactly 10 entity types
-2. The last 2 must be fallback types: Person (person fallback) and Organization (organization fallback)
-3. The first 8 must be specific types designed from the text
-4. All entity types must be real actors that can speak or act, not abstract concepts
+2. Include the layered forecast-native objects Event, Claim, Evidence, Topic, Metric, TimeWindow, Scenario, and UncertaintyFactor
+3. Include the actor types Person and Organization
+4. Prefer relationships that connect actors to analytical objects and analytical objects to one another
 5. Attribute names cannot use reserved words such as `name`, `uuid`, or `group_id`; use names like `full_name` or `org_name` instead
 """
         
@@ -356,7 +321,35 @@ Based on the information above, design entity types and relationship types suita
 
         normalized = cls._normalize_entity_name(value, fallback="")
         normalized_key = cls._normalize_lookup_key(normalized)
-        return entity_lookup.get(normalized_key)
+        resolved = entity_lookup.get(normalized_key)
+        if resolved:
+            return resolved
+
+        fallback_value = str(value or "").lower()
+        person_markers = {
+            "person",
+            "student",
+            "professor",
+            "journalist",
+            "celebrity",
+            "executive",
+            "official",
+            "lawyer",
+            "doctor",
+            "worker",
+            "employee",
+            "analyst",
+            "investor",
+            "founder",
+            "citizen",
+        }
+        if "Person" in entity_lookup.values() and any(
+            marker in fallback_value for marker in person_markers
+        ):
+            return "Person"
+        if "Organization" in entity_lookup.values():
+            return "Organization"
+        return None
     
     def _validate_and_process(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and post-process the result."""
@@ -390,58 +383,11 @@ Based on the information above, design entity types and relationship types suita
             if len(edge.get("description", "")) > 100:
                 edge["description"] = edge["description"][:97] + "..."
         
+        result = ensure_layered_ontology(result)
+
         # Zep API limits: at most 10 custom entity types and 10 custom edge types.
         MAX_ENTITY_TYPES = 10
         MAX_EDGE_TYPES = 10
-        
-        # Fallback type definitions.
-        person_fallback = {
-            "name": "Person",
-            "description": "Any individual person not fitting other specific person types.",
-            "attributes": [
-                {"name": "full_name", "type": "text", "description": "Full name of the person"},
-                {"name": "role", "type": "text", "description": "Role or occupation"}
-            ],
-            "examples": ["ordinary citizen", "anonymous netizen"]
-        }
-        
-        organization_fallback = {
-            "name": "Organization",
-            "description": "Any organization not fitting other specific organization types.",
-            "attributes": [
-                {"name": "org_name", "type": "text", "description": "Name of the organization"},
-                {"name": "org_type", "type": "text", "description": "Type of organization"}
-            ],
-            "examples": ["small business", "community group"]
-        }
-        
-        # Check whether fallback types already exist.
-        entity_names = {e["name"] for e in result["entity_types"]}
-        has_person = "Person" in entity_names
-        has_organization = "Organization" in entity_names
-        
-        # Fallback types that need to be added.
-        fallbacks_to_add = []
-        if not has_person:
-            fallbacks_to_add.append(person_fallback)
-        if not has_organization:
-            fallbacks_to_add.append(organization_fallback)
-        
-        if fallbacks_to_add:
-            current_count = len(result["entity_types"])
-            needed_slots = len(fallbacks_to_add)
-            
-            # Remove existing types if adding fallbacks would exceed the limit.
-            if current_count + needed_slots > MAX_ENTITY_TYPES:
-                # Calculate how many types need to be removed.
-                to_remove = current_count + needed_slots - MAX_ENTITY_TYPES
-                # Remove from the end to preserve earlier, likely more important specific types.
-                result["entity_types"] = result["entity_types"][:-to_remove]
-            
-            # Add the fallback types.
-            result["entity_types"].extend(fallbacks_to_add)
-        
-        # Final defensive limit enforcement.
         if len(result["entity_types"]) > MAX_ENTITY_TYPES:
             result["entity_types"] = result["entity_types"][:MAX_ENTITY_TYPES]
         

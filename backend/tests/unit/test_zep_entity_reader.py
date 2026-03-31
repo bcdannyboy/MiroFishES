@@ -151,3 +151,42 @@ def test_filter_defined_entities_falls_back_to_remote_when_entity_index_graph_mi
     assert filtered.filtered_count == 1
     assert node_calls == ["graph-1"]
     assert edge_calls == ["graph-1"]
+
+
+def test_build_filtered_entities_excludes_analytical_objects_by_default():
+    reader_module = _load_reader_module()
+    nodes = [
+        {
+            "uuid": "node-1",
+            "name": "Analyst",
+            "labels": ["Entity", "Person"],
+            "summary": "A tracked participant",
+            "attributes": {"role": "analyst"},
+        },
+        {
+            "uuid": "node-2",
+            "name": "Rate cut likely by June",
+            "labels": ["Entity", "Claim"],
+            "summary": "An analytical claim node",
+            "attributes": {"confidence": "medium"},
+        },
+    ]
+
+    default_filtered = reader_module.build_filtered_entities_from_payloads(
+        nodes,
+        [],
+        enrich_with_edges=False,
+    )
+    claim_filtered = reader_module.build_filtered_entities_from_payloads(
+        nodes,
+        [],
+        defined_entity_types=["Claim"],
+        enrich_with_edges=False,
+    )
+
+    assert default_filtered.filtered_count == 1
+    assert default_filtered.entity_types == {"Person"}
+    assert default_filtered.entities[0].name == "Analyst"
+    assert claim_filtered.filtered_count == 1
+    assert claim_filtered.entity_types == {"Claim"}
+    assert claim_filtered.entities[0].name == "Rate cut likely by June"

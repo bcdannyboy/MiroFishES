@@ -70,12 +70,42 @@
       "blockers": []
     },
     "P03": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed the layered forecast-native ontology and graph-build foundation with deterministic source-unit chunk provenance, richer graph summaries, and backward-compatible analytical object indexing. Verified by targeted layered graph tests, one live .env ontology smoke, one live .env graph-build smoke, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/api/graph.py",
+        "backend/app/services/forecast_graph.py",
+        "backend/app/services/graph_builder.py",
+        "backend/app/services/ontology_generator.py",
+        "backend/app/services/zep_entity_reader.py",
+        "backend/tests/unit/test_forecast_grounding.py",
+        "backend/tests/unit/test_graph_builder_service.py",
+        "backend/tests/unit/test_ontology_generator.py",
+        "backend/tests/unit/test_zep_entity_reader.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "backend/.venv/bin/python -m pytest backend/tests/unit/test_ontology_generator.py backend/tests/unit/test_graph_builder_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_forecast_grounding.py backend/tests/unit/test_graph_data_api.py -q -> 23 passed, 1 warning in 0.16s",
+        "curl -sS -X POST http://127.0.0.1:5001/api/graph/ontology/generate ... files=@/tmp/p03-live-smoke.md -> success=True, project_id=proj_62646edbad5f, schema_mode=forecast_layered, actor_types=[Person, Organization], analytical_types=[Event, Claim, Evidence, Topic, Metric, TimeWindow, Scenario, UncertaintyFactor], entity_type_count=10, edge_type_count=9",
+        "curl -sS -X POST http://127.0.0.1:5001/api/graph/build -d '{\"project_id\":\"proj_62646edbad5f\"}' plus task polling -> status=completed, task_id=c52152e2-6193-4d0c-aabb-6d026225673c, graph_id=mirofish_7a3656f8e25647fe, chunk_count=8, node_count=11, edge_count=4",
+        "backend/.venv/bin/python inspection of backend/uploads/projects/proj_62646edbad5f/{graph_build_summary.json,graph_entity_index.json,source_units.json} -> chunking_strategy=semantic_source_units, actor_count=2, analytical_object_count=9, source_unit_backed_edge_count=4, entity_types=[Organization, Person], analytical_types=[Evidence, Scenario, Topic, UncertaintyFactor], unit_count=8",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 342 passed, 1 warning in 5.71s"
+      ],
+      "artifacts": [
+        "backend/app/services/forecast_graph.py",
+        "backend/uploads/projects/proj_62646edbad5f/graph_build_summary.json",
+        "backend/uploads/projects/proj_62646edbad5f/graph_entity_index.json",
+        "backend/uploads/projects/proj_62646edbad5f/source_units.json",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Default entity filtering remains actor-safe: analytical labels are excluded unless explicitly requested, which protects current simulation prepare flows.",
+        "Graph build still falls back to legacy fixed-character chunking when `source_units.json` is absent.",
+        "The persisted `graph_entity_index.json` keeps the legacy `entities` / `entity_types` surface while adding `analytical_objects`, `analytical_types`, and `citation_coverage`.",
+        "Project ontology storage remains additive so old callers can keep reading `entity_types` / `edge_types` while later phases consume `schema_mode`, `actor_types`, and `analytical_types`."
+      ],
       "blockers": []
     },
     "P04": {

@@ -16,7 +16,12 @@ from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
 from ..services.phase_timing import PhaseTimingRecorder
 from ..services.text_processor import TextProcessor
-from ..services.zep_entity_reader import build_filtered_entities_from_payloads
+from ..services.forecast_graph import (
+    build_chunk_records,
+    build_episode_chunk_map,
+    build_layered_graph_index,
+    summarize_graph_snapshot,
+)
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
@@ -393,7 +398,10 @@ def generate_ontology():
         
         project.ontology = {
             "entity_types": ontology.get("entity_types", []),
-            "edge_types": ontology.get("edge_types", [])
+            "edge_types": ontology.get("edge_types", []),
+            "schema_mode": ontology.get("schema_mode"),
+            "actor_types": ontology.get("actor_types", []),
+            "analytical_types": ontology.get("analytical_types", []),
         }
         project.analysis_summary = ontology.get("analysis_summary", "")
         project.status = ProjectStatus.ONTOLOGY_GENERATED
@@ -606,18 +614,32 @@ def build_graph():
                     else None
                 )
                 if source_units_payload:
-                    chunks = TextProcessor.split_text(
+                    chunk_records = build_chunk_records(
                         text,
                         chunk_size=chunk_size,
                         overlap=chunk_overlap,
                         source_units=source_units_payload,
                     )
                 else:
-                    chunks = TextProcessor.split_text(
+                    plain_chunks = TextProcessor.split_text(
                         text,
                         chunk_size=chunk_size,
                         overlap=chunk_overlap,
                     )
+                    chunk_records = [
+                        {
+                            "chunk_id": f"chunk-{index:04d}",
+                            "text": chunk,
+                            "char_start": None,
+                            "char_end": None,
+                            "source_unit_ids": [],
+                            "source_ids": [],
+                            "stable_source_ids": [],
+                            "unit_types": [],
+                        }
+                        for index, chunk in enumerate(plain_chunks, start=1)
+                    ]
+                chunks = [record["text"] for record in chunk_records]
                 total_chunks = len(chunks)
                 
                 # Create graph
@@ -665,6 +687,7 @@ def build_graph():
                         progress_callback=add_progress_callback,
                     )
                     batch_metadata["episode_count"] = len(episode_uuids)
+                episode_chunk_map = build_episode_chunk_map(episode_uuids, chunk_records)
                 
                 # Wait for Zep processing to finish (check each episode's processed status)
                 task_manager.update_task(
@@ -698,10 +721,15 @@ def build_graph():
                     progress=95
                 )
                 graph_snapshot = builder.get_graph_snapshot(graph_id)
-                filtered_entities = build_filtered_entities_from_payloads(
-                    graph_snapshot.get("nodes", []),
-                    graph_snapshot.get("edges", []),
-                    enrich_with_edges=True,
+                graph_counts = (
+                    graph_snapshot.get("graph_counts")
+                    if isinstance(graph_snapshot, dict)
+                    else None
+                ) or summarize_graph_snapshot(graph_snapshot)
+                layered_index = build_layered_graph_index(
+                    snapshot=graph_snapshot,
+                    source_units=source_units_payload,
+                    episode_chunk_map=episode_chunk_map,
                 )
                 
                 # Update project status
@@ -767,10 +795,11 @@ def build_graph():
                             else 0
                         ),
                         "graph_counts": {
-                            "node_count": graph_snapshot.get("node_count", 0),
-                            "edge_count": graph_snapshot.get("edge_count", 0),
-                            "entity_types": graph_snapshot.get("entity_types", []),
+                            **graph_counts,
                         },
+                        "citation_coverage": layered_index.get(
+                            "citation_coverage", {}
+                        ),
                         "warnings": graph_summary_warnings,
                     },
                 )
@@ -783,10 +812,7 @@ def build_graph():
                         "project_id": project_id,
                         "graph_id": graph_id,
                         "generated_at": project.updated_at,
-                        "total_count": filtered_entities.total_count,
-                        "filtered_count": filtered_entities.filtered_count,
-                        "entity_types": sorted(filtered_entities.entity_types),
-                        "entities": [entity.to_dict() for entity in filtered_entities.entities],
+                        **layered_index,
                     },
                 )
                 

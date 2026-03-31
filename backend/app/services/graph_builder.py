@@ -25,6 +25,7 @@ from ..utils.zep_paging import (
     fetch_edge_window,
 )
 from .text_processor import TextProcessor
+from .forecast_graph import build_chunk_records, summarize_graph_snapshot
 
 logger = get_logger('mirofish.graph_builder')
 
@@ -510,25 +511,19 @@ class GraphBuilderService:
             getattr(node, "uuid_", None) or getattr(node, "uuid", None): node.name or ""
             for node in nodes
         }
-        entity_types = sorted(
-            {
-                label
-                for node in nodes
-                for label in (node.labels or [])
-                if label not in ["Entity", "Node"]
-            }
-        )
-        return {
+        snapshot = {
             "graph_id": graph_id,
             "node_count": len(nodes),
             "edge_count": len(edges),
-            "entity_types": entity_types,
             "nodes": [self._serialize_node(node, preview=False) for node in nodes],
             "edges": [
                 self._serialize_edge(edge, node_map=node_map, preview=False)
                 for edge in edges
             ],
         }
+        snapshot["graph_counts"] = summarize_graph_snapshot(snapshot)
+        snapshot["entity_types"] = snapshot["graph_counts"]["entity_types"]
+        return snapshot
     
     def _get_graph_data_with_mode(
         self,

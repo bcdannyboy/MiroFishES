@@ -13,6 +13,7 @@ from ..config import Config
 from ..models.project import ProjectManager
 from ..utils.logger import get_logger
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from .forecast_graph import is_analytical_type
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -95,7 +96,12 @@ def build_filtered_entities_from_payloads(
                 continue
             entity_type = matching_labels[0]
         else:
-            entity_type = custom_labels[0]
+            actor_labels = [
+                label for label in custom_labels if not is_analytical_type(label)
+            ]
+            if not actor_labels:
+                continue
+            entity_type = actor_labels[0]
 
         entity_types_found.add(entity_type)
         entity = EntityNode(
