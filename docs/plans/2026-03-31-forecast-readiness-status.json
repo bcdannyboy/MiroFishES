@@ -109,12 +109,46 @@
       "blockers": []
     },
     "P04": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed hybrid retrieval over embedded source units plus graph-side analytical objects, added structured forecast hints/citation propagation, and wired the retrieval surface into evidence bundles plus report/Zep tools without changing forecast aggregation. Verified by targeted unit and integration suites, downstream compatibility checks, one live .env hybrid retrieval smoke, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/services/evidence_bundle_service.py",
+        "backend/app/services/grounding_bundle_builder.py",
+        "backend/app/services/zep_tools.py",
+        "backend/app/services/report_agent.py",
+        "backend/app/services/hybrid_evidence_retriever.py",
+        "backend/app/services/forecast_hint_service.py",
+        "backend/tests/unit/test_hybrid_evidence_retriever.py",
+        "backend/tests/unit/test_evidence_bundle_service.py",
+        "backend/tests/unit/test_forecast_grounding.py",
+        "backend/tests/unit/test_zep_tools_multigraph.py",
+        "backend/tests/unit/test_report_agent_hybrid_retrieval.py",
+        "backend/tests/integration/test_hybrid_evidence_bundle_flow.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "backend/.venv/bin/python -m pytest backend/tests/unit/test_hybrid_evidence_retriever.py backend/tests/unit/test_evidence_bundle_service.py backend/tests/unit/test_forecast_grounding.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/integration/test_hybrid_evidence_bundle_flow.py -q -> 20 passed, 1 warning in 0.17s",
+        "backend/.venv/bin/python -m pytest backend/tests/unit/test_forecast_engine.py::test_hybrid_engine_assembles_best_estimate_without_let_simulation_dominate backend/tests/unit/test_hybrid_forecast_service.py::test_hybrid_forecast_service_aggregates_non_simulation_workers_without_let_simulation_dominate backend/tests/unit/test_forecast_manager.py::test_forecast_manager_acquires_evidence_bundle_with_provider_fallbacks backend/tests/unit/test_forecast_api.py::test_forecast_evidence_bundle_round_trip_with_public_aliases_does_not_duplicate_provider_entries -q -> 4 passed, 1 warning in 0.16s",
+        "cd backend && .venv/bin/python live hybrid retrieval smoke via HybridEvidenceRetriever.retrieve(project_id='proj_62646edbad5f', query='What evidence supports a June rate cut after weaker hiring?', question_type='binary', limit=4) -> total_count=4, missing_markers=[], record_count=17, namespace_count=2, cited source-unit and graph-object hits returned with forecast_hints",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 348 passed, 1 warning in 5.85s"
+      ],
+      "artifacts": [
+        "backend/app/services/hybrid_evidence_retriever.py",
+        "backend/app/services/forecast_hint_service.py",
+        "grounding_bundle.retrieval_contract",
+        "EvidenceSourceEntry.metadata.forecast_hints",
+        "EvidenceSourceEntry.metadata.hybrid_retrieval",
+        "backend/tests/integration/test_hybrid_evidence_bundle_flow.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Preserved the grounding-bundle fallback as `ready` when legacy local evidence exists but hybrid-local artifacts are absent.",
+        "Kept retrieval outputs additive by storing new hint/ranking data under `metadata.forecast_hints` and `metadata.hybrid_retrieval` instead of replacing existing evidence fields.",
+        "Filtered report-agent hybrid-search kwargs against the target method signature so existing Zep-tool doubles and narrow callers remain compatible.",
+        "Left forecast aggregation behavior unchanged; downstream workers only receive richer evidence signals and citations."
+      ],
       "blockers": []
     },
     "P05": {

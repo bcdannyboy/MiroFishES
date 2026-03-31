@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 from app.models.forecasting import EvidenceBundle, EvidenceSourceEntry, ForecastQuestion
@@ -452,3 +453,170 @@ def test_evidence_bundle_service_preserves_manual_gap_markers_on_provider_refres
         and marker.get("code") == "live_corroboration_missing"
         for marker in bundle.missing_evidence_markers
     )
+
+
+def test_evidence_bundle_service_builds_hybrid_local_entries_with_forecast_hints(
+    simulation_data_dir,
+    monkeypatch,
+    tmp_path,
+):
+    project_module = importlib.import_module("app.models.project")
+    projects_dir = tmp_path / "projects"
+    monkeypatch.setattr(
+        project_module.ProjectManager,
+        "PROJECTS_DIR",
+        str(projects_dir),
+        raising=False,
+    )
+    project_dir = projects_dir / "proj-evidence-1"
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_json(
+        project_dir / "source_units.json",
+        {
+            "artifact_type": "source_units",
+            "project_id": "proj-evidence-1",
+            "source_count": 1,
+            "unit_count": 1,
+            "units": [
+                {
+                    "unit_id": "su-hybrid-0001",
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "source_sha256": "sha-1",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 1,
+                    "unit_type": "paragraph",
+                    "char_start": 0,
+                    "char_end": 80,
+                    "combined_text_start": 0,
+                    "combined_text_end": 80,
+                    "text": "Payroll preview supported a June rate cut after weaker hiring.",
+                    "metadata": {},
+                    "extraction_warnings": [],
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_entity_index.json",
+        {
+            "artifact_type": "graph_entity_index",
+            "project_id": "proj-evidence-1",
+            "graph_id": "graph-1",
+            "total_count": 0,
+            "filtered_count": 0,
+            "entity_types": [],
+            "entities": [],
+            "analytical_object_count": 1,
+            "analytical_types": ["Claim"],
+            "analytical_objects": [
+                {
+                    "uuid": "claim-1",
+                    "name": "June cut likely",
+                    "labels": ["Claim"],
+                    "summary": "A June rate cut is increasingly likely after weaker payroll data.",
+                    "attributes": {},
+                    "related_edges": [],
+                    "related_nodes": [],
+                    "object_type": "Claim",
+                    "layer": "analytical",
+                    "provenance": {
+                        "match_reason": "edge_episode",
+                        "episode_ids": ["ep-1"],
+                        "chunk_ids": ["chunk-0001"],
+                        "source_unit_ids": ["su-hybrid-0001"],
+                        "source_ids": ["src-1"],
+                        "stable_source_ids": ["src-alpha"],
+                        "citation_count": 1,
+                        "citations": [
+                            {
+                                "unit_id": "su-hybrid-0001",
+                                "source_id": "src-1",
+                                "stable_source_id": "src-alpha",
+                                "original_filename": "memo.md",
+                                "relative_path": "files/memo.md",
+                                "unit_type": "paragraph",
+                                "source_order": 1,
+                                "unit_order": 1,
+                                "char_start": 0,
+                                "char_end": 80,
+                                "combined_text_start": 0,
+                                "combined_text_end": 80,
+                                "text_excerpt": "Payroll preview supported a June rate cut after weaker hiring.",
+                                "reason": "edge_episode",
+                            }
+                        ],
+                    },
+                }
+            ],
+            "graph_node_count": 1,
+            "graph_edge_count": 0,
+            "object_count": 1,
+            "citation_coverage": {
+                "source_unit_backed_node_count": 1,
+                "source_unit_backed_edge_count": 0,
+                "edge_episode_link_count": 1,
+            },
+        },
+    )
+    _write_json(
+        project_dir / "graph_build_summary.json",
+        {
+            "artifact_type": "graph_build_summary",
+            "project_id": "proj-evidence-1",
+            "graph_id": "graph-1",
+            "chunk_count": 1,
+            "chunking_strategy": "semantic_source_units",
+            "graph_counts": {
+                "node_count": 1,
+                "edge_count": 0,
+                "actor_count": 0,
+                "analytical_object_count": 1,
+                "entity_types": ["Claim"],
+                "analytical_types": ["Claim"],
+            },
+            "citation_coverage": {
+                "source_unit_backed_node_count": 1,
+                "source_unit_backed_edge_count": 0,
+                "edge_episode_link_count": 1,
+            },
+        },
+    )
+
+    retriever_module = importlib.import_module("app.services.hybrid_evidence_retriever")
+    index_module = importlib.import_module("app.services.local_evidence_index")
+    provider = UploadedLocalArtifactEvidenceProvider(
+        str(simulation_data_dir),
+        hybrid_retriever=retriever_module.HybridEvidenceRetriever(
+            embedding_client=type(
+                "_FakeEmbeddingClient",
+                (),
+                {
+                    "embed_text": staticmethod(lambda text, normalize=True: [1.0, 1.0, 0.0]),
+                    "embed_texts": staticmethod(
+                        lambda texts, normalize=True: [[1.0, 1.0, 0.0] for _ in texts]
+                    ),
+                },
+            )(),
+            evidence_index=index_module.LocalEvidenceIndex(
+                index_path=str(tmp_path / "local_evidence.sqlite3")
+            ),
+        ),
+    )
+    service = EvidenceBundleService(providers=[provider])
+
+    bundle = service.build_bundle(
+        question=ForecastQuestion.from_dict(_question_payload()),
+        provider_ids=["uploaded_local_artifacts"],
+    )
+
+    assert bundle.status == "ready"
+    assert bundle.provider_snapshots[0]["status"] == "ready"
+    assert bundle.source_entries
+    assert bundle.source_entries[0].metadata["forecast_hints"]
+    assert bundle.source_entries[0].citation_id.startswith("[")
+    assert bundle.source_entries[0].provenance["source_unit_ids"] == ["su-hybrid-0001"]
+    assert bundle.citation_index["source"][0]["citation_id"] == bundle.source_entries[0].citation_id

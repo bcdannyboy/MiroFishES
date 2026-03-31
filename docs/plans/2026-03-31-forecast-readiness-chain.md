@@ -3,7 +3,7 @@
 Date: 2026-03-31
 Branch: `codex/forecast-readiness-chain`
 Status file: `docs/plans/2026-03-31-forecast-readiness-status.json`
-Updated at: 2026-03-31T16:10:50-07:00
+Updated at: 2026-03-31T16:44:20-07:00
 
 ## Chain Contract
 
@@ -19,12 +19,12 @@ Every later prompt in this chain must:
 
 ## Phase Map
 
-| Phase | Goal | Initial status |
+| Phase | Goal | Current status |
 | --- | --- | --- |
 | P01 | model routing, Responses wrapper, embeddings, local evidence index | complete |
 | P02 | ingestion compatibility hooks over the new evidence foundation | complete |
 | P03 | layered forecast-native ontology and graph build | complete |
-| P04 | retrieval wiring over persisted local evidence records | pending |
+| P04 | retrieval wiring over persisted local evidence records | complete |
 | P05 | simulation evidence bridge | pending |
 | P06 | forecast aggregation compatibility adoption | pending |
 | P07 | report and analyst surfaces adoption | pending |
@@ -365,3 +365,159 @@ Prompt 4 must treat the graph-side layered artifacts from P03 as the canonical r
   - `text_excerpt`
   - `reason`
 - Prompt 4 must continue preserving `source_units.json` as the authoritative text/citation boundary and must not collapse actors and analytical objects into one undifferentiated retrieval pool without an explicit reason
+
+## P04
+
+### Scope
+
+- `backend/app/services/evidence_bundle_service.py`
+- `backend/app/services/grounding_bundle_builder.py`
+- `backend/app/services/zep_tools.py`
+- `backend/app/services/report_agent.py`
+- `backend/app/services/hybrid_evidence_retriever.py`
+- `backend/app/services/forecast_hint_service.py`
+- backend tests covering hybrid retrieval ranking, evidence bundle generation, retrieval tool wiring, and downstream compatibility
+
+### TDD Record
+
+1. Wrote failing tests first for hybrid retrieval ranking, contradiction propagation, grounding-bundle retrieval contracts, Zep hybrid search wrapping, report-agent tool routing, and bundle generation with real forecast hints.
+2. Verified the RED failures were the expected missing surfaces:
+   - no `HybridEvidenceRetriever`
+   - no `forecast_hints` derivation layer
+   - no `retrieval_contract` in the grounding bundle
+   - no `hybrid_evidence_search` in `ZepToolsService`
+   - no report-agent integration for hybrid evidence lookup
+3. Hit one GREEN-pass regression after the first implementation: legacy grounding-bundle-only evidence cases were downgraded to partial because hybrid-only missing markers leaked into the provider status.
+4. Traced that regression to status propagation in `UploadedLocalArtifactEvidenceProvider.collect(...)`, then fixed the root cause by preserving the legacy grounding fallback as `ready` when it satisfies the old contract and only hybrid-local artifacts are absent.
+5. Added a narrow end-to-end integration test for bundle generation so the phase has real multi-module evidence, not only unit coverage.
+
+### Verification
+
+- Targeted hybrid retrieval and evidence bundle suite:
+  - command: `backend/.venv/bin/python -m pytest backend/tests/unit/test_hybrid_evidence_retriever.py backend/tests/unit/test_evidence_bundle_service.py backend/tests/unit/test_forecast_grounding.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/integration/test_hybrid_evidence_bundle_flow.py -q`
+  - result: `20 passed, 1 warning in 0.17s`
+- Downstream compatibility subset:
+  - command: `backend/.venv/bin/python -m pytest backend/tests/unit/test_forecast_engine.py::test_hybrid_engine_assembles_best_estimate_without_let_simulation_dominate backend/tests/unit/test_hybrid_forecast_service.py::test_hybrid_forecast_service_aggregates_non_simulation_workers_without_let_simulation_dominate backend/tests/unit/test_forecast_manager.py::test_forecast_manager_acquires_evidence_bundle_with_provider_fallbacks backend/tests/unit/test_forecast_api.py::test_forecast_evidence_bundle_round_trip_with_public_aliases_does_not_duplicate_provider_entries -q`
+  - result: `4 passed, 1 warning in 0.16s`
+- Live `.env` hybrid retrieval smoke:
+  - command: `cd backend && .venv/bin/python - <<'PY' ... HybridEvidenceRetriever(... LocalEvidenceIndex('/tmp/mirofish_p04_live.sqlite3')).retrieve(project_id='proj_62646edbad5f', query='What evidence supports a June rate cut after weaker hiring?', question_type='binary', limit=4) ... PY`
+  - result summary:
+    - `project_id: proj_62646edbad5f`
+    - `total_count: 4`
+    - `missing_markers: []`
+    - `index_stats.record_count: 17`
+    - `index_stats.namespace_count: 2`
+  - top cited hits:
+    - rank 1: `source_unit / speaker_turn / [SUbece0003] / files/c1481f17.md#chars=121-230 / supports / estimate 0.6886`
+    - rank 2: `source_unit / paragraph / [SUbece0002] / files/c1481f17.md#chars=17-119 / supports / estimate 0.6748`
+    - rank 3: `graph_object / Topic / [GO83d48f6e] / files/c1481f17.md#chars=17-119 / supports / estimate 0.6743`
+    - rank 4: `graph_object / Evidence / [GOf4a9b8e6] / files/c1481f17.md#chars=121-230 / supports / estimate 0.6684`
+- Full repo gate:
+  - command: `npm run verify`
+  - result: frontend verify passed, vite build passed, backend pytest passed
+  - exact backend summary: `348 passed, 1 warning in 5.85s`
+
+### Files Touched
+
+- `backend/app/services/evidence_bundle_service.py`
+- `backend/app/services/grounding_bundle_builder.py`
+- `backend/app/services/zep_tools.py`
+- `backend/app/services/report_agent.py`
+- `backend/app/services/hybrid_evidence_retriever.py`
+- `backend/app/services/forecast_hint_service.py`
+- `backend/tests/unit/test_hybrid_evidence_retriever.py`
+- `backend/tests/unit/test_evidence_bundle_service.py`
+- `backend/tests/unit/test_forecast_grounding.py`
+- `backend/tests/unit/test_zep_tools_multigraph.py`
+- `backend/tests/unit/test_report_agent_hybrid_retrieval.py`
+- `backend/tests/integration/test_hybrid_evidence_bundle_flow.py`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### Delivered Foundation
+
+- `HybridEvidenceRetriever` now performs hybrid local ranking across:
+  - embedded `source_units.json`
+  - graph-native `graph_entity_index.json.analytical_objects`
+  - graph linkage and lexical overlap as additive ranking signals
+- `ForecastHintService` now derives structured evidence signals per hit:
+  - `forecast_hints[]`
+  - `conflict_status`
+  - `conflict_markers[]`
+- `GroundingBundleBuilder` now emits a deterministic `retrieval_contract` for later phases with:
+  - `status`
+  - `source_unit_count`
+  - `actor_count`
+  - `analytical_object_count`
+  - `graph_id`
+  - `index_namespaces.source_units`
+  - `index_namespaces.graph_objects`
+  - `citation_coverage`
+- `UploadedLocalArtifactEvidenceProvider` now normalizes hybrid hits into additive `EvidenceSourceEntry` records with:
+  - `kind in {"uploaded_source", "graph_provenance"}`
+  - `citation_id`
+  - `locator`
+  - `provenance.project_id`
+  - `provenance.simulation_id`
+  - `provenance.retrieval.record_type`
+  - `provenance.retrieval.score`
+  - `metadata.forecast_hints`
+  - `metadata.hybrid_retrieval`
+- `ZepToolsService.hybrid_evidence_search(...)` now exposes cited hybrid evidence to report and analyst surfaces.
+- `ReportAgent` now supports `hybrid_evidence_search` and resolves `project_id` from saved forecast workspace context when available.
+
+### Compatibility Fixes
+
+- Preserved the legacy grounding-bundle-only evidence path as `ready` when hybrid-local artifacts are absent but the old grounding contract still exists.
+- Kept evidence bundle consumers additive: existing `EvidenceSourceEntry` fields remain valid while new retrieval signals live under `metadata.forecast_hints` and `metadata.hybrid_retrieval`.
+- Filtered report-agent hybrid-search kwargs against the target method signature so existing narrow Zep-tool doubles and older call surfaces do not break.
+- Left forecast aggregation logic unchanged; this phase only injects structured retrieval signals and citations for later consumers.
+
+### Commit Gate
+
+- All required P04 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P05
+
+Prompt 5 must consume the P04 evidence interfaces directly instead of reconstructing evidence state from raw text:
+
+- use `GroundingBundleBuilder.build(...)[\"retrieval_contract\"]` as the authoritative retrieval readiness surface
+- treat these bundle entry kinds as real retrieval-backed world-state inputs:
+  - `uploaded_source`
+  - `graph_provenance`
+- each retrieval-backed `EvidenceSourceEntry` now carries the simulation-init inputs P05 should use:
+  - `citation_id`
+  - `locator`
+  - `summary`
+  - `conflict_status`
+  - `conflict_markers[]`
+  - `freshness`
+  - `relevance`
+  - `quality`
+  - `provenance.project_id`
+  - `provenance.simulation_id`
+  - `provenance.source_unit_ids`
+  - `provenance.source_ids`
+  - `provenance.stable_source_ids`
+  - `provenance.retrieval.record_type`
+  - `provenance.retrieval.score`
+  - `provenance.retrieval.score_components`
+- consume `metadata.forecast_hints[]` as the structured evidence-signal layer rather than re-inferring support from free text
+- each `forecast_hints[]` item may carry:
+  - `signal`
+  - `estimate`
+  - `confidence_weight`
+  - `assumption`
+  - `counterevidence`
+  - `citation_ids`
+  - `source_unit_ids`
+  - `object_type`
+- preserve bundle-level and provider-level gap semantics:
+  - `missing_evidence_markers[]`
+  - `uncertainty_summary`
+  - `retrieval_contract.status`
+- if Prompt 5 needs an on-demand retrieval path, reuse:
+  - `HybridEvidenceRetriever.retrieve(...)`
+  - `ZepToolsService.hybrid_evidence_search(...)`
+- Prompt 5 must not redesign forecast aggregation. It should only consume these structured evidence and citation inputs to improve simulation initialization and world-state grounding.

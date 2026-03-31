@@ -695,6 +695,79 @@ def test_grounding_bundle_builder_marks_ready_vs_partial_without_code_analysis(
             "warnings": [],
         },
     )
+    _write_json(
+        project_dir / "source_units.json",
+        {
+            "artifact_type": "source_units",
+            "project_id": project_id,
+            "source_count": 1,
+            "unit_count": 2,
+            "units": [
+                {
+                    "unit_id": "su-1",
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "source_sha256": "abc123",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 1,
+                    "unit_type": "paragraph",
+                    "char_start": 0,
+                    "char_end": 36,
+                    "combined_text_start": 0,
+                    "combined_text_end": 36,
+                    "text": "Workers mention slowdown risk.",
+                    "metadata": {},
+                    "extraction_warnings": [],
+                },
+                {
+                    "unit_id": "su-2",
+                    "source_id": "src-1",
+                    "stable_source_id": "src-alpha",
+                    "source_sha256": "abc123",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 2,
+                    "unit_type": "paragraph",
+                    "char_start": 38,
+                    "char_end": 72,
+                    "combined_text_start": 38,
+                    "combined_text_end": 72,
+                    "text": "Labor policy timing remains uncertain.",
+                    "metadata": {},
+                    "extraction_warnings": [],
+                },
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_entity_index.json",
+        {
+            "artifact_type": "graph_entity_index",
+            "project_id": project_id,
+            "graph_id": "graph-1",
+            "total_count": 1,
+            "filtered_count": 1,
+            "entity_types": ["Person"],
+            "entities": [{"uuid": "entity-1", "name": "Analyst", "labels": ["Person"]}],
+            "analytical_object_count": 2,
+            "analytical_types": ["Claim", "UncertaintyFactor"],
+            "analytical_objects": [
+                {"uuid": "claim-1", "name": "Cut likely", "labels": ["Claim"]},
+                {"uuid": "risk-1", "name": "Timing risk", "labels": ["UncertaintyFactor"]},
+            ],
+            "graph_node_count": 3,
+            "graph_edge_count": 2,
+            "object_count": 3,
+            "citation_coverage": {
+                "source_unit_backed_node_count": 3,
+                "source_unit_backed_edge_count": 2,
+                "edge_episode_link_count": 2,
+            },
+        },
+    )
 
     monkeypatch.setattr(
         project_module.ProjectManager,
@@ -718,6 +791,24 @@ def test_grounding_bundle_builder_marks_ready_vs_partial_without_code_analysis(
     assert bundle["code_analysis_summary"]["status"] == "not_requested"
     assert bundle["citation_index"]["source"][0]["citation_id"] == "[S1]"
     assert bundle["citation_index"]["graph"][0]["citation_id"] == "[G1]"
+    assert bundle["source_artifacts"]["source_units"] == "source_units.json"
+    assert bundle["source_artifacts"]["graph_entity_index"] == "graph_entity_index.json"
+    assert bundle["retrieval_contract"] == {
+        "status": "ready",
+        "source_unit_count": 2,
+        "actor_count": 1,
+        "analytical_object_count": 2,
+        "graph_id": "graph-1",
+        "index_namespaces": {
+            "source_units": "project:proj-grounding:source_units",
+            "graph_objects": "project:proj-grounding:graph_objects",
+        },
+        "citation_coverage": {
+            "source_unit_backed_node_count": 3,
+            "source_unit_backed_edge_count": 2,
+            "edge_episode_link_count": 2,
+        },
+    }
     assert summary["status"] == "ready"
     assert summary["citation_counts"] == {"source": 1, "graph": 1, "code": 0}
     assert summary["evidence_count"] == 2

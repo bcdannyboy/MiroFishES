@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from ..config import Config
 from ..models.forecasting import EvidenceBundle, EvidenceSourceEntry, ForecastQuestion
 from .grounding_bundle_builder import GroundingBundleBuilder
+from .hybrid_evidence_retriever import HybridEvidenceRetriever
 
 
 class UploadedLocalArtifactEvidenceProvider:
@@ -28,11 +29,22 @@ class UploadedLocalArtifactEvidenceProvider:
     label = "Uploaded and stored local artifacts"
     is_live = False
 
-    def __init__(self, simulation_data_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        simulation_data_dir: Optional[str] = None,
+        hybrid_retriever: Optional[HybridEvidenceRetriever] = None,
+    ) -> None:
         self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
         self.grounding_builder = GroundingBundleBuilder(
             simulation_data_dir=self.simulation_data_dir
         )
+        self._hybrid_retriever = hybrid_retriever
+
+    @property
+    def hybrid_retriever(self) -> HybridEvidenceRetriever:
+        if self._hybrid_retriever is None:
+            self._hybrid_retriever = HybridEvidenceRetriever()
+        return self._hybrid_retriever
 
     def collect(
         self,
@@ -42,10 +54,11 @@ class UploadedLocalArtifactEvidenceProvider:
     ) -> Dict[str, Any]:
         now = datetime.now().isoformat()
         simulation_id = question.primary_simulation_id
+        project_id = getattr(question, "project_id", None)
         notes = [
             "Local artifact evidence is bounded to persisted project and simulation files.",
         ]
-        if not simulation_id:
+        if not simulation_id and not project_id:
             return {
                 "provider_snapshot": {
                     "provider_id": self.provider_id,
@@ -58,7 +71,7 @@ class UploadedLocalArtifactEvidenceProvider:
                     "entry_count": 0,
                     "notes": notes
                     + [
-                        "No primary_simulation_id is linked to this forecast question, so local artifact evidence could not be collected."
+                        "Neither project_id nor primary_simulation_id is linked to this forecast question, so local artifact evidence could not be collected."
                     ],
                 },
                 "entries": [],
@@ -68,7 +81,7 @@ class UploadedLocalArtifactEvidenceProvider:
                         "provider_id": self.provider_id,
                         "provider_kind": self.provider_kind,
                         "kind": "missing_local_artifact_link",
-                        "reason": "No primary_simulation_id is linked to this forecast question.",
+                        "reason": "No project_id or primary_simulation_id is linked to this forecast question.",
                         "recorded_at": now,
                     }
                 ],
@@ -76,15 +89,57 @@ class UploadedLocalArtifactEvidenceProvider:
 
         entries: List[EvidenceSourceEntry] = []
         missing_markers: List[Dict[str, Any]] = []
-        grounding_bundle = self.grounding_builder.load_bundle(simulation_id)
-        if grounding_bundle:
+        grounding_bundle = (
+            self.grounding_builder.load_bundle(simulation_id)
+            if simulation_id
+            else None
+        )
+        if not project_id and isinstance(grounding_bundle, dict):
+            project_id = grounding_bundle.get("project_id")
+
+        hybrid_hits = []
+        if project_id:
+            retrieval = self.hybrid_retriever.retrieve(
+                project_id=project_id,
+                query=question.question_text or question.title,
+                question_type=question.question_type,
+                issue_timestamp=question.issue_timestamp,
+                limit=6,
+            )
+            hybrid_hits = list(retrieval.hits)
+            missing_markers.extend(retrieval.missing_evidence_markers)
+            notes.append(
+                "Hybrid local retrieval searched embedded source units plus graph-native analytical objects."
+            )
+            notes.append(
+                f"Hybrid retrieval indexed {retrieval.index_stats.get('record_count', 0)} local evidence records."
+            )
+            entries.extend(
+                self._normalize_hybrid_entries(
+                    retrieval_hits=hybrid_hits,
+                    project_id=project_id,
+                    simulation_id=simulation_id,
+                )
+            )
+
+        if not entries and grounding_bundle:
+            missing_markers = [
+                marker
+                for marker in missing_markers
+                if marker.get("kind")
+                not in {
+                    "missing_source_units",
+                    "missing_graph_entity_index",
+                    "no_ranked_local_evidence",
+                }
+            ]
             entries.extend(
                 self._normalize_grounding_bundle_entries(
                     simulation_id=simulation_id,
                     grounding_bundle=grounding_bundle,
                 )
             )
-        else:
+        elif simulation_id and not grounding_bundle and not entries:
             missing_markers.append(
                 {
                     "marker_id": f"{self.provider_id}-missing-grounding-bundle",
@@ -99,7 +154,7 @@ class UploadedLocalArtifactEvidenceProvider:
         prepared_snapshot = self._load_simulation_json(
             simulation_id,
             "prepared_snapshot.json",
-        )
+        ) if simulation_id else None
         if prepared_snapshot:
             entries.append(
                 EvidenceSourceEntry(
@@ -150,21 +205,89 @@ class UploadedLocalArtifactEvidenceProvider:
             status = "partial"
 
         return {
-                "provider_snapshot": {
-                    "provider_id": self.provider_id,
-                    "provider_kind": self.provider_kind,
-                    "label": self.label,
-                    "is_live": self.is_live,
-                    "status": status,
-                    "retrieval_quality": "bounded_local_artifacts",
-                    "collected_at": now,
-                    "simulation_id": simulation_id,
-                    "entry_count": len(entries),
+            "provider_snapshot": {
+                "provider_id": self.provider_id,
+                "provider_kind": self.provider_kind,
+                "label": self.label,
+                "is_live": self.is_live,
+                "status": status,
+                "retrieval_quality": "bounded_local_artifacts",
+                "collected_at": now,
+                "simulation_id": simulation_id,
+                "project_id": project_id,
+                "entry_count": len(entries),
                 "notes": notes,
             },
             "entries": entries,
             "missing_evidence_markers": missing_markers,
         }
+
+    def _normalize_hybrid_entries(
+        self,
+        *,
+        retrieval_hits: List[Dict[str, Any]],
+        project_id: str,
+        simulation_id: Optional[str],
+    ) -> List[EvidenceSourceEntry]:
+        normalized_hits = sorted(
+            retrieval_hits,
+            key=lambda item: (
+                0 if item.get("record_type") == "source_unit" else 1,
+                -float(item.get("score", 0.0)),
+                str(item.get("record_id") or ""),
+            ),
+        )
+        entries: List[EvidenceSourceEntry] = []
+        for hit in normalized_hits:
+            provenance = dict(hit.get("provenance") or {})
+            provenance.setdefault("project_id", project_id)
+            if simulation_id:
+                provenance.setdefault("simulation_id", simulation_id)
+            provenance.setdefault(
+                "retrieval",
+                {
+                    "record_type": hit.get("record_type"),
+                    "score": hit.get("score"),
+                    "score_components": hit.get("score_components", {}),
+                },
+            )
+            metadata = {
+                "forecast_hints": list(hit.get("forecast_hints") or []),
+                "hybrid_retrieval": {
+                    "record_id": hit.get("record_id"),
+                    "record_type": hit.get("record_type"),
+                    "score": hit.get("score"),
+                    "score_components": hit.get("score_components", {}),
+                    "citations": list(hit.get("citations") or []),
+                },
+            }
+            entries.append(
+                EvidenceSourceEntry(
+                    source_id=str(hit.get("record_id") or ""),
+                    provider_id=self.provider_id,
+                    provider_kind=self.provider_kind,
+                    kind=(
+                        "uploaded_source"
+                        if hit.get("record_type") == "source_unit"
+                        else "graph_provenance"
+                    ),
+                    title=hit.get("title") or "Hybrid evidence",
+                    summary=hit.get("summary") or "",
+                    citation_id=hit.get("citation_id"),
+                    locator=hit.get("locator"),
+                    timestamps={},
+                    provenance=provenance,
+                    freshness=hit.get("freshness", {}),
+                    relevance=hit.get("relevance", {}),
+                    quality=hit.get("quality", {}),
+                    conflict_status=hit.get("conflict_status", "none"),
+                    conflict_markers=hit.get("conflict_markers", []),
+                    missing_evidence_markers=[],
+                    notes=[],
+                    metadata=metadata,
+                )
+            )
+        return entries
 
     def _normalize_grounding_bundle_entries(
         self,

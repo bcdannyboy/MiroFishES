@@ -21,6 +21,7 @@ from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from .hybrid_evidence_retriever import HybridEvidenceRetriever
 
 logger = get_logger('mirofish.zep_tools')
 
@@ -402,6 +403,54 @@ class InterviewResult:
         return "\n".join(text_parts)
 
 
+@dataclass
+class HybridEvidenceSearchResult:
+    """Hybrid local evidence retrieval result for cited report consumption."""
+
+    query: str
+    project_id: str
+    entries: List[Dict[str, Any]] = field(default_factory=list)
+    missing_evidence_markers: List[Dict[str, Any]] = field(default_factory=list)
+    index_stats: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.entries)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "query": self.query,
+            "project_id": self.project_id,
+            "entries": self.entries,
+            "missing_evidence_markers": self.missing_evidence_markers,
+            "index_stats": self.index_stats,
+            "total_count": self.total_count,
+        }
+
+    def to_text(self) -> str:
+        text_parts = [
+            "## Hybrid Evidence Search",
+            f"Query: {self.query}",
+            f"Project: {self.project_id}",
+            f"Retrieved evidence items: {self.total_count}",
+        ]
+        for index, entry in enumerate(self.entries, start=1):
+            object_type = entry.get("object_type") or entry.get("record_type") or "evidence"
+            text_parts.append(
+                f"{index}. {entry.get('title', 'Evidence')} ({object_type}, {entry.get('conflict_status', 'none')})"
+            )
+            if entry.get("summary"):
+                text_parts.append(f"   Summary: {entry['summary']}")
+            citations = [item.get("citation_id") for item in entry.get("citations", []) if item.get("citation_id")]
+            if citations:
+                text_parts.append(f"   Citations: {', '.join(citations)}")
+        for marker in self.missing_evidence_markers:
+            reason = marker.get("reason") or marker.get("summary")
+            if reason:
+                text_parts.append(f"- Missing evidence: {reason}")
+        return "\n".join(text_parts)
+
+
 class ZepToolsService:
     """
     Zep retrieval tool service.
@@ -426,7 +475,12 @@ class ZepToolsService:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
     
-    def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        llm_client: Optional[LLMClient] = None,
+        hybrid_evidence_retriever: Optional[HybridEvidenceRetriever] = None,
+    ):
         self.api_key = api_key or Config.ZEP_API_KEY
         if not self.api_key:
             raise ValueError("ZEP_API_KEY is not configured")
@@ -434,6 +488,7 @@ class ZepToolsService:
         self.client = Zep(api_key=self.api_key)
         # The LLM client is used by InsightForge to generate subquestions.
         self._llm_client = llm_client
+        self.hybrid_evidence_retriever = hybrid_evidence_retriever
         logger.info("ZepToolsService initialized")
     
     @property
@@ -442,6 +497,12 @@ class ZepToolsService:
         if self._llm_client is None:
             self._llm_client = LLMClient()
         return self._llm_client
+
+    @property
+    def hybrid_retriever(self) -> HybridEvidenceRetriever:
+        if self.hybrid_evidence_retriever is None:
+            self.hybrid_evidence_retriever = HybridEvidenceRetriever()
+        return self.hybrid_evidence_retriever
 
     def _normalize_graph_ids(
         self,
@@ -1469,6 +1530,33 @@ Return the subquestion list as JSON."""
         
         logger.info(f"QuickSearch completed: {result.total_count} results")
         return result
+
+    def hybrid_evidence_search(
+        self,
+        *,
+        project_id: str,
+        graph_id: Optional[str],
+        query: str,
+        graph_ids: Optional[List[str]] = None,
+        limit: int = 6,
+        question_type: str = "binary",
+        issue_timestamp: Optional[str] = None,
+    ) -> HybridEvidenceSearchResult:
+        """Search persisted source units and graph objects with cited hybrid ranking."""
+        result = self.hybrid_retriever.retrieve(
+            project_id=project_id,
+            query=query,
+            question_type=question_type,
+            issue_timestamp=issue_timestamp,
+            limit=limit,
+        )
+        return HybridEvidenceSearchResult(
+            query=query,
+            project_id=project_id,
+            entries=list(result.hits),
+            missing_evidence_markers=list(result.missing_evidence_markers),
+            index_stats=dict(result.index_stats),
+        )
     
     def interview_agents(
         self,

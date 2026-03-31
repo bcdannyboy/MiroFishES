@@ -23,6 +23,7 @@ from ..models.grounding import (
     build_grounding_summary,
 )
 from ..models.project import ProjectManager
+from .hybrid_evidence_retriever import build_retrieval_contract
 
 
 class GroundingBundleBuilder:
@@ -42,7 +43,9 @@ class GroundingBundleBuilder:
     ) -> Dict[str, Any]:
         """Build one bounded grounding bundle from persisted project artifacts."""
         raw_source_manifest = ProjectManager.get_source_manifest(project_id)
+        raw_source_units = ProjectManager.get_source_units(project_id)
         raw_graph_summary = ProjectManager.get_graph_build_summary(project_id)
+        raw_graph_index = ProjectManager.get_graph_entity_index(project_id)
         warnings: List[str] = []
         source_artifacts: Dict[str, str] = {}
 
@@ -51,8 +54,20 @@ class GroundingBundleBuilder:
             expected_project_id=project_id,
             warnings=warnings,
         )
+        source_units = self._validate_project_artifact(
+            raw_source_units,
+            expected_project_id=project_id,
+            artifact_name="source_units",
+            warnings=warnings,
+        )
         graph_summary = self._validate_graph_summary(
             raw_graph_summary,
+            expected_project_id=project_id,
+            expected_graph_id=graph_id,
+            warnings=warnings,
+        )
+        graph_index = self._validate_graph_index(
+            raw_graph_index,
             expected_project_id=project_id,
             expected_graph_id=graph_id,
             warnings=warnings,
@@ -71,6 +86,8 @@ class GroundingBundleBuilder:
             )
         elif raw_source_manifest is None:
             warnings.append("missing_source_manifest")
+        if source_units:
+            source_artifacts["source_units"] = "source_units.json"
 
         if graph_summary:
             source_artifacts["graph_build_summary"] = "graph_build_summary.json"
@@ -78,8 +95,17 @@ class GroundingBundleBuilder:
             evidence_items.extend(self._build_graph_evidence_items(graph_citations))
         elif raw_graph_summary is None:
             warnings.append("missing_graph_build_summary")
+        if graph_index:
+            source_artifacts["graph_entity_index"] = "graph_entity_index.json"
 
         code_analysis_summary = build_default_code_analysis_summary()
+        retrieval_contract = build_retrieval_contract(
+            project_id=project_id,
+            graph_id=graph_id,
+            source_units_payload=source_units,
+            graph_index_payload=graph_index,
+            graph_summary_payload=graph_summary,
+        )
 
         status = "unavailable"
         if source_manifest and graph_summary and evidence_items:
@@ -110,6 +136,7 @@ class GroundingBundleBuilder:
                 graph_summary,
                 graph_id=graph_id,
             ),
+            "retrieval_contract": retrieval_contract,
             "code_analysis_summary": code_analysis_summary,
             "citation_index": {
                 "source": source_citations,
@@ -284,10 +311,26 @@ class GroundingBundleBuilder:
             "chunk_count": graph_summary.get("chunk_count"),
             "node_count": graph_counts.get("node_count"),
             "edge_count": graph_counts.get("edge_count"),
+            "citation_coverage": graph_summary.get("citation_coverage"),
             "analysis_summary": (
                 graph_summary.get("ontology_summary", {}) or {}
             ).get("analysis_summary"),
         }
+
+    def _validate_project_artifact(
+        self,
+        artifact: Optional[Dict[str, Any]],
+        *,
+        expected_project_id: str,
+        artifact_name: str,
+        warnings: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(artifact, dict):
+            return None
+        if artifact.get("project_id") != expected_project_id:
+            warnings.append(f"{artifact_name}_project_id_mismatch")
+            return None
+        return artifact
 
     def _validate_source_manifest(
         self,
@@ -323,3 +366,25 @@ class GroundingBundleBuilder:
             warnings.append("graph_build_summary_graph_id_mismatch")
             return None
         return graph_summary
+
+    def _validate_graph_index(
+        self,
+        graph_index: Optional[Dict[str, Any]],
+        *,
+        expected_project_id: str,
+        expected_graph_id: Optional[str],
+        warnings: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        validated = self._validate_project_artifact(
+            graph_index,
+            expected_project_id=expected_project_id,
+            artifact_name="graph_entity_index",
+            warnings=warnings,
+        )
+        if not validated:
+            return None
+        actual_graph_id = validated.get("graph_id")
+        if expected_graph_id and actual_graph_id and actual_graph_id != expected_graph_id:
+            warnings.append("graph_entity_index_graph_id_mismatch")
+            return None
+        return validated

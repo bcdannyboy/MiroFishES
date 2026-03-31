@@ -79,3 +79,51 @@ def test_search_graph_merges_multiple_graphs_with_deterministic_dedupe(monkeypat
     assert [node["uuid"] for node in result.nodes] == ["node-1", "node-3"]
     assert result.total_count == 3
 
+
+def test_hybrid_evidence_search_wraps_retriever_results_with_citations(monkeypatch):
+    module = importlib.import_module("app.services.zep_tools")
+    service = module.ZepToolsService.__new__(module.ZepToolsService)
+
+    class _FakeRetriever:
+        def retrieve(self, *, project_id, query, question_type="binary", issue_timestamp=None, limit=6):
+            return type(
+                "HybridResult",
+                (),
+                {
+                    "query": query,
+                    "project_id": project_id,
+                    "hits": [
+                        {
+                            "record_id": "claim-1",
+                            "record_type": "graph_object",
+                            "title": "June cut likely",
+                            "summary": "A June cut is supported by payroll data.",
+                            "object_type": "Claim",
+                            "conflict_status": "supports",
+                            "forecast_hints": [{"estimate": 0.66, "confidence_weight": 0.8}],
+                            "citations": [
+                                {
+                                    "citation_id": "[SU1]",
+                                    "locator": "files/memo.md#chars=0-80",
+                                }
+                            ],
+                            "score": 0.91,
+                        }
+                    ],
+                    "missing_evidence_markers": [],
+                    "index_stats": {"record_count": 2},
+                },
+            )()
+
+    service.hybrid_evidence_retriever = _FakeRetriever()
+
+    result = service.hybrid_evidence_search(
+        project_id="proj-hybrid",
+        graph_id="graph-1",
+        query="What supports a June rate cut?",
+    )
+
+    assert result.query == "What supports a June rate cut?"
+    assert result.total_count == 1
+    assert result.entries[0]["citations"][0]["citation_id"] == "[SU1]"
+    assert "[SU1]" in result.to_text()

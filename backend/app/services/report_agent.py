@@ -13,6 +13,7 @@ import os
 import json
 import time
 import re
+import inspect
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -546,6 +547,19 @@ Best used when:
 
 Returns:
 - A list of facts most relevant to the query"""
+
+TOOL_DESC_HYBRID_EVIDENCE_SEARCH = """\
+HybridEvidenceSearch: retrieve cited evidence from local source units plus graph objects.
+This tool combines embedded source-unit search with graph-aware analytical object retrieval.
+
+Best used when:
+- You need grounded citations tied back to uploaded source material
+- You need to inspect support, contradiction, or missing-evidence signals for a forecast question
+- You need graph-aware evidence rather than graph-only or semantic-only search
+
+Returns:
+- Ranked evidence entries with citations and provenance
+- Forecast hints, conflict markers, and missing-evidence markers when available"""
 
 TOOL_DESC_INTERVIEW_AGENTS = """\
 InterviewAgents: real agent interviews across both platforms.
@@ -1273,6 +1287,16 @@ class ReportAgent:
                     "limit": "Number of results to return (optional, default: 10)"
                 }
             },
+            "hybrid_evidence_search": {
+                "name": "hybrid_evidence_search",
+                "description": TOOL_DESC_HYBRID_EVIDENCE_SEARCH,
+                "parameters": {
+                    "query": "Forecast or retrieval query string",
+                    "project_id": "Project identifier that owns source_units.json and graph_entity_index.json (optional when available in probabilistic context)",
+                    "question_type": "Forecast question type for hint derivation (optional, default: binary)",
+                    "limit": "Number of hybrid evidence results to return (optional, default: 6)"
+                }
+            },
             "interview_agents": {
                 "name": "interview_agents",
                 "description": TOOL_DESC_INTERVIEW_AGENTS,
@@ -1337,6 +1361,35 @@ class ReportAgent:
                     limit=limit
                 )
                 return result.to_text()
+
+            elif tool_name == "hybrid_evidence_search":
+                query = parameters.get("query", "")
+                question_type = parameters.get("question_type") or self._get_forecast_question_type()
+                limit = parameters.get("limit", 6)
+                if isinstance(limit, str):
+                    limit = int(limit)
+                project_id = (
+                    parameters.get("project_id")
+                    or self._get_forecast_project_id()
+                )
+                if not project_id:
+                    return "Tool execution failed: hybrid_evidence_search requires a project_id."
+                hybrid_kwargs = {
+                    "project_id": project_id,
+                    "graph_id": self.graph_id,
+                    "graph_ids": self.graph_ids,
+                    "query": query,
+                    "question_type": question_type,
+                    "limit": limit,
+                }
+                signature = inspect.signature(self.zep_tools.hybrid_evidence_search)
+                filtered_kwargs = {
+                    name: value
+                    for name, value in hybrid_kwargs.items()
+                    if name in signature.parameters
+                }
+                result = self.zep_tools.hybrid_evidence_search(**filtered_kwargs)
+                return result.to_text()
             
             elif tool_name == "interview_agents":
                 # In-depth interviews using the real OASIS interview API for simulated agent responses across both platforms.
@@ -1393,14 +1446,29 @@ class ReportAgent:
                 return json.dumps(result, ensure_ascii=False, indent=2)
             
             else:
-                return f"Unknown tool: {tool_name}. Use one of: insight_forge, panorama_search, quick_search"
+                return f"Unknown tool: {tool_name}. Use one of: insight_forge, panorama_search, quick_search, hybrid_evidence_search, interview_agents"
                 
         except Exception as e:
             logger.error(f"Tool execution failed: {tool_name}, error: {str(e)}")
             return f"Tool execution failed: {str(e)}"
     
     # Valid tool names used when validating fallback parsing of raw JSON.
-    VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+    VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "hybrid_evidence_search", "interview_agents"}
+
+    def _get_forecast_workspace_question(self) -> Dict[str, Any]:
+        workspace = self.probabilistic_context.get("forecast_workspace") if isinstance(self.probabilistic_context, dict) else None
+        if not isinstance(workspace, dict):
+            return {}
+        forecast_question = workspace.get("forecast_question")
+        if not isinstance(forecast_question, dict):
+            return {}
+        return forecast_question
+
+    def _get_forecast_project_id(self) -> Optional[str]:
+        return self._get_forecast_workspace_question().get("project_id")
+
+    def _get_forecast_question_type(self) -> str:
+        return self._get_forecast_workspace_question().get("question_type") or "binary"
 
     def _parse_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
@@ -1650,7 +1718,7 @@ class ReportAgent:
         min_tool_calls = 3  # Minimum number of tool calls.
         conflict_retries = 0  # Consecutive conflicts where a tool call and Final Answer appear together.
         used_tools = set()  # Track tools that have already been used.
-        all_tools = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+        all_tools = {"insight_forge", "panorama_search", "quick_search", "hybrid_evidence_search", "interview_agents"}
 
         # Report context used for InsightForge sub-question generation.
         report_context = f"Section title: {section.title}\nSimulation requirement: {self.simulation_requirement}"
