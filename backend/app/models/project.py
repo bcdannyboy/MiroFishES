@@ -140,6 +140,11 @@ class ProjectManager:
         return os.path.join(cls._get_project_dir(project_id), 'source_manifest.json')
 
     @classmethod
+    def _get_source_units_path(cls, project_id: str) -> str:
+        """Return the source-units artifact path for the project."""
+        return os.path.join(cls._get_project_dir(project_id), 'source_units.json')
+
+    @classmethod
     def _get_graph_build_summary_path(cls, project_id: str) -> str:
         """Return the graph-build summary artifact path for the project."""
         return os.path.join(
@@ -326,6 +331,16 @@ class ProjectManager:
         return cls._read_json_if_exists(cls._get_source_manifest_path(project_id))
 
     @classmethod
+    def save_source_units(cls, project_id: str, payload: Dict[str, Any]) -> None:
+        """Persist the source-units provenance artifact."""
+        cls._write_json(cls._get_source_units_path(project_id), payload)
+
+    @classmethod
+    def get_source_units(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load the source-units provenance artifact when present."""
+        return cls._read_json_if_exists(cls._get_source_units_path(project_id))
+
+    @classmethod
     def save_graph_build_summary(
         cls, project_id: str, payload: Dict[str, Any]
     ) -> None:
@@ -387,6 +402,11 @@ class ProjectManager:
                 cls._get_source_manifest_path(project_id),
                 project_dir=project_dir,
                 artifact_name="source_manifest",
+            ),
+            "source_units": cls._describe_json_artifact(
+                cls._get_source_units_path(project_id),
+                project_dir=project_dir,
+                artifact_name="source_units",
             ),
             "graph_build_summary": cls._describe_json_artifact(
                 cls._get_graph_build_summary_path(project_id),

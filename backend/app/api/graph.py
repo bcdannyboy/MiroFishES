@@ -7,7 +7,8 @@ import os
 import hashlib
 import traceback
 import threading
-from flask import request, jsonify
+from flask import request, jsonify, current_app
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from . import graph_bp
 from ..config import Config
@@ -24,6 +25,10 @@ from ..models.grounding import (
     GROUNDING_GENERATOR_VERSION,
     GROUNDING_SCHEMA_VERSION,
     SOURCE_BOUNDARY_NOTE,
+)
+from ..models.source_units import (
+    build_source_units_artifact,
+    build_stable_source_id,
 )
 
 # Get logger
@@ -65,6 +70,35 @@ def _project_payload(project):
             project.project_id
         ),
     }
+
+
+def _upload_too_large_response():
+    """Build a consistent 413 response for multipart uploads that exceed the limit."""
+    max_bytes = current_app.config.get("MAX_CONTENT_LENGTH", Config.MAX_CONTENT_LENGTH)
+    if not max_bytes:
+        limit_label = "configured size limit"
+    elif max_bytes >= 1024 * 1024:
+        max_megabytes = max_bytes / (1024 * 1024)
+        if float(max_megabytes).is_integer():
+            limit_label = f"{int(max_megabytes)} MB"
+        else:
+            limit_label = f"{max_megabytes:.1f} MB"
+    elif max_bytes >= 1024:
+        max_kilobytes = max_bytes / 1024
+        if float(max_kilobytes).is_integer():
+            limit_label = f"{int(max_kilobytes)} KB"
+        else:
+            limit_label = f"{max_kilobytes:.1f} KB"
+    else:
+        limit_label = f"{max_bytes} bytes"
+    return jsonify({
+        "success": False,
+        "error": (
+            f"Upload exceeds the {limit_label} limit. "
+            "Remove some files or split the upload into smaller batches."
+        ),
+        "max_upload_bytes": max_bytes,
+    }), 413
 
 
 # ============== Project management endpoints ==============
@@ -225,6 +259,7 @@ def generate_ontology():
         document_texts = []
         all_text = ""
         source_records = []
+        source_units = []
 
         with phase_timing.measure_phase(
             "upload_parse",
@@ -233,6 +268,7 @@ def generate_ontology():
                 "parsed_file_count": 0,
                 "failed_file_count": 0,
                 "total_text_length": 0,
+                "source_unit_count": 0,
             },
         ) as upload_metadata:
             for source_index, file in enumerate(uploaded_files, start=1):
@@ -251,8 +287,11 @@ def generate_ontology():
                     extracted_text = ""
                     extraction_status = "succeeded"
                     parser_warnings = []
+                    parsed_document = None
                     try:
-                        extracted_text = FileParser.extract_text(file_info["path"])
+                        parsed_document = FileParser.extract_document(file_info["path"])
+                        extracted_text = parsed_document["text"]
+                        parser_warnings.extend(parsed_document.get("extraction_warnings", []))
                         extracted_text = TextProcessor.preprocess_text(extracted_text)
                     except Exception as exc:
                         extraction_status = "failed"
@@ -265,42 +304,60 @@ def generate_ontology():
 
                     combined_text_start = None
                     combined_text_end = None
+                    combined_source_text_start = None
                     if extracted_text:
+                        prefix = f"\n\n=== {file_info['original_filename']} ===\n"
                         combined_text_start = len(all_text)
-                        all_text += (
-                            f"\n\n=== {file_info['original_filename']} ===\n{extracted_text}"
-                        )
+                        combined_source_text_start = combined_text_start + len(prefix)
+                        all_text += prefix + extracted_text
                         combined_text_end = len(all_text)
                         document_texts.append(extracted_text)
 
-                    source_records.append(
-                        {
-                            "source_id": f"src-{source_index}",
-                            "original_filename": file_info["original_filename"],
-                            "saved_filename": file_info["saved_filename"],
-                            "relative_path": os.path.relpath(
-                                file_info["path"],
-                                ProjectManager._get_project_dir(project.project_id),
-                            ),
-                            "size_bytes": file_info["size"],
-                            "sha256": _sha256_file(file_info["path"]),
-                            "content_kind": _classify_content_kind(
-                                file_info["original_filename"]
-                            ),
-                            "extraction_status": extraction_status,
-                            "extracted_text_length": len(extracted_text),
-                            "combined_text_start": combined_text_start,
-                            "combined_text_end": combined_text_end,
-                            "parser_warnings": parser_warnings,
-                            "excerpt": extracted_text[:280],
-                        }
+                    source_sha256 = (
+                        parsed_document.get("sha256")
+                        if isinstance(parsed_document, dict)
+                        else _sha256_file(file_info["path"])
                     )
+                    stable_source_id = build_stable_source_id(source_sha256)
+                    source_record = {
+                        "source_id": f"src-{source_index}",
+                        "stable_source_id": stable_source_id,
+                        "original_filename": file_info["original_filename"],
+                        "saved_filename": file_info["saved_filename"],
+                        "relative_path": os.path.relpath(
+                            file_info["path"],
+                            ProjectManager._get_project_dir(project.project_id),
+                        ),
+                        "size_bytes": file_info["size"],
+                        "sha256": source_sha256,
+                        "content_kind": _classify_content_kind(
+                            file_info["original_filename"]
+                        ),
+                        "extraction_status": extraction_status,
+                        "extracted_text_length": len(extracted_text),
+                        "combined_text_start": combined_source_text_start,
+                        "combined_text_end": combined_text_end,
+                        "parser_warnings": parser_warnings,
+                        "excerpt": extracted_text[:280],
+                        "source_order": source_index,
+                    }
+                    source_records.append(source_record)
+
+                    if extracted_text:
+                        source_units.extend(
+                            TextProcessor.build_source_units(
+                                text=extracted_text,
+                                source_record=source_record,
+                                combined_text_start=combined_source_text_start,
+                            )
+                        )
 
             upload_metadata["parsed_file_count"] = len(
                 [item for item in source_records if item["extraction_status"] == "succeeded"]
             )
             upload_metadata["failed_file_count"] = len(source_records) - upload_metadata["parsed_file_count"]
             upload_metadata["total_text_length"] = len(all_text)
+            upload_metadata["source_unit_count"] = len(source_units)
         
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
@@ -351,9 +408,20 @@ def generate_ontology():
                 "created_at": project.updated_at,
                 "simulation_requirement": simulation_requirement,
                 "boundary_note": SOURCE_BOUNDARY_NOTE,
+                "source_artifacts": {"source_units": "source_units.json"},
                 "source_count": len(source_records),
                 "sources": source_records,
             },
+        )
+        ProjectManager.save_source_units(
+            project.project_id,
+            build_source_units_artifact(
+                project_id=project.project_id,
+                created_at=project.updated_at,
+                simulation_requirement=simulation_requirement,
+                source_records=source_records,
+                units=source_units,
+            ),
         )
         logger.info(f"=== Ontology generation completed === project_id: {project.project_id}")
         
@@ -372,6 +440,13 @@ def generate_ontology():
             }
         })
         
+    except RequestEntityTooLarge:
+        max_bytes = current_app.config.get("MAX_CONTENT_LENGTH", Config.MAX_CONTENT_LENGTH)
+        logger.warning(
+            "Ontology generation upload rejected because the multipart payload exceeds %s bytes",
+            max_bytes,
+        )
+        return _upload_too_large_response()
     except Exception as e:
         return jsonify({
             "success": False,
@@ -524,11 +599,25 @@ def build_graph():
                     message="Splitting text...",
                     progress=5
                 )
-                chunks = TextProcessor.split_text(
-                    text, 
-                    chunk_size=chunk_size, 
-                    overlap=chunk_overlap
+                source_units_artifact = ProjectManager.get_source_units(project_id)
+                source_units_payload = (
+                    source_units_artifact.get("units")
+                    if isinstance(source_units_artifact, dict)
+                    else None
                 )
+                if source_units_payload:
+                    chunks = TextProcessor.split_text(
+                        text,
+                        chunk_size=chunk_size,
+                        overlap=chunk_overlap,
+                        source_units=source_units_payload,
+                    )
+                else:
+                    chunks = TextProcessor.split_text(
+                        text,
+                        chunk_size=chunk_size,
+                        overlap=chunk_overlap,
+                    )
                 total_chunks = len(chunks)
                 
                 # Create graph
@@ -621,6 +710,7 @@ def build_graph():
                 graph_summary_warnings = []
                 if not ProjectManager.get_source_manifest(project_id):
                     graph_summary_warnings.append("missing_source_manifest")
+                source_units_summary = ProjectManager.get_source_units(project_id)
                 ProjectManager.save_graph_build_summary(
                     project_id,
                     {
@@ -631,9 +721,18 @@ def build_graph():
                         "graph_id": graph_id,
                         "generated_at": project.updated_at,
                         "source_artifacts": (
-                            {"source_manifest": "source_manifest.json"}
-                            if ProjectManager.get_source_manifest(project_id)
-                            else {}
+                            {
+                                **(
+                                    {"source_manifest": "source_manifest.json"}
+                                    if ProjectManager.get_source_manifest(project_id)
+                                    else {}
+                                ),
+                                **(
+                                    {"source_units": "source_units.json"}
+                                    if source_units_summary
+                                    else {}
+                                ),
+                            }
                         ),
                         "ontology_summary": {
                             "analysis_summary": project.analysis_summary,
@@ -657,6 +756,16 @@ def build_graph():
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
                         "chunk_count": total_chunks,
+                        "chunking_strategy": (
+                            "semantic_source_units"
+                            if source_units_summary
+                            else "fixed_char_fallback"
+                        ),
+                        "source_unit_count": (
+                            len((source_units_summary or {}).get("units", []))
+                            if source_units_summary
+                            else 0
+                        ),
                         "graph_counts": {
                             "node_count": graph_snapshot.get("node_count", 0),
                             "edge_count": graph_snapshot.get("edge_count", 0),

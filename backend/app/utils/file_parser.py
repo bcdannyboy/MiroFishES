@@ -3,12 +3,13 @@ File parsing utilities.
 Supports text extraction from PDF, Markdown, and TXT files.
 """
 
+import hashlib
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
-def _read_text_with_fallback(file_path: str) -> str:
+def _read_text_with_fallback(file_path: str) -> Tuple[str, List[str]]:
     """
     Read a text file and auto-detect the encoding if UTF-8 fails.
     
@@ -28,7 +29,7 @@ def _read_text_with_fallback(file_path: str) -> str:
     
     # Try UTF-8 first.
     try:
-        return data.decode('utf-8')
+        return data.decode('utf-8'), []
     except UnicodeDecodeError:
         pass
     
@@ -55,7 +56,19 @@ def _read_text_with_fallback(file_path: str) -> str:
     if not encoding:
         encoding = 'utf-8'
     
-    return data.decode(encoding, errors='replace')
+    warning_suffix = encoding or 'utf-8'
+    if encoding == 'utf-8':
+        warning_suffix = 'utf-8-replace'
+    return data.decode(encoding, errors='replace'), [f"encoding_fallback:{warning_suffix}"]
+
+
+def _sha256_file(file_path: str) -> str:
+    """Hash one stored file for durable source identity."""
+    hasher = hashlib.sha256()
+    with open(file_path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 class FileParser:
@@ -84,17 +97,41 @@ class FileParser:
         if suffix not in cls.SUPPORTED_EXTENSIONS:
             raise ValueError(f"Unsupported file format: {suffix}")
         
+        return cls.extract_document(file_path)["text"]
+
+    @classmethod
+    def extract_document(cls, file_path: str) -> dict:
+        """Extract a document with file identity and extraction metadata."""
+        path = Path(file_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"File does not exist: {file_path}")
+
+        suffix = path.suffix.lower()
+        if suffix not in cls.SUPPORTED_EXTENSIONS:
+            raise ValueError(f"Unsupported file format: {suffix}")
+
+        extraction_warnings: List[str] = []
         if suffix == '.pdf':
-            return cls._extract_from_pdf(file_path)
+            text, extraction_warnings = cls._extract_from_pdf(file_path)
         elif suffix in {'.md', '.markdown'}:
-            return cls._extract_from_md(file_path)
+            text, extraction_warnings = cls._extract_from_md(file_path)
         elif suffix == '.txt':
-            return cls._extract_from_txt(file_path)
-        
-        raise ValueError(f"Cannot handle file format: {suffix}")
+            text, extraction_warnings = cls._extract_from_txt(file_path)
+        else:
+            raise ValueError(f"Cannot handle file format: {suffix}")
+
+        return {
+            "path": str(path),
+            "filename": path.name,
+            "extension": suffix,
+            "text": text,
+            "sha256": _sha256_file(file_path),
+            "extraction_warnings": extraction_warnings,
+        }
     
     @staticmethod
-    def _extract_from_pdf(file_path: str) -> str:
+    def _extract_from_pdf(file_path: str) -> Tuple[str, List[str]]:
         """Extract text from a PDF."""
         try:
             import fitz  # PyMuPDF
@@ -102,21 +139,27 @@ class FileParser:
             raise ImportError("PyMuPDF is required: pip install PyMuPDF")
         
         text_parts = []
+        warnings: List[str] = []
         with fitz.open(file_path) as doc:
             for page in doc:
                 text = page.get_text()
                 if text.strip():
                     text_parts.append(text)
-        
-        return "\n\n".join(text_parts)
+                else:
+                    warnings.append(f"pdf_page_{page.number + 1}_empty")
+
+        if not text_parts:
+            warnings.append("pdf_no_extractable_text")
+
+        return "\n\n".join(text_parts), warnings
     
     @staticmethod
-    def _extract_from_md(file_path: str) -> str:
+    def _extract_from_md(file_path: str) -> Tuple[str, List[str]]:
         """Extract text from Markdown with automatic encoding detection."""
         return _read_text_with_fallback(file_path)
     
     @staticmethod
-    def _extract_from_txt(file_path: str) -> str:
+    def _extract_from_txt(file_path: str) -> Tuple[str, List[str]]:
         """Extract text from TXT with automatic encoding detection."""
         return _read_text_with_fallback(file_path)
     
@@ -135,7 +178,7 @@ class FileParser:
         
         for i, file_path in enumerate(file_paths, 1):
             try:
-                text = cls.extract_text(file_path)
+                text = cls.extract_document(file_path)["text"]
                 filename = Path(file_path).name
                 all_texts.append(f"=== Document {i}: {filename} ===\n{text}")
             except Exception as e:

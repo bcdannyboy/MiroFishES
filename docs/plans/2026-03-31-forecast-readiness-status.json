@@ -36,12 +36,37 @@
       "blockers": []
     },
     "P02": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed structure-aware ingestion with deterministic source-unit provenance. Verified by targeted parser/text-processor/upload tests, one live ontology upload smoke that persisted `source_units.json`, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/utils/file_parser.py",
+        "backend/app/services/text_processor.py",
+        "backend/app/api/graph.py",
+        "backend/app/models/source_units.py",
+        "backend/app/models/project.py",
+        "backend/tests/unit/test_file_parser_source_units.py",
+        "backend/tests/unit/test_text_processor_source_units.py",
+        "backend/tests/unit/test_forecast_grounding.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "backend/.venv/bin/python -m pytest backend/tests/unit/test_file_parser_source_units.py backend/tests/unit/test_text_processor_source_units.py backend/tests/unit/test_forecast_grounding.py -q -> 10 passed, 1 warning in 0.12s",
+        "PYTHONPATH=backend backend/.venv/bin/python live ontology upload smoke via Flask test client POST /api/graph/ontology/generate -> 200, success=True, project_id=proj_1e7b4a4fc199, unit_count=6, source_units exists=True",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 337 passed, 1 warning in 5.64s"
+      ],
+      "artifacts": [
+        "backend/app/models/source_units.py",
+        "source_units.json",
+        "source_manifest.json",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Added `ProjectManager` helpers for `source_units.json` as a minimal compatibility shim for later phases.",
+        "Preserved `FileParser.extract_text(...)` and existing upload/ontology flow while adding richer parser metadata.",
+        "Kept graph build compatible with pre-P02 projects by falling back to fixed-character splitting when `source_units.json` is absent."
+      ],
       "blockers": []
     },
     "P03": {

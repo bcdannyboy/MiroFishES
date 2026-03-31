@@ -60,9 +60,16 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     monkeypatch.setattr(graph_module, "OntologyGenerator", _FakeOntologyGenerator)
     monkeypatch.setattr(
         graph_module.FileParser,
-        "extract_text",
+        "extract_document",
         staticmethod(
-            lambda _path: "Labor policy memo.\nWorkers mention slowdown risk and intervention timing."
+            lambda _path: {
+                "path": _path,
+                "filename": "memo.md",
+                "extension": ".md",
+                "text": "Labor policy memo.\nWorkers mention slowdown risk and intervention timing.",
+                "sha256": hashlib.sha256(b"labor memo").hexdigest(),
+                "extraction_warnings": [],
+            }
         ),
     )
     monkeypatch.setattr(
@@ -86,9 +93,12 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     payload = response.get_json()["data"]
     project_id = payload["project_id"]
     manifest_path = projects_dir / project_id / "source_manifest.json"
+    source_units_path = projects_dir / project_id / "source_units.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    source_units = json.loads(source_units_path.read_text(encoding="utf-8"))
 
     assert payload["grounding_artifacts"]["source_manifest"]["exists"] is True
+    assert payload["grounding_artifacts"]["source_units"]["exists"] is True
     assert payload["grounding_artifacts"]["graph_build_summary"]["exists"] is False
     assert payload["grounding_artifacts"]["graph_phase_timings"]["exists"] is True
     assert payload["grounding_artifacts"]["graph_entity_index"]["exists"] is False
@@ -100,6 +110,7 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     )
     assert manifest["boundary_note"].startswith("Uploaded project sources only")
     assert manifest["source_count"] == 1
+    assert manifest["source_artifacts"]["source_units"] == "source_units.json"
     source = manifest["sources"][0]
     assert source["original_filename"] == "memo.md"
     assert source["content_kind"] == "document"
@@ -107,7 +118,16 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     assert source["extracted_text_length"] > 0
     assert source["combined_text_start"] < source["combined_text_end"]
     assert source["sha256"] == hashlib.sha256(b"labor memo").hexdigest()
+    assert source["stable_source_id"].startswith("src-")
     assert source["excerpt"].startswith("Labor policy memo.")
+    assert source_units["artifact_type"] == "source_units"
+    assert source_units["project_id"] == project_id
+    assert source_units["source_count"] == 1
+    assert source_units["unit_count"] >= 1
+    assert source_units["source_artifacts"]["source_manifest"] == "source_manifest.json"
+    assert source_units["units"][0]["unit_id"].startswith("su-")
+    assert source_units["units"][0]["stable_source_id"] == source["stable_source_id"]
+    assert source_units["units"][0]["text"].startswith("Labor policy memo.")
 
     timings_path = projects_dir / project_id / "graph_phase_timings.json"
     timings = json.loads(timings_path.read_text(encoding="utf-8"))
@@ -119,6 +139,31 @@ def test_generate_ontology_persists_source_manifest_and_artifact_summary(monkeyp
     assert timings["phases"]["upload_parse"]["metadata"]["total_text_length"] > 0
     assert timings["phases"]["ontology_generation"]["metadata"]["entity_type_count"] == 1
     assert timings["phases"]["ontology_generation"]["metadata"]["edge_type_count"] == 1
+
+
+def test_generate_ontology_returns_413_when_upload_exceeds_limit(monkeypatch, tmp_path):
+    graph_module = _load_graph_api_module()
+    _configure_projects_dir(monkeypatch, tmp_path)
+
+    app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 1024
+    app.register_blueprint(graph_module.graph_bp, url_prefix="/api/graph")
+    client = app.test_client()
+
+    response = client.post(
+        "/api/graph/ontology/generate",
+        data={
+            "simulation_requirement": "Forecast whether the upload path rejects oversized founder packs cleanly.",
+            "files": [(io.BytesIO(b"x" * 4096), "oversized.md")],
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 413
+    payload = response.get_json()
+    assert payload["success"] is False
+    assert payload["max_upload_bytes"] == 1024
+    assert "Upload exceeds the 1 KB limit" in payload["error"]
 
 
 def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
