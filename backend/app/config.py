@@ -4,6 +4,7 @@ Loads settings from the repository root `.env` file.
 """
 
 import os
+from dataclasses import dataclass
 from dotenv import load_dotenv
 
 # Load the `.env` file from the repository root.
@@ -15,6 +16,16 @@ if os.path.exists(project_root_env):
 else:
     # If the root `.env` file is missing, fall back to the environment.
     load_dotenv(override=True)
+
+
+@dataclass(frozen=True)
+class TaskModelRoute:
+    """Resolved model route for one task lane."""
+
+    task: str
+    model: str
+    api_key: str | None
+    base_url: str
 
 
 class Config:
@@ -32,12 +43,41 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', LLM_API_KEY)
+    OPENAI_BASE_URL = os.environ.get('OPENAI_BASE_URL', LLM_BASE_URL)
+    OPENAI_DEFAULT_MODEL = os.environ.get('OPENAI_DEFAULT_MODEL', LLM_MODEL_NAME)
+    OPENAI_REASONING_MODEL = os.environ.get(
+        'OPENAI_REASONING_MODEL',
+        OPENAI_DEFAULT_MODEL,
+    )
+    OPENAI_REPORT_MODEL = os.environ.get(
+        'OPENAI_REPORT_MODEL',
+        OPENAI_DEFAULT_MODEL,
+    )
+    OPENAI_EMBEDDING_MODEL = os.environ.get(
+        'OPENAI_EMBEDDING_MODEL',
+        'text-embedding-3-small',
+    )
+    LOCAL_EMBEDDING_API_KEY = os.environ.get(
+        'LOCAL_EMBEDDING_API_KEY',
+        OPENAI_API_KEY,
+    )
+    LOCAL_EMBEDDING_BASE_URL = os.environ.get(
+        'LOCAL_EMBEDDING_BASE_URL',
+        OPENAI_BASE_URL,
+    )
+    LOCAL_EMBEDDING_MODEL = os.environ.get(
+        'LOCAL_EMBEDDING_MODEL',
+        OPENAI_EMBEDDING_MODEL,
+    )
+    LOCAL_EMBEDDING_DIMENSIONS = os.environ.get('LOCAL_EMBEDDING_DIMENSIONS')
     
     # Zep settings.
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
     
     # File upload settings.
-    MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
+    MAX_UPLOAD_SIZE_MB = int(os.environ.get('MAX_UPLOAD_SIZE_MB', '100'))
+    MAX_CONTENT_LENGTH = MAX_UPLOAD_SIZE_MB * 1024 * 1024
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
     
@@ -98,13 +138,129 @@ class Config:
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
+
+    @classmethod
+    def get_openai_api_key(cls) -> str | None:
+        """Resolve the preferred API key with legacy compatibility fallbacks."""
+        return os.environ.get('OPENAI_API_KEY', os.environ.get('LLM_API_KEY', cls.OPENAI_API_KEY))
+
+    @classmethod
+    def get_openai_base_url(cls) -> str:
+        """Resolve the preferred OpenAI-compatible base URL."""
+        return os.environ.get(
+            'OPENAI_BASE_URL',
+            os.environ.get('LLM_BASE_URL', cls.OPENAI_BASE_URL),
+        )
+
+    @classmethod
+    def get_default_model_name(cls) -> str:
+        """Resolve the fast/default model name."""
+        legacy_default = os.environ.get('LLM_MODEL_NAME', cls.OPENAI_DEFAULT_MODEL)
+        return os.environ.get('OPENAI_DEFAULT_MODEL', legacy_default)
+
+    @classmethod
+    def get_reasoning_model_name(cls) -> str:
+        """Resolve the reasoning/extraction model name."""
+        return os.environ.get('OPENAI_REASONING_MODEL', cls.get_default_model_name())
+
+    @classmethod
+    def get_report_model_name(cls) -> str:
+        """Resolve the report-friendly model name."""
+        return os.environ.get('OPENAI_REPORT_MODEL', cls.get_default_model_name())
+
+    @classmethod
+    def get_embedding_model_name(cls) -> str:
+        """Resolve the embedding model name."""
+        return os.environ.get(
+            'LOCAL_EMBEDDING_MODEL',
+            os.environ.get(
+                'OPENAI_EMBEDDING_MODEL',
+                cls.OPENAI_EMBEDDING_MODEL,
+            ),
+        )
+
+    @classmethod
+    def get_embedding_api_key(cls) -> str | None:
+        """Resolve the embedding API key."""
+        return os.environ.get(
+            'LOCAL_EMBEDDING_API_KEY',
+            os.environ.get(
+                'EMBEDDING_API_KEY',
+                cls.get_openai_api_key(),
+            ),
+        )
+
+    @classmethod
+    def get_embedding_base_url(cls) -> str:
+        """Resolve the embedding API base URL."""
+        return os.environ.get(
+            'LOCAL_EMBEDDING_BASE_URL',
+            os.environ.get(
+                'EMBEDDING_BASE_URL',
+                cls.get_openai_base_url(),
+            ),
+        )
+
+    @classmethod
+    def get_embedding_dimensions(cls) -> int | None:
+        """Resolve optional embedding dimensions override."""
+        raw_value = os.environ.get('LOCAL_EMBEDDING_DIMENSIONS', cls.LOCAL_EMBEDDING_DIMENSIONS)
+        if raw_value in (None, ''):
+            return None
+        return int(raw_value)
+
+    @classmethod
+    def get_forecast_data_dir(cls) -> str:
+        """Resolve the forecast artifact root."""
+        return os.environ.get('FORECAST_DATA_DIR', cls.FORECAST_DATA_DIR)
+
+    @classmethod
+    def get_local_evidence_index_path(cls) -> str:
+        """Resolve the local evidence index storage path."""
+        return os.environ.get(
+            'LOCAL_EVIDENCE_INDEX_PATH',
+            os.path.join(cls.get_forecast_data_dir(), 'local_evidence_index.sqlite3'),
+        )
+
+    @classmethod
+    def get_task_model_routes(cls) -> dict[str, TaskModelRoute]:
+        """Resolve task-scoped model routing for later forecasting phases."""
+        api_key = cls.get_openai_api_key()
+        base_url = cls.get_openai_base_url()
+        default_model = cls.get_default_model_name()
+        return {
+            'default': TaskModelRoute(
+                task='default',
+                model=default_model,
+                api_key=api_key,
+                base_url=base_url,
+            ),
+            'reasoning': TaskModelRoute(
+                task='reasoning',
+                model=cls.get_reasoning_model_name(),
+                api_key=api_key,
+                base_url=base_url,
+            ),
+            'report': TaskModelRoute(
+                task='report',
+                model=cls.get_report_model_name(),
+                api_key=api_key,
+                base_url=base_url,
+            ),
+            'embedding': TaskModelRoute(
+                task='embedding',
+                model=cls.get_embedding_model_name(),
+                api_key=cls.get_embedding_api_key(),
+                base_url=cls.get_embedding_base_url(),
+            ),
+        }
     
     @classmethod
     def validate(cls):
         """Validate required settings."""
         errors = []
-        if not cls.LLM_API_KEY:
-            errors.append("LLM_API_KEY is not configured")
+        if not cls.get_openai_api_key():
+            errors.append("LLM_API_KEY or OPENAI_API_KEY is not configured")
         if not cls.ZEP_API_KEY:
             errors.append("ZEP_API_KEY is not configured")
         return errors

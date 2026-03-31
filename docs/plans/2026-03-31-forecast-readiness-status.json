@@ -1,0 +1,120 @@
+{
+  "phases": {
+    "P01": {
+      "status": "complete",
+      "summary": "Completed the model-routing and local evidence foundation with additive Responses support. Verified by targeted unit tests, one live structured Responses extraction smoke, one live embedding smoke, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/config.py",
+        "backend/app/utils/llm_client.py",
+        "backend/app/utils/model_routing.py",
+        "backend/app/utils/embedding_client.py",
+        "backend/app/services/local_evidence_index.py",
+        "backend/tests/unit/test_model_routing.py",
+        "backend/tests/unit/test_llm_client.py",
+        "backend/tests/unit/test_embedding_client_and_evidence_index.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "backend/.venv/bin/python -m pytest backend/tests/unit/test_model_routing.py backend/tests/unit/test_llm_client.py backend/tests/unit/test_embedding_client_and_evidence_index.py -q -> 6 passed, 1 warning in 0.13s",
+        "PYTHONPATH=backend backend/.venv/bin/python live structured smoke via LLMClient.create_structured_response(...) -> model gpt-4o-mini-2024-07-18, verdict Strong demand is indicated in the market.",
+        "PYTHONPATH=backend backend/.venv/bin/python live embedding smoke via LocalEmbeddingClient.embed_text(...) -> 1536 dimensions, normalized norm 1.0",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 333 passed, 1 warning in 36.48s"
+      ],
+      "artifacts": [
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json",
+        "backend/app/utils/model_routing.py",
+        "backend/app/utils/embedding_client.py",
+        "backend/app/services/local_evidence_index.py"
+      ],
+      "compatibility_fixes": [
+        "Preserved legacy `LLM_*` env settings while adding task-scoped OpenAI route helpers.",
+        "Kept `LLMClient.chat(...)` and `LLMClient.chat_json(...)` intact while adding Responses-based structured methods.",
+        "Decoupled router resolution from per-instance overrides so custom routers only need `resolve(task)`."
+      ],
+      "blockers": []
+    },
+    "P02": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P03": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P04": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P05": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P06": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P07": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P08": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P09": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    },
+    "P10": {
+      "status": "pending",
+      "summary": "",
+      "owned_paths": [],
+      "commands": [],
+      "artifacts": [],
+      "compatibility_fixes": [],
+      "blockers": []
+    }
+  }
+}
