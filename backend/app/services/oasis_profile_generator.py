@@ -362,10 +362,6 @@ class OasisProfileGenerator:
             "context": "\n\n".join(context_parts),
         }
 
-    def _search_zep_for_entity(self, entity: EntityNode) -> Dict[str, Any]:
-        """Compatibility wrapper for the renamed graph-backed enrichment path."""
-        return self._search_graph_for_entity(entity)
-    
     def _build_entity_context(
         self,
         entity: EntityNode,

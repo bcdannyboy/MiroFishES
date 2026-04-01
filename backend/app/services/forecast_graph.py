@@ -447,7 +447,7 @@ def build_episode_chunk_map(
     episode_uuids: List[str],
     chunk_records: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-    """Map Zep episode ids back to the deterministic chunk records."""
+    """Map graph episode ids back to the deterministic chunk records."""
     return {
         episode_uuid: dict(chunk_record)
         for episode_uuid, chunk_record in zip(episode_uuids, chunk_records)

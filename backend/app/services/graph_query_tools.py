@@ -576,10 +576,7 @@ class GraphQueryToolsService:
         graph_ids: Optional[List[str]] = None,
     ) -> SearchResult:
         """
-        Semantic graph search.
-
-        Uses hybrid search (semantic + BM25) to search for related graph content.
-        Falls back to local keyword matching if the Zep Cloud search API is unavailable.
+        Semantic graph search across one or more graph namespaces.
         
         Args:
             graph_id: Graph ID (Standalone Graph)
@@ -1202,7 +1199,7 @@ Return the subquestion list as JSON."""
         QuickSearch - simple search.
 
         A fast lightweight retrieval tool:
-        1. Calls Zep semantic search directly
+        1. Calls the graph-backed search path directly
         2. Returns the most relevant results
         3. Best for simple and direct retrieval needs
         

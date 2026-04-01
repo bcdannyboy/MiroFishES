@@ -320,6 +320,49 @@
   - the integration wrapper still tells the truth about the real repo `.env`; it does not consume the managed-local defaults
   - smoke/live/operator wrappers do consume the managed-local defaults so the local helper path is operable end to end
 
+### Prompt 8
+
+- status: completed
+- scope: independent repo-truth audit, final remediation, full readiness rerun, explicit readiness/capabilities proof, and merge/publish preparation
+- Ruflo orchestration records:
+  - workspace verifier result: `swarm-task-only`
+  - swarm id: `swarm-1775030125528-6jqvvv`
+  - audit task id: `task-1775030125529-btuult`
+  - remediation task id: `task-1775030125529-q1yrlq`
+  - docs task id: `task-1775030125529-cogudi`
+- repo-truth gaps remediated:
+  - removed the stale private Zep-era alias from `backend/app/services/oasis_profile_generator.py`
+  - corrected residual Zep wording in `backend/app/services/forecast_graph.py`, `backend/app/services/graph_query_tools.py`, and `backend/app/services/ontology_generator.py`
+  - rewrote the Neo4j edge export query in `backend/app/services/graph_backend/export_service.py` to read optional edge fields through `properties(r)` so live operator coverage no longer emits `UnknownPropertyKeyWarning`
+- owned files actually changed:
+  - `backend/app/services/forecast_graph.py`
+  - `backend/app/services/graph_backend/export_service.py`
+  - `backend/app/services/graph_query_tools.py`
+  - `backend/app/services/oasis_profile_generator.py`
+  - `backend/app/services/ontology_generator.py`
+  - `backend/tests/unit/services/graph_backend/test_export_service.py`
+  - `backend/tests/unit/test_graphiti_cutover_audit.py`
+  - chain state files
+- verification summary:
+  - Prompt 8 targeted TDD:
+    - `backend/.venv/bin/python -m pytest backend/tests/unit/test_graphiti_cutover_audit.py -q` red -> green (`1 failed` -> `1 passed`)
+    - `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_export_service.py -q` red -> green (`1 failed` -> `1 passed`)
+    - `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/test_graph_data_api.py -q` passed with `3 passed`
+  - `npm run verify` passed with `407 passed, 1 warning`
+  - `npm run verify:forecasting` passed and re-proved the active artifact scan plus fixture-backed smoke (`10 passed`)
+  - `npm run verify:smoke` passed with `10 passed`
+  - `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local` passed with `2 passed (3.7m)`
+  - live backend log check after the operator rerun showed no `UnknownPropertyKeyWarning` entries for the read-side edge export path
+  - `npm run verify:graphiti:all` passed after rerunning outside the sandbox for Docker-helper access
+  - explicit local endpoint proof:
+    - started the app stack with the documented managed-local Neo4j values
+    - probed the documented `/api/graph/backend/readiness` and `/api/graph/backend/capabilities` endpoints on `127.0.0.1:5001`
+    - readiness reported `backend=graphiti_neo4j`, `configured=true`, `ready=true`, and Neo4j reachable at `bolt://127.0.0.1:17687`
+    - capabilities reported base build, runtime updates, merged base/runtime namespace reads, and the `verify:graphiti:*` ladder
+- operator-facing workflow notes:
+  - the documented `curl` commands are correct, but Prompt 8 had to use an equivalent live local browser probe because sandboxed `curl` could not reach the escalated local backend process namespace
+  - baseline dirty `output/playwright/**` evidence mutated again during the live verification reruns and remained intentionally unstaged
+
 ## Blockers And Resolutions
 
 - blocker: Ruflo memory storage is blocked by the external `sql.js` dependency
@@ -358,6 +401,9 @@
 - blocker: the real repo `.env` still omits explicit `NEO4J_PASSWORD`
   - status: open
   - resolution: integration stays honest and reports `configured=false`; smoke/live/operator wrappers use the managed local helper defaults instead
+- blocker: live operator coverage emitted Neo4j `UnknownPropertyKeyWarning` noise for optional edge fields during the first Prompt 8 audit rerun
+  - status: resolved
+  - resolution: read optional relation fields from `properties(r)` in the export query instead of direct `r.invalid_at` / `r.expired_at` / `r.episodes` access
 - blocker: `graphiti-core` availability was previously missing
   - status: resolved
   - resolution: Prompt 7 repo truth shows `graphiti-core 0.11.6` available through the backend environment/lock state and the live ladder now builds the Graphiti client successfully
@@ -424,17 +470,33 @@
     - integration wrapper passed while honestly reporting the real repo `.env` gap for `NEO4J_PASSWORD`
     - smoke wrapper passed with managed-local defaults and helper-backed Neo4j
     - live wrapper passed with `graphiti_client_built=true`, `neo4j_healthcheck=true`, and panorama runtime-history coverage
+- Prompt 8 targeted red/green tests:
+  - `backend/.venv/bin/python -m pytest backend/tests/unit/test_graphiti_cutover_audit.py -q`
+    - result before implementation: `1 failed`
+    - result after implementation: `1 passed`
+  - `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_export_service.py -q`
+    - result before implementation: `1 failed`
+    - result after implementation: `1 passed`
+  - `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/test_graph_data_api.py -q`
+    - result: `3 passed`
+- Prompt 8 final verification rerun:
+  - `npm run verify`
+    - result: PASS with `407 passed, 1 warning`
+  - `npm run verify:forecasting`
+    - result: PASS after rerunning outside the sandbox for Docker helper access
+  - `npm run verify:smoke`
+    - result: PASS with `10 passed`
+  - `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`
+    - result: PASS with `2 passed (3.7m)`
+  - `npm run verify:graphiti:all`
+    - result: PASS after rerunning outside the sandbox for Docker helper access
+  - explicit endpoint proof:
+    - documented startup values were used with the managed local helper and the app stack
+    - `/api/graph/backend/readiness` reported `backend=graphiti_neo4j`, `configured=true`, `ready=true`
+    - `/api/graph/backend/capabilities` reported merged namespace reads plus the `verify:graphiti:*` ladder
+    - equivalent live local browser probes were used because sandboxed `curl` could not reach the escalated backend process namespace
 
 ## Next-Prompt Entry Checklist
 
-- re-read the source plan, prompt-chain doc, this ledger, the chain status JSON, and the baseline dirty manifest
-- confirm the active branch still matches the chain status branch
-- confirm no baseline dirty path has been staged or adopted accidentally
-- verify Prompt 1-5 commits still exist in `git log`
-- verify the Prompt 7 commit exists and note that Prompt 6 repo-truth remediation is intentionally captured there
-- re-run `npm run verify:ruflo` and continue in `swarm-task-only` mode unless `sql.js` has been remediated
-- re-check `npm run verify`, `npm run verify:forecasting`, `npm run verify:smoke`, `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`, and `npm run verify:graphiti:all` only if Prompt 8 finds drift from the recorded outputs
-- confirm `/api/graph/backend/readiness` and `/api/graph/backend/capabilities` still match the documented operator contract
-- confirm the real repo `.env` gap for `NEO4J_PASSWORD` is still either explicitly fixed or still honestly reported as an integration-only readiness gap
-- confirm no runtime path or operator doc still assumes Zep services, Zep credentials, or Zep test stubs
-- audit the branch for merge readiness, residual risk, and any remaining cleanup that should block mainline integration
+- Prompt 8 is the final prompt in the cutover chain
+- the remaining required actions are non-interactive git merge/push steps plus final chain-state recording on `main`

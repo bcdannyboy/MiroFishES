@@ -6,7 +6,7 @@
   ],
   "branch": "codex/graphiti-neo4j-overhaul-chain",
   "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
-  "current_prompt": 7,
+  "current_prompt": 8,
   "completed_prompts": [
     1,
     2,
@@ -14,7 +14,8 @@
     4,
     5,
     6,
-    7
+    7,
+    8
   ],
   "prompt_status": "completed",
   "chain_owned_paths": [
@@ -139,6 +140,12 @@
         "research_audit_task_id": "task-1775026320589-u6eecf",
         "remediation_task_id": "task-1775026320592-d0eg77",
         "docs_task_id": "task-1775026320608-fhbckc"
+      },
+      "prompt_8": {
+        "swarm_id": "swarm-1775030125528-6jqvvv",
+        "audit_task_id": "task-1775030125529-btuult",
+        "remediation_task_id": "task-1775030125529-q1yrlq",
+        "docs_task_id": "task-1775030125529-cogudi"
       }
     },
     "neo4j_probe": {
@@ -373,6 +380,103 @@
           "Live probe reported graphiti_client_built=true, neo4j_healthcheck=true, and panorama runtime-history coverage."
         ]
       }
+    },
+    "prompt_8": {
+      "startup_repo_truth_check": {
+        "verify_ruflo": {
+          "command": "npm run verify:ruflo",
+          "result": "passed"
+        },
+        "branch_and_status": {
+          "command": "git branch --show-current && git status --short",
+          "result": "active branch matched chain state; baseline dirty output/playwright evidence remained unstaged"
+        },
+        "runtime_zep_audit": {
+          "command": "rg -n \"import .*zep|from .*zep|zep_cloud|ZEP_API_KEY\" backend/app frontend scripts package.json README.md docs/local-probabilistic-operator-runbook.md .env.example",
+          "result": "no live runtime Zep dependency remained in the audited paths"
+        }
+      },
+      "targeted_red_green": {
+        "cutover_alias_cleanup": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graphiti_cutover_audit.py -q",
+          "result": "red then green",
+          "detail": "removed the stale _search_zep_for_entity alias and residual Zep wording in the audited services"
+        },
+        "neo4j_optional_edge_fields": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_export_service.py -q",
+          "result": "red then green",
+          "detail": "rewrote the export query to read optional edge fields from properties(r)"
+        },
+        "graph_regression_after_edge_fix": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/test_graph_data_api.py -q",
+          "result": "3 passed"
+        }
+      },
+      "verify": {
+        "command": "npm run verify",
+        "result": "passed",
+        "notes": [
+          "407 passed, 1 warning"
+        ]
+      },
+      "verify_forecasting": {
+        "command": "npm run verify:forecasting",
+        "result": "passed",
+        "notes": [
+          "Rerun outside the sandbox was required for Docker helper access.",
+          "Fixture-backed smoke inside the forecasting ladder passed with 10 passed."
+        ]
+      },
+      "verify_smoke": {
+        "command": "npm run verify:smoke",
+        "result": "passed",
+        "notes": [
+          "10 passed"
+        ]
+      },
+      "verify_operator_local": {
+        "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+        "result": "passed",
+        "notes": [
+          "2 passed (3.7m)",
+          "The backend log contained no UnknownPropertyKeyWarning entries after the export-query remediation."
+        ]
+      },
+      "verify_graphiti_all": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed",
+        "notes": [
+          "Initial sandbox rerun failed only on Docker socket access for the managed helper.",
+          "Escalated rerun passed end to end.",
+          "Integration remained honest about the real repo .env missing NEO4J_PASSWORD while the helper-backed smoke/live stages stayed green."
+        ]
+      },
+      "backend_probe": {
+        "documented_commands": [
+          "curl -sS http://127.0.0.1:5001/api/graph/backend/readiness | jq .",
+          "curl -sS http://127.0.0.1:5001/api/graph/backend/capabilities | jq ."
+        ],
+        "execution_mode": "equivalent live local browser probe against the same endpoints because sandboxed curl could not reach the escalated backend process namespace",
+        "readiness": {
+          "backend": "graphiti_neo4j",
+          "configured": true,
+          "ready": true,
+          "neo4j_uri": "bolt://127.0.0.1:17687"
+        },
+        "capabilities": {
+          "base_graph_build": true,
+          "runtime_namespace_provisioning": true,
+          "runtime_event_updates": true,
+          "merged_reads": true,
+          "verification_commands": {
+            "unit": "npm run verify:graphiti:unit",
+            "integration": "npm run verify:graphiti:integration",
+            "smoke": "npm run verify:graphiti:smoke",
+            "live": "npm run verify:graphiti:live",
+            "all": "npm run verify:graphiti:all"
+          }
+        }
+      }
     }
   },
   "blockers": [
@@ -452,8 +556,14 @@
       "status": "open",
       "impact": "The integration readiness surface still reports configured=false against the real repo .env until NEO4J_PASSWORD is set explicitly.",
       "resolution": "Smoke/live/operator wrappers remain operable through managed-local defaults; integration stays honest."
+    },
+    {
+      "id": "neo4j-optional-edge-property-warnings",
+      "status": "resolved",
+      "impact": "Live operator coverage emitted Neo4j UnknownPropertyKeyWarning noise when optional edge fields were absent.",
+      "resolution": "Prompt 8 rewrote the edge export query to read optional relation fields from properties(r) instead of direct r.invalid_at / r.expired_at / r.episodes access."
     }
   ],
-  "next_prompt": 8,
+  "next_prompt": null,
   "merge_ready": false
 }

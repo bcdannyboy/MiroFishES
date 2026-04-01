@@ -45,6 +45,7 @@ WHERE
   source.group_id = $group_id
   AND target.group_id = $group_id
   AND r.group_id = $group_id
+WITH source, target, r, properties(r) AS edge_properties
 RETURN
   r.uuid AS uuid,
   coalesce(r.name, type(r)) AS name,
@@ -56,10 +57,10 @@ RETURN
   target.name AS target_node_name,
   r.created_at AS created_at,
   r.valid_at AS valid_at,
-  r.invalid_at AS invalid_at,
-  r.expired_at AS expired_at,
-  coalesce(r.episodes, []) AS episodes,
-  properties(r) AS properties
+  edge_properties['invalid_at'] AS invalid_at,
+  edge_properties['expired_at'] AS expired_at,
+  coalesce(edge_properties['episodes'], []) AS episodes,
+  edge_properties AS properties
 ORDER BY coalesce(r.created_at, "")
 """
 
