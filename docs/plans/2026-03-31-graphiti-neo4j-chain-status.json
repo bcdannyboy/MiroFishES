@@ -476,6 +476,10 @@
             "all": "npm run verify:graphiti:all"
           }
         }
+      },
+      "final_merge": {
+        "command": "git merge --no-ff codex/graphiti-neo4j-overhaul-chain -m \"Merge branch 'codex/graphiti-neo4j-overhaul-chain'\"",
+        "result": "merged into local main as 62d4637482c9"
       }
     }
   },
@@ -565,5 +569,7 @@
     }
   ],
   "next_prompt": null,
-  "merge_ready": false
+  "merge_ready": true,
+  "merge_commit_sha": "62d4637482c9",
+  "merged_to": "main"
 }

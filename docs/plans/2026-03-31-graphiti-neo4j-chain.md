@@ -362,6 +362,7 @@
 - operator-facing workflow notes:
   - the documented `curl` commands are correct, but Prompt 8 had to use an equivalent live local browser probe because sandboxed `curl` could not reach the escalated local backend process namespace
   - baseline dirty `output/playwright/**` evidence mutated again during the live verification reruns and remained intentionally unstaged
+  - merged into local `main` as `62d4637482c9`; the final Prompt 8 publish step pushes that mainline state to `origin/main`
 
 ## Blockers And Resolutions
 
@@ -499,4 +500,4 @@
 ## Next-Prompt Entry Checklist
 
 - Prompt 8 is the final prompt in the cutover chain
-- the remaining required actions are non-interactive git merge/push steps plus final chain-state recording on `main`
+- final publication state is recorded in the chain status JSON on `main`
