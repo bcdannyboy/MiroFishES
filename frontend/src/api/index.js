@@ -1,13 +1,42 @@
 import axios from 'axios'
 
+const viteEnv = typeof import.meta !== 'undefined' && import.meta.env
+  ? import.meta.env
+  : {}
+
 // Create the axios instance
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001',
+  baseURL: viteEnv.VITE_API_BASE_URL || 'http://localhost:5001',
   timeout: 300000, // 5 minute timeout; ontology generation can take a while
   headers: {
     'Content-Type': 'application/json'
   }
 })
+
+export const extractErrorMessage = (error) => (
+  error?.response?.data?.error
+  || error?.response?.data?.message
+  || error?.message
+  || 'Request failed'
+)
+
+export const shouldRetryRequestError = (error) => {
+  const status = error?.status ?? error?.response?.status
+
+  if (axios.isCancel(error) || error?.code === 'ERR_CANCELED') {
+    return false
+  }
+
+  if (error?.code === 'ECONNABORTED' || error?.message === 'Network Error') {
+    return true
+  }
+
+  if (status == null) {
+    return true
+  }
+
+  return [408, 409, 425, 429, 500, 502, 503, 504].includes(status)
+}
 
 // Request interceptor
 service.interceptors.request.use(
@@ -45,8 +74,13 @@ service.interceptors.response.use(
     if (error.message === 'Network Error') {
       console.error('Network error - please check your connection')
     }
-    
-    return Promise.reject(error)
+
+    const wrappedError = new Error(extractErrorMessage(error))
+    wrappedError.status = error?.response?.status
+    wrappedError.responseData = error?.response?.data
+    wrappedError.cause = error
+
+    return Promise.reject(wrappedError)
   }
 )
 
@@ -60,7 +94,7 @@ export const requestWithRetry = async (requestFn, maxRetries = 3, delay = 1000) 
         throw error
       }
 
-      if (i === maxRetries - 1) throw error
+      if (i === maxRetries - 1 || !shouldRetryRequestError(error)) throw error
       
       console.warn(`Request failed, retrying (${i + 1}/${maxRetries})...`)
       await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)))

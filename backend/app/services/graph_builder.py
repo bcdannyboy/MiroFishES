@@ -422,7 +422,7 @@ class GraphBuilderService:
         graph_id: str,
         episode_uuids: List[str],
         progress_callback: Optional[Callable] = None,
-        timeout: int = 600
+        timeout: Optional[int] = None
     ):
         """Wait for all episodes to finish processing by polling their processed status."""
         if not episode_uuids:
@@ -440,13 +440,16 @@ class GraphBuilderService:
             progress_callback(f"Waiting for {total_episodes} text chunks to be processed...", 0)
         
         while pending_episodes:
-            if time.time() - start_time > timeout:
+            if timeout is not None and time.time() - start_time > timeout:
                 if progress_callback:
                     progress_callback(
                         f"Some text chunks timed out; completed {completed_count}/{total_episodes}",
                         completed_count / total_episodes
                     )
-                break
+                raise TimeoutError(
+                    "Timed out waiting for Zep to process episodes "
+                    f"({completed_count}/{total_episodes} completed)"
+                )
 
             processed_uuids = set()
             try:

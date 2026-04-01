@@ -1,4 +1,5 @@
 import importlib
+import pytest
 
 from app.utils.zep_paging import PageFetchResult
 
@@ -141,6 +142,82 @@ def test_wait_for_episodes_uses_graph_level_polling(monkeypatch):
     )
 
     assert get_by_graph_id_calls == [("graph-1", 2)]
+
+
+def test_wait_for_episodes_does_not_timeout_by_default(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+    get_by_graph_id_calls = []
+
+    class _FakeEpisodeClient:
+        def __init__(self):
+            self.call_count = 0
+
+        def get_by_graph_id(self, graph_id, lastn=None):
+            self.call_count += 1
+            get_by_graph_id_calls.append((graph_id, lastn))
+            if self.call_count == 1:
+                episodes = [
+                    _FakeEpisode("ep-1", True),
+                    _FakeEpisode("ep-2", False),
+                ]
+            else:
+                episodes = [
+                    _FakeEpisode("ep-1", True),
+                    _FakeEpisode("ep-2", True),
+                ]
+            return type("EpisodeResponse", (), {"episodes": episodes})()
+
+    service.client = type(
+        "Client",
+        (),
+        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
+    )()
+
+    time_values = iter([0, 601, 602])
+    monkeypatch.setattr(module.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    service._wait_for_episodes(
+        "graph-1",
+        ["ep-1", "ep-2"],
+    )
+
+    assert get_by_graph_id_calls == [("graph-1", 2), ("graph-1", 2)]
+
+
+def test_wait_for_episodes_raises_when_explicit_timeout_is_reached(monkeypatch):
+    module = importlib.import_module("app.services.graph_builder")
+    service = _build_service(module)
+
+    class _FakeEpisodeClient:
+        def get_by_graph_id(self, graph_id, lastn=None):
+            return type(
+                "EpisodeResponse",
+                (),
+                {"episodes": [_FakeEpisode("ep-1", False)]},
+            )()
+
+    service.client = type(
+        "Client",
+        (),
+        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
+    )()
+
+    time_values = iter([0, 601])
+    monkeypatch.setattr(module.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(
+        module.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(AssertionError("timeout path should not sleep")),
+    )
+
+    with pytest.raises(TimeoutError, match="Timed out waiting for Zep to process episodes"):
+        service._wait_for_episodes(
+            "graph-1",
+            ["ep-1"],
+            timeout=600,
+        )
 
 
 def test_build_chunk_records_uses_combined_source_unit_offsets():

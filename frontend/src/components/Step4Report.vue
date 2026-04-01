@@ -1953,6 +1953,41 @@ const getLogLevelClass = (log) => {
 // Polling
 let agentLogTimer = null
 let consoleLogTimer = null
+let reportUnavailableHandled = false
+
+const isReportUnavailableError = (err) => {
+  if (err?.response?.status === 404) {
+    return true
+  }
+
+  const combinedMessage = [
+    err?.response?.data?.error,
+    err?.response?.data?.message,
+    err?.message
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  return combinedMessage.includes('report not found')
+}
+
+const handleUnavailableReport = (err, source) => {
+  if (!isReportUnavailableError(err)) {
+    return false
+  }
+
+  stopPolling()
+  currentSectionIndex.value = null
+  emit('update-status', 'error')
+
+  if (!reportUnavailableHandled) {
+    addLog(`Stopped ${source}; report is unavailable: ${props.reportId}`)
+    reportUnavailableHandled = true
+  }
+
+  return true
+}
 
 const hydrateReportContext = async () => {
   if (!props.reportId) {
@@ -1966,6 +2001,9 @@ const hydrateReportContext = async () => {
       resolvedProbabilisticContext.value = res.data.probabilistic_context
     }
   } catch (err) {
+    if (handleUnavailableReport(err, 'report context hydration')) {
+      return
+    }
     console.warn('Failed to hydrate report context:', err)
   }
 }
@@ -2025,6 +2063,9 @@ const fetchAgentLog = async () => {
       }
     }
   } catch (err) {
+    if (handleUnavailableReport(err, 'agent log polling')) {
+      return
+    }
     console.warn('Failed to fetch agent log:', err)
   }
 }
@@ -2086,6 +2127,9 @@ const fetchConsoleLog = async () => {
       }
     }
   } catch (err) {
+    if (handleUnavailableReport(err, 'console log polling')) {
+      return
+    }
     console.warn('Failed to fetch console log:', err)
   }
 }
@@ -2126,6 +2170,7 @@ onUnmounted(() => {
 
 watch(() => props.reportId, (newId) => {
   if (newId) {
+    reportUnavailableHandled = false
     resolvedProbabilisticContext.value = null
     agentLogs.value = []
     consoleLogs.value = []

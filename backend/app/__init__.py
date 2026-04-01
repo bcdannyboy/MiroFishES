@@ -10,8 +10,9 @@ import warnings
 # such as transformers. This must run before other imports.
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from .config import Config
 from .utils.logger import setup_logger, get_logger
@@ -21,6 +22,21 @@ def create_app(config_class=Config):
     """Create the Flask application."""
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    def _format_upload_limit(max_bytes):
+        if not max_bytes:
+            return "configured size limit"
+        if max_bytes >= 1024 * 1024:
+            megabytes = max_bytes / (1024 * 1024)
+            if float(megabytes).is_integer():
+                return f"{int(megabytes)} MB"
+            return f"{megabytes:.1f} MB"
+        if max_bytes >= 1024:
+            kilobytes = max_bytes / 1024
+            if float(kilobytes).is_integer():
+                return f"{int(kilobytes)} KB"
+            return f"{kilobytes:.1f} KB"
+        return f"{max_bytes} bytes"
     
     # Keep JSON output unescaped so non-ASCII text is returned directly instead
     # of as \uXXXX sequences. Flask >= 2.3 uses app.json.ensure_ascii; older
@@ -65,6 +81,18 @@ def create_app(config_class=Config):
         logger = get_logger('mirofish.request')
         logger.debug(f"Response: {response.status_code}")
         return response
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def handle_request_entity_too_large(_error):
+        max_bytes = app.config.get('MAX_CONTENT_LENGTH')
+        return jsonify({
+            "success": False,
+            "error": (
+                f"Upload exceeds the {_format_upload_limit(max_bytes)} limit. "
+                "Remove some files or split the upload into smaller batches."
+            ),
+            "max_upload_bytes": max_bytes,
+        }), 413
     
     # Prefer route-module blueprints when available, but fall back to the
     # package-level stubs used by the backend test harness.
