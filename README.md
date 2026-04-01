@@ -41,7 +41,8 @@ That newer path is only as strong as the artifacts and verification behind it. W
 - [Docs index](docs/README.md): short reading guide
 - [What MiroFishES adds](docs/what-mirofishes-adds.md): plain-language fork delta
 - [Local probabilistic operator runbook](docs/local-probabilistic-operator-runbook.md): local Step 1 through Step 5 operating guide
-- [Forecasting integration hardening wave](docs/plans/2026-03-29-forecasting-integration-hardening-wave.md): current contract and verification snapshot
+- [Forecast readiness chain ledger](docs/plans/2026-03-31-forecast-readiness-chain.md): current implementation contract, handoffs, and final readiness evidence
+- [Forecast readiness status](docs/plans/2026-03-31-forecast-readiness-status.json): machine-readable phase status and verification record
 - [North-star forecast upgrades](docs/plans/2026-03-28-mirofish-high-impact-forecasting-upgrades.md): historical ambition, not current contract
 
 ## Repository Layout

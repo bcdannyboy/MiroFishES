@@ -377,6 +377,7 @@
       "summary": "Completed the final global audit and readiness remediation by fixing the live operator Step 4/5 selection and timeout drift, rerunning the full verification ladder fresh, and aligning front-door docs with the verified additive forecast contract.",
       "owned_paths": [
         "README.md",
+        "docs/README.md",
         "docs/what-mirofishes-adds.md",
         "docs/local-probabilistic-operator-runbook.md",
         "tests/live/probabilistic-operator-local.spec.mjs",
@@ -403,6 +404,7 @@
         "docs/plans/2026-03-31-forecast-readiness-chain.md",
         "docs/plans/2026-03-31-forecast-readiness-status.json",
         "README.md",
+        "docs/README.md",
         "docs/what-mirofishes-adds.md",
         "docs/local-probabilistic-operator-runbook.md"
       ],

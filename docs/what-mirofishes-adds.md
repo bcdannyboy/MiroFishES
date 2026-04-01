@@ -94,4 +94,6 @@ MiroFishES still does not truthfully support:
 
 - [Root README](../README.md): setup, verification ladder, and readiness terms
 - [Local probabilistic operator runbook](local-probabilistic-operator-runbook.md): local operator behavior and recovery paths
-- [Forecasting integration hardening wave](plans/2026-03-29-forecasting-integration-hardening-wave.md): current contract and verification snapshot
+- [Forecast readiness chain ledger](plans/2026-03-31-forecast-readiness-chain.md): current implementation contract, phase handoffs, and final readiness evidence
+- [Forecast readiness status](plans/2026-03-31-forecast-readiness-status.json): machine-readable phase status and verification record
+- [Forecasting integration hardening wave](plans/2026-03-29-forecasting-integration-hardening-wave.md): historical integration hardening context
