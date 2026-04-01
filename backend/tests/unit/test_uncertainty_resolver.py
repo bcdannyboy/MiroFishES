@@ -747,3 +747,227 @@ def test_resolver_applies_template_exogenous_events_and_template_conditionals():
     assert manifest.assumption_ledger["activated_template_conditions"] == [
         "twitter_config.viral_threshold"
     ]
+
+
+def test_resolver_applies_structural_uncertainty_assignments_and_records_assumptions():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["structural_uncertainty"] = {
+        "event_arrival_process": {
+            "mode": "steady_cadence",
+            "spacing_hours": 6,
+        },
+        "credibility_shock": {
+            "mode": "stable_signal",
+            "trust_multiplier": 1.0,
+        },
+    }
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        structural_uncertainties=[
+            models.StructuralUncertaintySpec(
+                uncertainty_id="event_arrival_process",
+                kind="event_arrival_process",
+                label="Event Arrival Process",
+                options=[
+                    models.StructuralUncertaintyOption(
+                        option_id="steady_cadence",
+                        label="Steady Cadence",
+                        config_overrides={
+                            "structural_uncertainty.event_arrival_process.mode": "steady_cadence",
+                            "structural_uncertainty.event_arrival_process.spacing_hours": 6,
+                        },
+                        coverage_tags=["arrival:steady"],
+                        runtime_transition_hints=[
+                            {
+                                "transition_type": "event",
+                                "summary": "Events arrive on an even cadence.",
+                            }
+                        ],
+                        assumption_text="Events arrive on an even cadence with no early burst.",
+                    ),
+                    models.StructuralUncertaintyOption(
+                        option_id="burst_front_loaded",
+                        label="Burst Front Loaded",
+                        config_overrides={
+                            "structural_uncertainty.event_arrival_process.mode": "burst_front_loaded",
+                            "structural_uncertainty.event_arrival_process.spacing_hours": 2,
+                        },
+                        coverage_tags=["arrival:burst"],
+                        runtime_transition_hints=[
+                            {
+                                "transition_type": "event",
+                                "summary": "Events cluster early in the run.",
+                            }
+                        ],
+                        assumption_text="Events cluster early and then decay.",
+                    ),
+                ],
+            ),
+            models.StructuralUncertaintySpec(
+                uncertainty_id="credibility_shock",
+                kind="credibility_shock",
+                label="Credibility Shock",
+                options=[
+                    models.StructuralUncertaintyOption(
+                        option_id="stable_signal",
+                        label="Stable Signal",
+                        config_overrides={
+                            "structural_uncertainty.credibility_shock.mode": "stable_signal",
+                            "structural_uncertainty.credibility_shock.trust_multiplier": 1.0,
+                        },
+                        coverage_tags=["credibility:stable"],
+                        runtime_transition_hints=[
+                            {
+                                "transition_type": "belief_update",
+                                "summary": "Credibility remains stable.",
+                            }
+                        ],
+                        assumption_text="Credibility stays stable throughout the run.",
+                    ),
+                    models.StructuralUncertaintyOption(
+                        option_id="trust_drop",
+                        label="Trust Drop",
+                        config_overrides={
+                            "structural_uncertainty.credibility_shock.mode": "trust_drop",
+                            "structural_uncertainty.credibility_shock.trust_multiplier": 0.55,
+                        },
+                        coverage_tags=["credibility:negative"],
+                        runtime_transition_hints=[
+                            {
+                                "transition_type": "belief_update",
+                                "summary": "Credibility declines after a shock.",
+                            }
+                        ],
+                        assumption_text="A credibility shock reduces trust in claims.",
+                    ),
+                ],
+            ),
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            structural_uncertainty_ids=[
+                "event_arrival_process",
+                "credibility_shock",
+            ],
+        ),
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    result = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-010",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=12,
+        experiment_design_row={
+            "row_index": 0,
+            "normalized_coordinates": {},
+            "stratum_indices": {},
+            "structural_assignments": [
+                {
+                    "uncertainty_id": "event_arrival_process",
+                    "option_id": "burst_front_loaded",
+                },
+                {
+                    "uncertainty_id": "credibility_shock",
+                    "option_id": "trust_drop",
+                },
+            ],
+        },
+    )
+
+    resolved = result["resolved_config"]
+    manifest = result["run_manifest"]
+
+    assert resolved["structural_uncertainty"]["event_arrival_process"]["mode"] == (
+        "burst_front_loaded"
+    )
+    assert resolved["structural_uncertainty"]["credibility_shock"]["trust_multiplier"] == (
+        0.55
+    )
+    assert [item["option_id"] for item in manifest.structural_resolutions] == [
+        "burst_front_loaded",
+        "trust_drop",
+    ]
+    assert manifest.assumption_ledger["structural_coverage_tags"] == [
+        "arrival:burst",
+        "credibility:negative",
+    ]
+    assert manifest.assumption_ledger["structural_runtime_transition_types"] == [
+        "belief_update",
+        "event",
+    ]
+    assert manifest.assumption_ledger["assumption_statements"] == [
+        "Events cluster early and then decay.",
+        "A credibility shock reduces trust in claims.",
+    ]
+    assert manifest.experiment_design_row["structural_assignments"][0]["option_id"] == (
+        "burst_front_loaded"
+    )
+
+
+def test_structural_uncertainty_resolution_is_deterministic_without_design_rows():
+    models = _load_models_module()
+    resolver_module = _load_resolver_module()
+
+    base_config = _build_base_config()
+    base_config["structural_uncertainty"] = {
+        "moderation_policy_change": {
+            "mode": "status_quo",
+            "policy_intensity": 0.0,
+        }
+    }
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        structural_uncertainties=[
+            models.StructuralUncertaintySpec(
+                uncertainty_id="moderation_policy_change",
+                kind="moderation_policy_change",
+                label="Moderation Policy Change",
+                options=[
+                    models.StructuralUncertaintyOption(
+                        option_id="status_quo",
+                        label="Status Quo",
+                        weight=1.0,
+                        config_overrides={
+                            "structural_uncertainty.moderation_policy_change.mode": "status_quo",
+                            "structural_uncertainty.moderation_policy_change.policy_intensity": 0.0,
+                        },
+                    ),
+                    models.StructuralUncertaintyOption(
+                        option_id="tightened_enforcement",
+                        label="Tightened Enforcement",
+                        weight=2.0,
+                        config_overrides={
+                            "structural_uncertainty.moderation_policy_change.mode": "tightened_enforcement",
+                            "structural_uncertainty.moderation_policy_change.policy_intensity": 0.8,
+                        },
+                    ),
+                ],
+            )
+        ],
+    )
+
+    resolver = resolver_module.UncertaintyResolver()
+    first = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-011",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=42,
+    )
+    second = resolver.resolve_run_config(
+        simulation_id="sim-test",
+        run_id="run-011",
+        base_config=base_config,
+        uncertainty_spec=uncertainty_spec,
+        resolution_seed=42,
+    )
+
+    assert first["resolved_config"] == second["resolved_config"]
+    assert first["run_manifest"].structural_resolutions == second["run_manifest"].structural_resolutions

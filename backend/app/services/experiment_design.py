@@ -65,6 +65,17 @@ class ExperimentDesignService:
             }
             for row_index in range(run_count)
         ]
+        structural_catalog = self._build_structural_uncertainty_catalog(
+            uncertainty_spec
+        )
+        (
+            structural_assignments_by_row,
+            structural_option_target_counts,
+        ) = self._build_structural_assignments(
+            run_count=run_count,
+            root_seed=root_seed,
+            uncertainty_spec=uncertainty_spec,
+        )
 
         rng = random.Random(root_seed)
         group_by_field = self._map_field_groups(uncertainty_spec)
@@ -104,8 +115,20 @@ class ExperimentDesignService:
         )
 
         previous_row: Optional[Dict[str, Any]] = None
-        for row, assignment in zip(rows, scenario_assignments):
+        for row_index, (row, assignment) in enumerate(zip(rows, scenario_assignments)):
+            structural_payload = structural_assignments_by_row[row_index]
+            row.update(
+                {
+                    key: value
+                    for key, value in structural_payload.items()
+                    if key != "coverage_signature"
+                }
+            )
             row.update(assignment)
+            row["coverage_signature"] = {
+                **assignment.get("coverage_signature", {}),
+                **structural_payload.get("coverage_signature", {}),
+            }
             row["scenario_distance_from_previous"] = (
                 round(
                     self._row_distance(
@@ -127,12 +150,15 @@ class ExperimentDesignService:
             rows=rows,
             templates_by_id=templates_by_id,
             uncertainty_spec=uncertainty_spec,
+            structural_catalog=structural_catalog,
+            structural_option_target_counts=structural_option_target_counts,
         )
         coverage_metrics = self._build_coverage_metrics(
             run_count=run_count,
             design_spec=design_spec,
             rows=rows,
             templates_by_id=templates_by_id,
+            structural_catalog=structural_catalog,
         )
         support_metrics = self._build_support_metrics(rows)
         scenario_distance_metrics = self._build_scenario_distance_metrics(
@@ -175,6 +201,7 @@ class ExperimentDesignService:
             "diversity_warnings": diversity_warnings,
             "diversity_plan": diversity_plan,
             "scenario_diversity_plan": diversity_plan,
+            "structural_uncertainty_catalog": structural_catalog,
             "rows": rows,
         }
 
@@ -449,6 +476,131 @@ class ExperimentDesignService:
             },
         }
 
+    def _build_structural_uncertainty_catalog(
+        self,
+        uncertainty_spec: UncertaintySpec,
+    ) -> List[Dict[str, Any]]:
+        catalog: List[Dict[str, Any]] = []
+        for structural_spec in uncertainty_spec.structural_uncertainties:
+            catalog.append(
+                {
+                    "uncertainty_id": structural_spec.uncertainty_id,
+                    "kind": structural_spec.kind,
+                    "label": structural_spec.label,
+                    "coverage_tags": list(structural_spec.coverage_tags),
+                    "option_ids": [option.option_id for option in structural_spec.options],
+                    "option_labels": {
+                        option.option_id: option.label
+                        for option in structural_spec.options
+                    },
+                    "option_weights": {
+                        option.option_id: option.weight
+                        for option in structural_spec.options
+                    },
+                }
+            )
+        return catalog
+
+    def _build_structural_assignments(
+        self,
+        *,
+        run_count: int,
+        root_seed: int,
+        uncertainty_spec: UncertaintySpec,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, int]]]:
+        row_payloads = [
+            {
+                "structural_assignments": [],
+                "structural_coverage_tags": [],
+                "structural_runtime_transition_types": [],
+                "structural_coverage": {
+                    "assignment_count": 0,
+                    "coverage_tags": [],
+                    "runtime_transition_types": [],
+                },
+                "coverage_signature": {
+                    "structural_assignment_count": 0,
+                },
+            }
+            for _ in range(run_count)
+        ]
+        if not uncertainty_spec.structural_uncertainties:
+            return row_payloads, {}
+
+        structural_option_target_counts: Dict[str, Dict[str, int]] = {}
+        for spec_index, structural_spec in enumerate(
+            uncertainty_spec.structural_uncertainties
+        ):
+            option_ids = [option.option_id for option in structural_spec.options]
+            weights_by_id = {
+                option.option_id: option.weight for option in structural_spec.options
+            }
+            target_counts = self._build_weighted_target_counts(
+                run_count=run_count,
+                scenario_template_ids=option_ids,
+                weights_by_id=weights_by_id,
+            )
+            structural_option_target_counts[structural_spec.uncertainty_id] = (
+                target_counts
+            )
+            option_sequence: List[str] = []
+            for option_id in option_ids:
+                option_sequence.extend([option_id] * target_counts.get(option_id, 0))
+            option_rng = random.Random(root_seed + ((spec_index + 1) * 97))
+            option_rng.shuffle(option_sequence)
+            if len(option_sequence) < run_count and option_ids:
+                while len(option_sequence) < run_count:
+                    option_sequence.append(option_ids[len(option_sequence) % len(option_ids)])
+
+            options_by_id = {
+                option.option_id: option for option in structural_spec.options
+            }
+            for row_index, row_payload in enumerate(row_payloads):
+                option = options_by_id[option_sequence[row_index]]
+                runtime_transition_types = self._dedupe_strings(
+                    str(item.get("transition_type") or "").strip()
+                    for item in option.runtime_transition_hints
+                )
+                assignment = {
+                    "uncertainty_id": structural_spec.uncertainty_id,
+                    "kind": structural_spec.kind,
+                    "label": structural_spec.label,
+                    "option_id": option.option_id,
+                    "option_label": option.label,
+                    "coverage_tags": list(option.coverage_tags),
+                    "runtime_transition_hints": [
+                        dict(item) for item in option.runtime_transition_hints
+                    ],
+                    "runtime_transition_types": runtime_transition_types,
+                    "override_field_count": len(option.config_overrides),
+                    "assumption_text": option.assumption_text,
+                }
+                row_payload["structural_assignments"].append(assignment)
+                row_payload["structural_coverage_tags"] = self._dedupe_strings(
+                    list(row_payload["structural_coverage_tags"])
+                    + list(option.coverage_tags)
+                )
+                row_payload["structural_runtime_transition_types"] = self._dedupe_strings(
+                    list(row_payload["structural_runtime_transition_types"])
+                    + runtime_transition_types
+                )
+
+        for row_payload in row_payloads:
+            row_payload["structural_coverage"] = {
+                "assignment_count": len(row_payload["structural_assignments"]),
+                "coverage_tags": list(row_payload["structural_coverage_tags"]),
+                "runtime_transition_types": list(
+                    row_payload["structural_runtime_transition_types"]
+                ),
+            }
+            row_payload["coverage_signature"] = {
+                **row_payload["coverage_signature"],
+                "structural_assignment_count": len(
+                    row_payload["structural_assignments"]
+                ),
+            }
+        return row_payloads, structural_option_target_counts
+
     def _build_diversity_plan(
         self,
         *,
@@ -457,6 +609,8 @@ class ExperimentDesignService:
         rows: List[Dict[str, Any]],
         templates_by_id: Dict[str, ScenarioTemplateSpec],
         uncertainty_spec: UncertaintySpec,
+        structural_catalog: List[Dict[str, Any]],
+        structural_option_target_counts: Dict[str, Dict[str, int]],
     ) -> Dict[str, Any]:
         coverage_axes = list(design_spec.scenario_coverage_axes or design_spec.diversity_axes)
         if not coverage_axes:
@@ -503,6 +657,11 @@ class ExperimentDesignService:
                 len(template.conditional_overrides) for template in templates_by_id.values()
             ),
             "correlated_group_count": len(uncertainty_spec.variable_groups),
+            "structural_uncertainty_ids": [
+                item["uncertainty_id"] for item in structural_catalog
+            ],
+            "structural_kind_count": len(structural_catalog),
+            "structural_option_target_counts": structural_option_target_counts,
         }
 
     def _build_coverage_metrics(
@@ -512,6 +671,7 @@ class ExperimentDesignService:
         design_spec: ExperimentDesignSpec,
         rows: List[Dict[str, Any]],
         templates_by_id: Dict[str, ScenarioTemplateSpec],
+        structural_catalog: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         numeric_dimension_coverage_ratios = {
             dimension: (
@@ -608,6 +768,38 @@ class ExperimentDesignService:
                     "coverage_tag_fraction": round(coverage_tag_fraction, 4),
                     "multi_template_row_fraction": round(multi_template_row_fraction, 4),
                     "observed_template_pair_count": len(observed_template_pairs),
+                }
+            )
+        if structural_catalog:
+            structural_option_coverage_ratios: Dict[str, float] = {}
+            for item in structural_catalog:
+                uncertainty_id = item["uncertainty_id"]
+                declared_option_ids = set(item.get("option_ids", []))
+                observed_option_ids = {
+                    assignment.get("option_id")
+                    for row in rows
+                    for assignment in row.get("structural_assignments", [])
+                    if assignment.get("uncertainty_id") == uncertainty_id
+                    and assignment.get("option_id")
+                }
+                structural_option_coverage_ratios[uncertainty_id] = round(
+                    (
+                        len(observed_option_ids) / len(declared_option_ids)
+                        if declared_option_ids
+                        else 0.0
+                    ),
+                    4,
+                )
+            metrics.update(
+                {
+                    "structural_uncertainty_coverage_ratio": round(
+                        sum(structural_option_coverage_ratios.values())
+                        / len(structural_option_coverage_ratios),
+                        4,
+                    )
+                    if structural_option_coverage_ratios
+                    else 0.0,
+                    "structural_option_coverage_ratios": structural_option_coverage_ratios,
                 }
             )
         return metrics

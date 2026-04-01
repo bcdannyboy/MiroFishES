@@ -230,12 +230,47 @@
       "blockers": []
     },
     "P07": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed structural uncertainty modeling, deterministic experiment-design coverage, and per-run assumption-ledger handoff artifacts. Verified by targeted schema/resolver/design/storage tests, an ensemble API compatibility subset, one live .env prepare-and-handoff smoke on a real project/graph, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/models/probabilistic.py",
+        "backend/app/services/uncertainty_resolver.py",
+        "backend/app/services/experiment_design.py",
+        "backend/app/services/ensemble_manager.py",
+        "backend/app/services/simulation_manager.py",
+        "backend/tests/unit/test_probabilistic_schema.py",
+        "backend/tests/unit/test_uncertainty_resolver.py",
+        "backend/tests/unit/test_experiment_design.py",
+        "backend/tests/unit/test_probabilistic_prepare.py",
+        "backend/tests/unit/test_ensemble_storage.py",
+        "backend/tests/integration/test_structural_uncertainty_handoff.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "cd backend && .venv/bin/python -m pytest tests/unit/test_probabilistic_schema.py tests/unit/test_uncertainty_resolver.py tests/unit/test_experiment_design.py tests/unit/test_probabilistic_prepare.py tests/unit/test_ensemble_storage.py tests/integration/test_structural_uncertainty_handoff.py -q -> 77 passed, 1 warning in 0.72s",
+        "cd backend && .venv/bin/python -m pytest tests/unit/test_probabilistic_ensemble_api.py -q -> 36 passed, 1 warning in 1.18s",
+        "PYTHONPATH=backend backend/.venv/bin/python live prepare + ensemble smoke using project_id=proj_62646edbad5f graph_id=mirofish_7a3656f8e25647fe -> simulation_id=sim_2de8f94e6f08, prepare_status=ready, ensemble_id=0001, run_id=0001, structural_uncertainty_count=6, structural_uncertainty_coverage_ratio=1.0, assumption_statement_count=6, experiment_design_row/assumption_ledger artifacts present",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 364 passed, 1 warning in 6.65s"
+      ],
+      "artifacts": [
+        "uncertainty_spec.json.structural_uncertainties",
+        "prepared_snapshot.json.feature_metadata.structural_uncertainty_*",
+        "experiment_design.json",
+        "run_manifest.json.structural_resolutions",
+        "run_manifest.json.experiment_design_row",
+        "experiment_design_row.json",
+        "assumption_ledger.json",
+        "resolved_config.json.structural_resolutions",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Preserved the existing scalar random-variable, scenario-template, and conditional-variable uncertainty contracts while adding structural uncertainty as an additive layer.",
+        "Kept `deterministic-baseline` backward-safe by emitting baseline-only structural options instead of forcing stochastic structural variation into the narrow profile.",
+        "Left `run_manifest.json` and `resolved_config.json` compatible for existing callers by only adding fields and sidecar artifacts.",
+        "Preserved the existing prepare-time rule-based fallbacks so structural handoff artifacts still persist when live model calls are unavailable."
+      ],
       "blockers": []
     },
     "P08": {

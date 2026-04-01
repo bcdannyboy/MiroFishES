@@ -244,6 +244,85 @@ def test_scenario_template_and_experiment_design_round_trip_diversity_metadata()
     assert ExperimentDesignSpec.from_dict(design.to_dict()) == design
 
 
+def test_structural_uncertainty_specs_round_trip_and_validate_supported_kinds():
+    from app.models.probabilistic import (
+        ExperimentDesignSpec,
+        StructuralUncertaintyOption,
+        StructuralUncertaintySpec,
+        UncertaintySpec,
+    )
+
+    structural_spec = StructuralUncertaintySpec(
+        uncertainty_id="event_arrival_process",
+        kind="event_arrival_process",
+        label="Event Arrival Process",
+        options=[
+            StructuralUncertaintyOption(
+                option_id="steady_cadence",
+                label="Steady Cadence",
+                config_overrides={
+                    "structural_uncertainty.event_arrival_process.mode": "steady_cadence",
+                    "structural_uncertainty.event_arrival_process.spacing_hours": 6,
+                },
+                coverage_tags=["arrival:steady"],
+                runtime_transition_hints=[
+                    {
+                        "transition_type": "event",
+                        "summary": "Events arrive on an even cadence.",
+                    }
+                ],
+                assumption_text="Events arrive on an even cadence with no early burst.",
+            ),
+            StructuralUncertaintyOption(
+                option_id="burst_front_loaded",
+                label="Burst Front Loaded",
+                config_overrides={
+                    "structural_uncertainty.event_arrival_process.mode": "burst_front_loaded",
+                    "structural_uncertainty.event_arrival_process.spacing_hours": 2,
+                },
+                coverage_tags=["arrival:burst"],
+                runtime_transition_hints=[
+                    {
+                        "transition_type": "event",
+                        "summary": "Events cluster early in the run.",
+                    }
+                ],
+                assumption_text="Events cluster early and then decay.",
+            ),
+        ],
+        coverage_tags=["axis:event_arrival"],
+    )
+    uncertainty = UncertaintySpec(
+        profile="balanced",
+        structural_uncertainties=[structural_spec],
+        experiment_design=ExperimentDesignSpec(
+            method="latin-hypercube",
+            structural_uncertainty_ids=["event_arrival_process"],
+        ),
+    )
+
+    restored = UncertaintySpec.from_dict(uncertainty.to_dict())
+
+    assert restored == uncertainty
+    assert restored.structural_uncertainties[0].options[1].option_id == "burst_front_loaded"
+    assert restored.experiment_design.structural_uncertainty_ids == [
+        "event_arrival_process"
+    ]
+
+    with pytest.raises(ValueError, match="Unsupported structural uncertainty kind"):
+        StructuralUncertaintySpec(
+            uncertainty_id="unsupported_axis",
+            kind="unsupported_axis",
+            label="Unsupported Axis",
+            options=[
+                StructuralUncertaintyOption(
+                    option_id="baseline",
+                    label="Baseline",
+                )
+            ],
+        )
+
+
 def test_forecast_brief_rejects_invalid_resolution_date():
     from app.models.probabilistic import (
         ForecastBrief,

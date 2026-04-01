@@ -13,7 +13,13 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..models.probabilistic import RandomVariableSpec, RunManifest, UncertaintySpec
+from ..models.probabilistic import (
+    RandomVariableSpec,
+    RunManifest,
+    StructuralUncertaintyOption,
+    StructuralUncertaintySpec,
+    UncertaintySpec,
+)
 
 
 _PATH_TOKEN_RE = re.compile(r"([A-Za-z0-9_]+)(?:\[(\d+)\])?")
@@ -84,6 +90,10 @@ class UncertaintyResolver:
             },
             "scenario_coverage": design_row_coverage,
             "design_row": copy.deepcopy(experiment_design_row) if experiment_design_row else None,
+            "structural_uncertainties": [],
+            "structural_coverage_tags": [],
+            "structural_runtime_transition_types": [],
+            "assumption_statements": [],
         }
 
         for variable in uncertainty_spec.random_variables:
@@ -126,6 +136,23 @@ class UncertaintyResolver:
             assumption_ledger["scenario_coverage"]["exogenous_event_ids"] = list(
                 applied_exogenous_event_ids
             )
+        (
+            structural_resolutions,
+            structural_coverage_tags,
+            structural_runtime_transition_types,
+            assumption_statements,
+        ) = self._apply_structural_uncertainties(
+            resolved_config,
+            uncertainty_spec,
+            rng=rng,
+            experiment_design_row=experiment_design_row,
+        )
+        assumption_ledger["structural_uncertainties"] = structural_resolutions
+        assumption_ledger["structural_coverage_tags"] = structural_coverage_tags
+        assumption_ledger["structural_runtime_transition_types"] = (
+            structural_runtime_transition_types
+        )
+        assumption_ledger["assumption_statements"] = assumption_statements
         for conditional in uncertainty_spec.conditional_variables:
             if not self._condition_matches(
                 resolved_config,
@@ -165,6 +192,10 @@ class UncertaintyResolver:
                 },
                 resolved_values=resolved_values,
                 assumption_ledger=assumption_ledger,
+                experiment_design_row=copy.deepcopy(experiment_design_row)
+                if experiment_design_row
+                else {},
+                structural_resolutions=structural_resolutions,
                 artifact_paths={
                     "resolved_config": "resolved_config.json",
                 },
@@ -275,6 +306,98 @@ class UncertaintyResolver:
         normalized_coordinates = experiment_design_row.get("normalized_coordinates", {})
         value = normalized_coordinates.get(field_path)
         return float(value) if isinstance(value, (int, float)) else None
+
+    def _apply_structural_uncertainties(
+        self,
+        resolved_config: Dict[str, Any],
+        uncertainty_spec: UncertaintySpec,
+        *,
+        rng: random.Random,
+        experiment_design_row: Optional[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[str], List[str], List[str]]:
+        if not uncertainty_spec.structural_uncertainties:
+            return [], [], [], []
+
+        selected_by_id = {}
+        for item in (experiment_design_row or {}).get("structural_assignments", []):
+            if not isinstance(item, dict):
+                continue
+            uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+            option_id = str(item.get("option_id") or "").strip()
+            if uncertainty_id and option_id:
+                selected_by_id[uncertainty_id] = option_id
+
+        structural_resolutions: List[Dict[str, Any]] = []
+        structural_coverage_tags: List[str] = []
+        structural_runtime_transition_types: List[str] = []
+        assumption_statements: List[str] = []
+
+        for structural_spec in uncertainty_spec.structural_uncertainties:
+            option = self._resolve_structural_option(
+                structural_spec,
+                selected_option_id=selected_by_id.get(structural_spec.uncertainty_id),
+                rng=rng,
+            )
+            for field_path, value in option.config_overrides.items():
+                self._set_path_value(resolved_config, field_path, value)
+            runtime_transition_types = []
+            for hint in option.runtime_transition_hints:
+                transition_type = str(hint.get("transition_type") or "").strip()
+                if (
+                    transition_type
+                    and transition_type not in runtime_transition_types
+                ):
+                    runtime_transition_types.append(transition_type)
+            resolution = {
+                "uncertainty_id": structural_spec.uncertainty_id,
+                "kind": structural_spec.kind,
+                "label": structural_spec.label,
+                "option_id": option.option_id,
+                "option_label": option.label,
+                "coverage_tags": list(option.coverage_tags),
+                "runtime_transition_hints": [
+                    dict(item) for item in option.runtime_transition_hints
+                ],
+                "runtime_transition_types": runtime_transition_types,
+                "override_fields": sorted(option.config_overrides.keys()),
+                "assumption_text": option.assumption_text,
+            }
+            structural_resolutions.append(resolution)
+            for coverage_tag in option.coverage_tags:
+                if coverage_tag not in structural_coverage_tags:
+                    structural_coverage_tags.append(coverage_tag)
+            for transition_type in runtime_transition_types:
+                if transition_type not in structural_runtime_transition_types:
+                    structural_runtime_transition_types.append(transition_type)
+            if option.assumption_text and option.assumption_text not in assumption_statements:
+                assumption_statements.append(option.assumption_text)
+
+        return (
+            structural_resolutions,
+            sorted(structural_coverage_tags),
+            sorted(structural_runtime_transition_types),
+            assumption_statements,
+        )
+
+    def _resolve_structural_option(
+        self,
+        structural_spec: StructuralUncertaintySpec,
+        *,
+        selected_option_id: Optional[str],
+        rng: random.Random,
+    ) -> StructuralUncertaintyOption:
+        options_by_id = {
+            option.option_id: option for option in structural_spec.options
+        }
+        if selected_option_id:
+            option = options_by_id.get(selected_option_id)
+            if option is None:
+                raise ValueError(
+                    f"Unknown structural option for {structural_spec.uncertainty_id}: {selected_option_id}"
+                )
+            return option
+        weights = [option.weight for option in structural_spec.options]
+        return rng.choices(structural_spec.options, weights=weights, k=1)[0]
 
     def _apply_scenario_templates(
         self,

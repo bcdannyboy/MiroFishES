@@ -1123,6 +1123,64 @@ def test_prepare_simulation_emits_structured_uncertainty_metadata(
     assert summary["feature_metadata"]["scenario_worker"] == "simulation"
 
 
+def test_prepare_simulation_emits_structural_uncertainty_catalog_metadata(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 6, "max_concurrency": 2},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": ["base_case", "viral_spike", "consensus_bridge"],
+        },
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    uncertainty_spec = json.loads(
+        (sim_dir / "uncertainty_spec.json").read_text(encoding="utf-8")
+    )
+    prepared_snapshot = json.loads(
+        (sim_dir / "prepared_snapshot.json").read_text(encoding="utf-8")
+    )
+    summary = manager.get_prepare_artifact_summary(state.simulation_id)
+
+    structural_kinds = [
+        item["kind"] for item in uncertainty_spec["structural_uncertainties"]
+    ]
+
+    assert structural_kinds == [
+        "event_arrival_process",
+        "exposure_path_variation",
+        "influencer_activation",
+        "credibility_shock",
+        "moderation_policy_change",
+        "graph_rewiring",
+    ]
+    assert prepared_snapshot["feature_metadata"]["structural_uncertainty_count"] == 6
+    assert prepared_snapshot["feature_metadata"]["structural_uncertainty_kinds"] == (
+        structural_kinds
+    )
+    assert summary["feature_metadata"]["structural_uncertainty_count"] == 6
+    assert summary["feature_metadata"]["structural_uncertainty_kinds"] == structural_kinds
+
+
 def test_prepare_simulation_accepts_structured_scenario_template_payloads(
     simulation_data_dir, monkeypatch
 ):

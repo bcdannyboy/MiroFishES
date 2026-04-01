@@ -562,3 +562,115 @@ def test_weighted_cycle_plan_surfaces_diversity_plan_and_spreads_template_novelt
     assert artifact["rows"][0]["scenario_coverage_tags"]
     assert artifact["rows"][0]["scenario_event_ids"]
     assert artifact["rows"][1]["scenario_distance_from_previous"] is not None
+
+
+def test_experiment_design_assigns_structural_uncertainty_options_and_reports_coverage():
+    models = _load_models_module()
+    design_module = _load_experiment_design_module()
+
+    uncertainty_spec = models.UncertaintySpec(
+        profile="balanced",
+        structural_uncertainties=[
+            models.StructuralUncertaintySpec(
+                uncertainty_id="event_arrival_process",
+                kind="event_arrival_process",
+                label="Event Arrival Process",
+                options=[
+                    models.StructuralUncertaintyOption(
+                        option_id="steady_cadence",
+                        label="Steady Cadence",
+                        weight=1.0,
+                        coverage_tags=["arrival:steady"],
+                        runtime_transition_hints=[
+                            {"transition_type": "event", "summary": "steady"}
+                        ],
+                    ),
+                    models.StructuralUncertaintyOption(
+                        option_id="burst_front_loaded",
+                        label="Burst Front Loaded",
+                        weight=1.0,
+                        coverage_tags=["arrival:burst"],
+                        runtime_transition_hints=[
+                            {"transition_type": "event", "summary": "burst"}
+                        ],
+                    ),
+                ],
+            ),
+            models.StructuralUncertaintySpec(
+                uncertainty_id="moderation_policy_change",
+                kind="moderation_policy_change",
+                label="Moderation Policy Change",
+                options=[
+                    models.StructuralUncertaintyOption(
+                        option_id="status_quo",
+                        label="Status Quo",
+                        weight=1.0,
+                        coverage_tags=["moderation:steady"],
+                        runtime_transition_hints=[
+                            {"transition_type": "intervention", "summary": "steady"}
+                        ],
+                    ),
+                    models.StructuralUncertaintyOption(
+                        option_id="tightened_enforcement",
+                        label="Tightened Enforcement",
+                        weight=1.0,
+                        coverage_tags=["moderation:strict"],
+                        runtime_transition_hints=[
+                            {"transition_type": "intervention", "summary": "strict"}
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        experiment_design=models.ExperimentDesignSpec(
+            method="latin-hypercube",
+            structural_uncertainty_ids=[
+                "event_arrival_process",
+                "moderation_policy_change",
+            ],
+        ),
+    )
+
+    service = design_module.ExperimentDesignService()
+    first = service.build_plan(
+        simulation_id="sim-structural",
+        ensemble_id="0001",
+        run_count=4,
+        root_seed=13,
+        uncertainty_spec=uncertainty_spec,
+    )
+    second = service.build_plan(
+        simulation_id="sim-structural",
+        ensemble_id="0001",
+        run_count=4,
+        root_seed=13,
+        uncertainty_spec=uncertainty_spec,
+    )
+
+    assert first == second
+    assert [item["uncertainty_id"] for item in first["structural_uncertainty_catalog"]] == [
+        "event_arrival_process",
+        "moderation_policy_change",
+    ]
+    assert first["coverage_metrics"]["structural_uncertainty_coverage_ratio"] == 1.0
+    assert first["coverage_metrics"]["structural_option_coverage_ratios"] == {
+        "event_arrival_process": 1.0,
+        "moderation_policy_change": 1.0,
+    }
+    assert first["diversity_plan"]["structural_option_target_counts"] == {
+        "event_arrival_process": {
+            "burst_front_loaded": 2,
+            "steady_cadence": 2,
+        },
+        "moderation_policy_change": {
+            "status_quo": 2,
+            "tightened_enforcement": 2,
+        },
+    }
+    assert len(first["rows"][0]["structural_assignments"]) == 2
+    assert first["rows"][0]["coverage_signature"]["structural_assignment_count"] == 2
+    assert first["rows"][0]["structural_coverage_tags"]
+    assert first["rows"][0]["structural_runtime_transition_types"] == [
+        "event",
+        "intervention",
+    ]

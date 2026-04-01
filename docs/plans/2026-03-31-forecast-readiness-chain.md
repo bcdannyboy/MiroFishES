@@ -3,7 +3,7 @@
 Date: 2026-03-31
 Branch: `codex/forecast-readiness-chain`
 Status file: `docs/plans/2026-03-31-forecast-readiness-status.json`
-Updated at: 2026-03-31T17:44:45-07:00
+Updated at: 2026-03-31T18:05:45-07:00
 
 ## Chain Contract
 
@@ -27,8 +27,8 @@ Every later prompt in this chain must:
 | P04 | retrieval wiring over persisted local evidence records | complete |
 | P05 | simulation evidence bridge | complete |
 | P06 | runtime graph state and structured updates | complete |
-| P07 | report and analyst surfaces adoption | pending |
-| P08 | live workflow stabilization | pending |
+| P07 | structural uncertainty, experiment design, and assumption ledgers | complete |
+| P08 | analytics extraction over prepare and runtime artifacts | pending |
 | P09 | readiness verification ladder | pending |
 | P10 | final chain closeout and follow-up truth audit | pending |
 
@@ -782,3 +782,146 @@ Prompt 7 must consume the P06 runtime-state artifacts directly instead of replay
   - `human_readable`
 - Prompt 7 can introduce structural uncertainty and run variation by branching from `runtime_graph_base_snapshot.json` and appending additional typed transitions such as `event`, `intervention`, `belief_update`, `topic_shift`, or `exposure`; it must not mutate prior transition history in place.
 - Human-readable logs remain observability aids only. P07 should not treat `actions.jsonl` as the source of truth when authoritative runtime-state artifacts exist.
+
+## P07
+
+### Scope
+
+- `backend/app/models/probabilistic.py`
+- `backend/app/services/uncertainty_resolver.py`
+- `backend/app/services/experiment_design.py`
+- `backend/app/services/ensemble_manager.py`
+- `backend/app/services/simulation_manager.py`
+- `backend/tests/unit/test_probabilistic_schema.py`
+- `backend/tests/unit/test_uncertainty_resolver.py`
+- `backend/tests/unit/test_experiment_design.py`
+- `backend/tests/unit/test_probabilistic_prepare.py`
+- `backend/tests/unit/test_ensemble_storage.py`
+- `backend/tests/integration/test_structural_uncertainty_handoff.py`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### TDD Record
+
+1. Wrote failing tests first for structural uncertainty schema support, deterministic structural resolution, structural experiment-design coverage, prepare-time metadata, and persisted per-run handoff artifacts.
+2. Verified the RED failures were the expected missing contracts:
+   - no structural uncertainty schema types in `probabilistic.py`
+   - no structural assignment/resolution logic in `uncertainty_resolver.py`
+   - no structural coverage rows or metrics in `experiment_design.py`
+   - no structural uncertainty catalog in `uncertainty_spec.json`
+   - no `experiment_design_row.json` / `assumption_ledger.json` in run directories
+3. Hit one test-harness issue during RED verification: the new integration test used a fake profile generator with the wrong constructor signature.
+4. Fixed that root cause in the test double, reran the RED suite, then implemented the smallest additive production changes so the new contract rides alongside the existing scalar/template uncertainty path.
+
+### Verification
+
+- Targeted structural uncertainty suite:
+  - command: `cd backend && .venv/bin/python -m pytest tests/unit/test_probabilistic_schema.py tests/unit/test_uncertainty_resolver.py tests/unit/test_experiment_design.py tests/unit/test_probabilistic_prepare.py tests/unit/test_ensemble_storage.py tests/integration/test_structural_uncertainty_handoff.py -q`
+  - result: `77 passed, 1 warning in 0.72s`
+- Ensemble API compatibility subset:
+  - command: `cd backend && .venv/bin/python -m pytest tests/unit/test_probabilistic_ensemble_api.py -q`
+  - result: `36 passed, 1 warning in 1.18s`
+- Live `.env` prepare-and-handoff smoke:
+  - command: `PYTHONPATH=backend backend/.venv/bin/python live prepare + ensemble smoke using project_id=proj_62646edbad5f graph_id=mirofish_7a3656f8e25647fe with scenario_templates=[base_case, viral_spike, consensus_bridge]`
+  - result:
+    - `simulation_id: sim_2de8f94e6f08`
+    - `prepare_status: ready`
+    - `ensemble_id: 0001`
+    - `run_id: 0001`
+    - `structural_uncertainty_count: 6`
+    - `structural_uncertainty_ids: ["event_arrival_process", "exposure_path_variation", "influencer_activation", "credibility_shock", "moderation_policy_change", "graph_rewiring"]`
+    - `structural_uncertainty_coverage_ratio: 1.0`
+    - `run_structural_option_ids: ["delayed_wave", "community_bridged", "steady_activation", "trust_drop", "status_quo", "stable_topology"]`
+    - `assumption_statement_count: 6`
+    - `artifact_paths: {"resolved_config":"resolved_config.json","experiment_design_row":"experiment_design_row.json","assumption_ledger":"assumption_ledger.json"}`
+  - note: OpenAI-backed config substeps hit connection errors inside the sandboxed smoke, but the existing rule-based fallbacks completed successfully and still persisted the required structural uncertainty artifacts
+- Full repo gate:
+  - command: `npm run verify`
+  - result: `frontend verify passed, vite build passed, backend pytest passed`
+  - exact backend summary: `364 passed, 1 warning in 6.65s`
+
+### Delivered Foundation
+
+- `probabilistic.py` now defines additive structural uncertainty contracts:
+  - `StructuralUncertaintyOption`
+  - `StructuralUncertaintySpec`
+  - `ExperimentDesignSpec.structural_uncertainty_ids`
+  - `UncertaintySpec.structural_uncertainties`
+  - `RunManifest.experiment_design_row`
+  - `RunManifest.structural_resolutions`
+- `SimulationManager.prepare_simulation(...)` now emits a structural uncertainty catalog into `uncertainty_spec.json` and `prepared_snapshot.json` covering:
+  - event arrival processes
+  - exposure path variation
+  - influencer activation
+  - credibility shocks
+  - moderation or policy changes
+  - graph rewiring
+- `ExperimentDesignService.build_plan(...)` now assigns deterministic structural options per run row and persists:
+  - `structural_uncertainty_catalog`
+  - `coverage_metrics.structural_uncertainty_coverage_ratio`
+  - `coverage_metrics.structural_option_coverage_ratios`
+  - `diversity_plan.structural_option_target_counts`
+  - `rows[].structural_assignments`
+  - `rows[].structural_coverage_tags`
+  - `rows[].structural_runtime_transition_types`
+- `UncertaintyResolver.resolve_run_config(...)` now applies structural assignments deterministically, records per-run `structural_resolutions`, and expands the assumption ledger with:
+  - `structural_uncertainties`
+  - `structural_coverage_tags`
+  - `structural_runtime_transition_types`
+  - `assumption_statements`
+- `EnsembleManager.create_ensemble(...)` now persists run-level handoff artifacts:
+  - `experiment_design_row.json`
+  - `assumption_ledger.json`
+  and records them in `run_manifest.json.artifact_paths` plus `resolved_config.json`
+
+### Compatibility Fixes
+
+- Preserved the existing scalar `random_variables`, scenario templates, conditional variables, and ensemble storage layout while adding structural uncertainty as an additive contract.
+- Kept `deterministic-baseline` backward-safe by emitting baseline-only structural options instead of forcing stochastic structural variation into the narrow profile.
+- Left existing ensemble APIs and run loading compatible by keeping the legacy `resolved_config.json` and `run_manifest.json` surfaces intact while only adding fields and sidecar artifacts.
+- Reused the current LLM-fallback prepare path so structural uncertainty artifacts still persist even when live model calls are unavailable during prepare-time smoke runs.
+
+### Commit Gate
+
+- All required P07 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P08
+
+Prompt 8 must treat the structural uncertainty and runtime-state artifacts as one joined analytics surface:
+
+- consume prepare-time artifacts first:
+  - `uncertainty_spec.json`
+  - `prepared_snapshot.json`
+  - `experiment_design.json`
+- consume these prepare-time fields directly instead of reconstructing uncertainty from prose:
+  - `uncertainty_spec.structural_uncertainties[]`
+  - `uncertainty_spec.experiment_design.structural_uncertainty_ids`
+  - `prepared_snapshot.feature_metadata.structural_uncertainty_count`
+  - `prepared_snapshot.feature_metadata.structural_uncertainty_kinds`
+  - `experiment_design.structural_uncertainty_catalog[]`
+  - `experiment_design.coverage_metrics.structural_uncertainty_coverage_ratio`
+  - `experiment_design.coverage_metrics.structural_option_coverage_ratios`
+  - `experiment_design.diversity_plan.structural_option_target_counts`
+  - `experiment_design.rows[].structural_assignments`
+  - `experiment_design.rows[].scenario_template_ids`
+- consume per-run handoff artifacts next:
+  - `run_manifest.json`
+  - `resolved_config.json`
+  - `experiment_design_row.json`
+  - `assumption_ledger.json`
+- P08 analytics should rely on these run-level fields:
+  - `run_manifest.structural_resolutions`
+  - `run_manifest.experiment_design_row`
+  - `run_manifest.assumption_ledger`
+  - `run_manifest.artifact_paths.experiment_design_row`
+  - `run_manifest.artifact_paths.assumption_ledger`
+  - `resolved_config.structural_resolutions`
+  - `experiment_design_row.structural_assignments`
+  - `assumption_ledger.assumption_ledger.assumption_statements`
+  - `assumption_ledger.assumption_ledger.structural_uncertainties`
+- join those handoff artifacts with the P06 runtime evidence surfaces:
+  - `runtime_graph_state.json`
+  - `runtime_graph_updates.jsonl`
+  - `runtime_graph_base_snapshot.json`
+- P08 should compare planned structural assumptions against observed runtime transitions by `simulation_id`, `ensemble_id`, and `run_id`; it must not infer experiment design coverage from runtime behavior alone when explicit plan artifacts already exist.

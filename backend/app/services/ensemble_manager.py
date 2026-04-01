@@ -52,6 +52,8 @@ class EnsembleManager:
     ENSEMBLE_STATE_FILENAME = "ensemble_state.json"
     AGGREGATE_SUMMARY_FILENAME = "aggregate_summary.json"
     EXPERIMENT_DESIGN_FILENAME = "experiment_design.json"
+    RUN_EXPERIMENT_DESIGN_FILENAME = "experiment_design_row.json"
+    ASSUMPTION_LEDGER_FILENAME = "assumption_ledger.json"
     OBSERVED_TRUTH_REGISTRY_FILENAME = "observed_truth_registry.json"
     BACKTEST_SUMMARY_FILENAME = "backtest_summary.json"
     CALIBRATION_SUMMARY_FILENAME = "calibration_summary.json"
@@ -173,6 +175,12 @@ class EnsembleManager:
             )
             manifest_payload["runtime_graph_id"] = None
             manifest_payload["generated_at"] = datetime.now().isoformat()
+            manifest_payload["artifact_paths"] = {
+                **manifest_payload.get("artifact_paths", {}),
+                "resolved_config": self.RESOLVED_CONFIG_FILENAME,
+                "experiment_design_row": self.RUN_EXPERIMENT_DESIGN_FILENAME,
+                "assumption_ledger": self.ASSUMPTION_LEDGER_FILENAME,
+            }
             resolved_config_artifact = self._build_resolved_config_artifact(
                 resolved_config=resolved["resolved_config"],
                 simulation_id=simulation_id,
@@ -188,6 +196,24 @@ class EnsembleManager:
             self._write_json(
                 os.path.join(run_dir, self.RUN_MANIFEST_FILENAME),
                 manifest_payload,
+            )
+            self._write_json(
+                os.path.join(run_dir, self.RUN_EXPERIMENT_DESIGN_FILENAME),
+                self._build_run_experiment_design_artifact(
+                    simulation_id=simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_manifest=manifest_payload,
+                ),
+            )
+            self._write_json(
+                os.path.join(run_dir, self.ASSUMPTION_LEDGER_FILENAME),
+                self._build_assumption_ledger_artifact(
+                    simulation_id=simulation_id,
+                    ensemble_id=ensemble_id,
+                    run_id=run_id,
+                    run_manifest=manifest_payload,
+                ),
             )
 
         ensemble_state = self._build_ensemble_state(
@@ -356,6 +382,8 @@ class EnsembleManager:
         manifest_payload["updated_at"] = manifest_payload["generated_at"]
         manifest_payload["artifact_paths"] = {
             "resolved_config": self.RESOLVED_CONFIG_FILENAME,
+            "experiment_design_row": self.RUN_EXPERIMENT_DESIGN_FILENAME,
+            "assumption_ledger": self.ASSUMPTION_LEDGER_FILENAME,
         }
         manifest_payload["lifecycle"] = build_default_run_lifecycle()
         manifest_payload["lineage"] = build_default_run_lineage(
@@ -383,6 +411,24 @@ class EnsembleManager:
         self._write_json(
             os.path.join(new_run_dir, self.RUN_MANIFEST_FILENAME),
             manifest_payload,
+        )
+        self._write_json(
+            os.path.join(new_run_dir, self.RUN_EXPERIMENT_DESIGN_FILENAME),
+            self._build_run_experiment_design_artifact(
+                simulation_id=simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=new_run_id,
+                run_manifest=manifest_payload,
+            ),
+        )
+        self._write_json(
+            os.path.join(new_run_dir, self.ASSUMPTION_LEDGER_FILENAME),
+            self._build_assumption_ledger_artifact(
+                simulation_id=simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=new_run_id,
+                run_manifest=manifest_payload,
+            ),
         )
         self._refresh_ensemble_state(simulation_id, ensemble_id)
         return self.load_run(simulation_id, ensemble_id, new_run_id)
@@ -609,10 +655,69 @@ class EnsembleManager:
                 ),
                 "sampled_values": run_manifest.get("resolved_values", {}),
                 "assumption_ledger": run_manifest.get("assumption_ledger", {}),
+                "experiment_design_row": run_manifest.get("experiment_design_row", {}),
+                "structural_resolutions": run_manifest.get(
+                    "structural_resolutions", []
+                ),
                 "resolved_at": run_manifest.get("generated_at"),
             }
         )
         return resolved_artifact
+
+    def _build_run_experiment_design_artifact(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        run_manifest: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        payload = deepcopy(run_manifest.get("experiment_design_row") or {})
+        payload.update(
+            {
+                "artifact_type": "run_experiment_design",
+                "schema_version": PROBABILISTIC_SCHEMA_VERSION,
+                "generator_version": PROBABILISTIC_GENERATOR_VERSION,
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "root_seed": run_manifest.get("root_seed"),
+                "sample_seed": run_manifest.get("seed_metadata", {}).get(
+                    "resolution_seed"
+                ),
+                "structural_resolutions": run_manifest.get(
+                    "structural_resolutions", []
+                ),
+                "generated_at": run_manifest.get("generated_at"),
+            }
+        )
+        return payload
+
+    def _build_assumption_ledger_artifact(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        run_manifest: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "artifact_type": "assumption_ledger",
+            "schema_version": PROBABILISTIC_SCHEMA_VERSION,
+            "generator_version": PROBABILISTIC_GENERATOR_VERSION,
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "run_id": run_id,
+            "root_seed": run_manifest.get("root_seed"),
+            "sample_seed": run_manifest.get("seed_metadata", {}).get(
+                "resolution_seed"
+            ),
+            "assumption_ledger": deepcopy(run_manifest.get("assumption_ledger", {})),
+            "structural_resolutions": deepcopy(
+                run_manifest.get("structural_resolutions", [])
+            ),
+            "generated_at": run_manifest.get("generated_at"),
+        }
 
     def _build_aggregate_summary(self, ensemble_payload: Dict[str, Any]) -> Dict[str, Any]:
         """Aggregate persisted run metrics without inventing unsupported probabilities."""

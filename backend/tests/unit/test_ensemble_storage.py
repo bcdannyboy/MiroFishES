@@ -422,6 +422,76 @@ def test_create_ensemble_persists_experiment_design_and_assumption_ledgers(
     )
 
 
+def test_create_ensemble_persists_run_level_structural_handoff_artifacts(
+    simulation_data_dir, monkeypatch
+):
+    manager_module = _load_manager_module()
+    probabilistic_module = _load_probabilistic_module()
+
+    _install_prepare_stubs(monkeypatch, manager_module)
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="seed text",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+        forecast_brief={
+            "forecast_question": "Will simulated total actions exceed 100?",
+            "resolution_criteria": [
+                "Resolve yes if simulation.total_actions is greater than 100."
+            ],
+            "resolution_date": "2026-06-30",
+            "run_budget": {"ensemble_size": 4, "max_concurrency": 1},
+            "uncertainty_plan": {"notes": ["Use the balanced profile."]},
+            "scenario_templates": ["base_case", "viral_spike", "consensus_bridge"],
+        },
+    )
+
+    ensemble_module = _load_ensemble_module()
+    ensemble_manager = ensemble_module.EnsembleManager(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+
+    created = ensemble_manager.create_ensemble(
+        simulation_id=state.simulation_id,
+        ensemble_spec=probabilistic_module.EnsembleSpec(
+            run_count=4,
+            max_concurrency=1,
+            root_seed=17,
+        ),
+    )
+
+    run_dir = Path(created["path"]) / "runs" / "run_0001"
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    resolved_config = json.loads(
+        (run_dir / "resolved_config.json").read_text(encoding="utf-8")
+    )
+    experiment_design_row = json.loads(
+        (run_dir / "experiment_design_row.json").read_text(encoding="utf-8")
+    )
+    assumption_ledger = json.loads(
+        (run_dir / "assumption_ledger.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["artifact_paths"]["experiment_design_row"] == "experiment_design_row.json"
+    assert manifest["artifact_paths"]["assumption_ledger"] == "assumption_ledger.json"
+    assert manifest["structural_resolutions"]
+    assert manifest["experiment_design_row"]["structural_assignments"]
+    assert experiment_design_row["artifact_type"] == "run_experiment_design"
+    assert experiment_design_row["structural_assignments"] == manifest["experiment_design_row"][
+        "structural_assignments"
+    ]
+    assert assumption_ledger["artifact_type"] == "assumption_ledger"
+    assert assumption_ledger["assumption_ledger"]["structural_uncertainties"]
+    assert assumption_ledger["assumption_ledger"]["assumption_statements"]
+    assert resolved_config["structural_resolutions"] == manifest["structural_resolutions"]
+
+
 def test_load_helpers_normalize_prefixed_public_ids(
     simulation_data_dir, monkeypatch
 ):

@@ -340,6 +340,14 @@ SUPPORTED_GROUP_CORRELATION_MODES = {"shared_rank"}
 SUPPORTED_CONDITIONAL_OPERATORS = {"eq", "in", "gte", "lte"}
 SUPPORTED_EXPERIMENT_DESIGN_METHODS = {"latin-hypercube"}
 SUPPORTED_SCENARIO_ASSIGNMENTS = {"cyclic", "weighted_cycle", "none"}
+SUPPORTED_STRUCTURAL_UNCERTAINTY_KINDS = {
+    "event_arrival_process",
+    "exposure_path_variation",
+    "influencer_activation",
+    "credibility_shock",
+    "moderation_policy_change",
+    "graph_rewiring",
+}
 SUPPORTED_TEMPLATE_COMBINATION_POLICIES = {"single_template", "pairwise"}
 CALIBRATION_BOUNDARY_NOTE = (
     "Ensemble calibration artifacts apply only to named simulation metrics with "
@@ -940,12 +948,160 @@ class ScenarioTemplateSpec:
 
 
 @dataclass(eq=True)
+class StructuralUncertaintyOption:
+    """One discrete structural regime that can be assigned to a run."""
+
+    option_id: str
+    label: str
+    weight: float = 1.0
+    config_overrides: Dict[str, Any] = field(default_factory=dict)
+    coverage_tags: List[str] = field(default_factory=list)
+    runtime_transition_hints: List[Dict[str, Any]] = field(default_factory=list)
+    assumption_text: Optional[str] = None
+    notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.option_id = str(self.option_id or "").strip()
+        self.label = str(self.label or "").strip()
+        if not self.option_id:
+            raise ValueError("option_id is required")
+        if not self.label:
+            raise ValueError("label is required")
+        self.weight = float(self.weight)
+        if self.weight <= 0:
+            raise ValueError("weight must be positive")
+        if not isinstance(self.config_overrides, dict):
+            raise ValueError("config_overrides must be a dictionary")
+        self.coverage_tags = _normalize_string_list(
+            self.coverage_tags,
+            field_name="structural_uncertainty_option.coverage_tags",
+            allow_empty=True,
+        )
+        if not isinstance(self.runtime_transition_hints, list):
+            raise ValueError("runtime_transition_hints must be a list")
+        normalized_hints: List[Dict[str, Any]] = []
+        for item in self.runtime_transition_hints:
+            if not isinstance(item, dict):
+                raise ValueError("runtime_transition_hints entries must be dictionaries")
+            normalized_hints.append(dict(item))
+        self.runtime_transition_hints = normalized_hints
+        if self.assumption_text is not None:
+            normalized_assumption_text = str(self.assumption_text).strip()
+            self.assumption_text = normalized_assumption_text or None
+        self.notes = _normalize_string_list(
+            self.notes,
+            field_name="structural_uncertainty_option.notes",
+            allow_empty=True,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "option_id": self.option_id,
+            "label": self.label,
+            "weight": self.weight,
+            "config_overrides": dict(self.config_overrides),
+            "coverage_tags": list(self.coverage_tags),
+            "runtime_transition_hints": [
+                dict(item) for item in self.runtime_transition_hints
+            ],
+            "assumption_text": self.assumption_text,
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StructuralUncertaintyOption":
+        return cls(
+            option_id=data["option_id"],
+            label=data.get("label", data["option_id"]),
+            weight=data.get("weight", 1.0),
+            config_overrides=data.get("config_overrides", {}),
+            coverage_tags=data.get("coverage_tags", []),
+            runtime_transition_hints=data.get("runtime_transition_hints", []),
+            assumption_text=data.get("assumption_text"),
+            notes=data.get("notes", []),
+        )
+
+
+@dataclass(eq=True)
+class StructuralUncertaintySpec:
+    """Declare one structural uncertainty axis with explicit run-level options."""
+
+    uncertainty_id: str
+    kind: str
+    label: str
+    options: List[StructuralUncertaintyOption] = field(default_factory=list)
+    coverage_tags: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.uncertainty_id = str(self.uncertainty_id or "").strip()
+        self.kind = str(self.kind or "").strip()
+        self.label = str(self.label or "").strip()
+        if not self.uncertainty_id:
+            raise ValueError("uncertainty_id is required")
+        if self.kind not in SUPPORTED_STRUCTURAL_UNCERTAINTY_KINDS:
+            raise ValueError(
+                f"Unsupported structural uncertainty kind: {self.kind}. "
+                f"Supported: {sorted(SUPPORTED_STRUCTURAL_UNCERTAINTY_KINDS)}"
+            )
+        if not self.label:
+            raise ValueError("label is required")
+        if not isinstance(self.options, list) or not self.options:
+            raise ValueError("options must be a non-empty list")
+        normalized_options: List[StructuralUncertaintyOption] = []
+        seen_option_ids = set()
+        for item in self.options:
+            option = (
+                item
+                if isinstance(item, StructuralUncertaintyOption)
+                else StructuralUncertaintyOption.from_dict(item)
+            )
+            if option.option_id in seen_option_ids:
+                raise ValueError("options must use unique option_id values")
+            normalized_options.append(option)
+            seen_option_ids.add(option.option_id)
+        self.options = normalized_options
+        self.coverage_tags = _normalize_string_list(
+            self.coverage_tags,
+            field_name="structural_uncertainty.coverage_tags",
+            allow_empty=True,
+        )
+        self.notes = _normalize_string_list(
+            self.notes,
+            field_name="structural_uncertainty.notes",
+            allow_empty=True,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "uncertainty_id": self.uncertainty_id,
+            "kind": self.kind,
+            "label": self.label,
+            "options": [item.to_dict() for item in self.options],
+            "coverage_tags": list(self.coverage_tags),
+            "notes": list(self.notes),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StructuralUncertaintySpec":
+        return cls(
+            uncertainty_id=data["uncertainty_id"],
+            kind=data["kind"],
+            label=data.get("label", data["uncertainty_id"]),
+            options=data.get("options", []),
+            coverage_tags=data.get("coverage_tags", []),
+            notes=data.get("notes", []),
+        )
+
+
+@dataclass(eq=True)
 class ExperimentDesignSpec:
     """Declare which structured design family should drive ensemble coverage."""
 
     method: str = "latin-hypercube"
     numeric_dimensions: List[str] = field(default_factory=list)
     scenario_template_ids: List[str] = field(default_factory=list)
+    structural_uncertainty_ids: List[str] = field(default_factory=list)
     scenario_assignment: str = "cyclic"
     diversity_axes: List[str] = field(default_factory=list)
     scenario_coverage_axes: List[str] = field(default_factory=list)
@@ -968,6 +1124,11 @@ class ExperimentDesignSpec:
         self.scenario_template_ids = _normalize_string_list(
             self.scenario_template_ids,
             field_name="scenario_template_ids",
+            allow_empty=True,
+        )
+        self.structural_uncertainty_ids = _normalize_string_list(
+            self.structural_uncertainty_ids,
+            field_name="structural_uncertainty_ids",
             allow_empty=True,
         )
         if self.scenario_assignment not in SUPPORTED_SCENARIO_ASSIGNMENTS:
@@ -1015,6 +1176,7 @@ class ExperimentDesignSpec:
             "method": self.method,
             "numeric_dimensions": list(self.numeric_dimensions),
             "scenario_template_ids": list(self.scenario_template_ids),
+            "structural_uncertainty_ids": list(self.structural_uncertainty_ids),
             "scenario_assignment": self.scenario_assignment,
             "diversity_axes": list(self.diversity_axes),
             "scenario_coverage_axes": list(self.scenario_coverage_axes),
@@ -1030,6 +1192,7 @@ class ExperimentDesignSpec:
             method=data.get("method", "latin-hypercube"),
             numeric_dimensions=data.get("numeric_dimensions", []),
             scenario_template_ids=data.get("scenario_template_ids", []),
+            structural_uncertainty_ids=data.get("structural_uncertainty_ids", []),
             scenario_assignment=data.get("scenario_assignment", "cyclic"),
             diversity_axes=data.get(
                 "diversity_axes", data.get("scenario_coverage_axes", [])
@@ -1054,6 +1217,7 @@ class UncertaintySpec:
     variable_groups: List[VariableGroupSpec] = field(default_factory=list)
     conditional_variables: List[ConditionalVariableSpec] = field(default_factory=list)
     scenario_templates: List[ScenarioTemplateSpec] = field(default_factory=list)
+    structural_uncertainties: List[StructuralUncertaintySpec] = field(default_factory=list)
     experiment_design: Optional[ExperimentDesignSpec] = None
     artifact_type: str = "uncertainty_spec"
     schema_version: str = PROBABILISTIC_SCHEMA_VERSION
@@ -1089,6 +1253,12 @@ class UncertaintySpec:
             if isinstance(item, ScenarioTemplateSpec)
             else ScenarioTemplateSpec.from_dict(item)
             for item in self.scenario_templates
+        ]
+        self.structural_uncertainties = [
+            item
+            if isinstance(item, StructuralUncertaintySpec)
+            else StructuralUncertaintySpec.from_dict(item)
+            for item in self.structural_uncertainties
         ]
         if isinstance(self.experiment_design, dict):
             self.experiment_design = ExperimentDesignSpec.from_dict(
@@ -1127,6 +1297,9 @@ class UncertaintySpec:
             "scenario_templates": [
                 item.to_dict() for item in self.scenario_templates
             ],
+            "structural_uncertainties": [
+                item.to_dict() for item in self.structural_uncertainties
+            ],
             "experiment_design": (
                 self.experiment_design.to_dict()
                 if self.experiment_design is not None
@@ -1163,6 +1336,10 @@ class UncertaintySpec:
             scenario_templates=[
                 ScenarioTemplateSpec.from_dict(item)
                 for item in data.get("scenario_templates", [])
+            ],
+            structural_uncertainties=[
+                StructuralUncertaintySpec.from_dict(item)
+                for item in data.get("structural_uncertainties", [])
             ],
             experiment_design=(
                 ExperimentDesignSpec.from_dict(data["experiment_design"])
@@ -1553,6 +1730,8 @@ class RunManifest:
     seed_metadata: Dict[str, Any] = field(default_factory=dict)
     resolved_values: Dict[str, Any] = field(default_factory=dict)
     assumption_ledger: Dict[str, Any] = field(default_factory=dict)
+    experiment_design_row: Dict[str, Any] = field(default_factory=dict)
+    structural_resolutions: List[Dict[str, Any]] = field(default_factory=list)
     config_artifact: str = "resolved_config.json"
     artifact_paths: Dict[str, str] = field(default_factory=dict)
     generated_at: Optional[str] = None
@@ -1574,6 +1753,10 @@ class RunManifest:
             raise ValueError("resolved_values must be a dictionary")
         if not isinstance(self.assumption_ledger, dict):
             raise ValueError("assumption_ledger must be a dictionary")
+        if not isinstance(self.experiment_design_row, dict):
+            raise ValueError("experiment_design_row must be a dictionary")
+        if not isinstance(self.structural_resolutions, list):
+            raise ValueError("structural_resolutions must be a list")
         if not isinstance(self.artifact_paths, dict):
             raise ValueError("artifact_paths must be a dictionary")
         self.lifecycle = build_default_run_lifecycle(self.lifecycle)
@@ -1595,6 +1778,8 @@ class RunManifest:
             "seed_metadata": self.seed_metadata,
             "resolved_values": self.resolved_values,
             "assumption_ledger": self.assumption_ledger,
+            "experiment_design_row": self.experiment_design_row,
+            "structural_resolutions": self.structural_resolutions,
             "config_artifact": self.config_artifact,
             "artifact_paths": self.artifact_paths,
             "generated_at": self.generated_at,
@@ -1620,6 +1805,8 @@ class RunManifest:
             seed_metadata=data.get("seed_metadata", {}),
             resolved_values=data.get("resolved_values", {}),
             assumption_ledger=data.get("assumption_ledger", {}),
+            experiment_design_row=data.get("experiment_design_row", {}),
+            structural_resolutions=data.get("structural_resolutions", []),
             config_artifact=data.get("config_artifact", "resolved_config.json"),
             artifact_paths=data.get("artifact_paths", {}),
             generated_at=data.get("generated_at"),

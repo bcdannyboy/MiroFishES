@@ -24,6 +24,8 @@ from ..models.probabilistic import (
     RandomVariableSpec,
     ScenarioTemplateSpec,
     SeedPolicy,
+    StructuralUncertaintyOption,
+    StructuralUncertaintySpec,
     UncertaintySpec,
     VariableGroupSpec,
     build_supported_outcome_metric,
@@ -492,6 +494,11 @@ class SimulationManager:
             forecast_brief,
             config_payload=config_payload,
         )
+        structural_uncertainties = self._build_structural_uncertainties(
+            config_payload=config_payload,
+            profile=normalized_profile,
+            scenario_templates=scenario_templates,
+        )
         conditional_variables = self._build_conditional_variables(
             config_payload=config_payload,
             scenario_templates=scenario_templates,
@@ -501,6 +508,7 @@ class SimulationManager:
             variable_groups=variable_groups,
             conditional_variables=conditional_variables,
             scenario_templates=scenario_templates,
+            structural_uncertainties=structural_uncertainties,
         )
         return UncertaintySpec(
             profile=normalized_profile,
@@ -508,12 +516,14 @@ class SimulationManager:
             variable_groups=variable_groups,
             conditional_variables=conditional_variables,
             scenario_templates=scenario_templates,
+            structural_uncertainties=structural_uncertainties,
             experiment_design=experiment_design,
             seed_policy=SeedPolicy(),
             notes=[
                 "Preparation persists one explicit catalog of run-varying config fields.",
                 "Persona text, graph-derived identity, and scheduled events remain fixed in this slice.",
                 "Structured experiment design metadata is explicit so ensemble coverage can be inspected later.",
+                "Structural uncertainty is explicit so event cadence, exposure paths, credibility shocks, moderation shifts, influencer activation, and graph rewiring are auditable before runtime.",
                 (
                     "The deterministic-baseline profile keeps those fields fixed so seeded resolution remains explicit without adding extra config variance."
                     if normalized_profile == "deterministic-baseline"
@@ -894,6 +904,478 @@ class SimulationManager:
         forecast_brief: ForecastBrief,
     ) -> bool:
         return len(forecast_brief.scenario_templates) >= 3
+
+    def _build_structural_uncertainties(
+        self,
+        *,
+        config_payload: Dict[str, Any],
+        profile: str,
+        scenario_templates: List[ScenarioTemplateSpec],
+    ) -> List[StructuralUncertaintySpec]:
+        allow_variation = profile != "deterministic-baseline"
+        has_multi_template_context = len(scenario_templates) >= 3
+        stress_profile = profile == "stress-test"
+
+        def option(
+            *,
+            option_id: str,
+            label: str,
+            path_values: Dict[str, Any],
+            coverage_tags: List[str],
+            transition_type: str,
+            summary: str,
+            assumption_text: str,
+            weight: float = 1.0,
+        ) -> StructuralUncertaintyOption:
+            return StructuralUncertaintyOption(
+                option_id=option_id,
+                label=label,
+                weight=weight,
+                config_overrides=path_values,
+                coverage_tags=coverage_tags,
+                runtime_transition_hints=[
+                    {
+                        "transition_type": transition_type,
+                        "summary": summary,
+                    }
+                ],
+                assumption_text=assumption_text,
+            )
+
+        if not allow_variation:
+            return [
+                StructuralUncertaintySpec(
+                    uncertainty_id="event_arrival_process",
+                    kind="event_arrival_process",
+                    label="Event Arrival Process",
+                    coverage_tags=["axis:event_arrival"],
+                    options=[
+                        option(
+                            option_id="steady_cadence",
+                            label="Steady Cadence",
+                            path_values={
+                                "structural_uncertainty.event_arrival_process.mode": "steady_cadence",
+                                "structural_uncertainty.event_arrival_process.spacing_hours": 6,
+                                "structural_uncertainty.event_arrival_process.burstiness": 0.2,
+                            },
+                            coverage_tags=["arrival:steady"],
+                            transition_type="event",
+                            summary="Events arrive on a steady cadence.",
+                            assumption_text="Event arrivals remain on a steady cadence.",
+                        )
+                    ],
+                ),
+                StructuralUncertaintySpec(
+                    uncertainty_id="exposure_path_variation",
+                    kind="exposure_path_variation",
+                    label="Exposure Path Variation",
+                    coverage_tags=["axis:exposure"],
+                    options=[
+                        option(
+                            option_id="community_bridged",
+                            label="Community Bridged",
+                            path_values={
+                                "structural_uncertainty.exposure_path_variation.mode": "community_bridged",
+                                "structural_uncertainty.exposure_path_variation.bridge_bias": 0.5,
+                                "structural_uncertainty.exposure_path_variation.cross_platform_handoff_rate": 0.4,
+                            },
+                            coverage_tags=["exposure:bridged"],
+                            transition_type="exposure",
+                            summary="Exposure paths remain close to the prepared baseline.",
+                            assumption_text="Exposure stays close to the prepared baseline mix.",
+                        )
+                    ],
+                ),
+                StructuralUncertaintySpec(
+                    uncertainty_id="influencer_activation",
+                    kind="influencer_activation",
+                    label="Influencer Activation",
+                    coverage_tags=["axis:influencer"],
+                    options=[
+                        option(
+                            option_id="steady_activation",
+                            label="Steady Activation",
+                            path_values={
+                                "structural_uncertainty.influencer_activation.mode": "steady_activation",
+                                "structural_uncertainty.influencer_activation.activation_window": "mid",
+                                "structural_uncertainty.influencer_activation.activation_share": 0.25,
+                            },
+                            coverage_tags=["influencer:steady"],
+                            transition_type="intervention",
+                            summary="Influencer activation stays near baseline timing.",
+                            assumption_text="Influencer activation stays near the baseline timing.",
+                        )
+                    ],
+                ),
+                StructuralUncertaintySpec(
+                    uncertainty_id="credibility_shock",
+                    kind="credibility_shock",
+                    label="Credibility Shock",
+                    coverage_tags=["axis:credibility"],
+                    options=[
+                        option(
+                            option_id="stable_signal",
+                            label="Stable Signal",
+                            path_values={
+                                "structural_uncertainty.credibility_shock.mode": "stable_signal",
+                                "structural_uncertainty.credibility_shock.trust_multiplier": 1.0,
+                                "structural_uncertainty.credibility_shock.recovery_window": "none",
+                            },
+                            coverage_tags=["credibility:stable"],
+                            transition_type="belief_update",
+                            summary="Credibility remains stable.",
+                            assumption_text="Credibility remains stable throughout the run.",
+                        )
+                    ],
+                ),
+                StructuralUncertaintySpec(
+                    uncertainty_id="moderation_policy_change",
+                    kind="moderation_policy_change",
+                    label="Moderation Policy Change",
+                    coverage_tags=["axis:moderation"],
+                    options=[
+                        option(
+                            option_id="status_quo",
+                            label="Status Quo",
+                            path_values={
+                                "structural_uncertainty.moderation_policy_change.mode": "status_quo",
+                                "structural_uncertainty.moderation_policy_change.policy_intensity": 0.0,
+                                "structural_uncertainty.moderation_policy_change.reach_penalty": 0.0,
+                            },
+                            coverage_tags=["moderation:steady"],
+                            transition_type="intervention",
+                            summary="Moderation stays near status quo.",
+                            assumption_text="Moderation policy remains at status quo.",
+                        )
+                    ],
+                ),
+                StructuralUncertaintySpec(
+                    uncertainty_id="graph_rewiring",
+                    kind="graph_rewiring",
+                    label="Graph Rewiring",
+                    coverage_tags=["axis:graph"],
+                    options=[
+                        option(
+                            option_id="stable_topology",
+                            label="Stable Topology",
+                            path_values={
+                                "structural_uncertainty.graph_rewiring.mode": "stable_topology",
+                                "structural_uncertainty.graph_rewiring.bridge_multiplier": 1.0,
+                                "structural_uncertainty.graph_rewiring.edge_turnover_rate": 0.0,
+                            },
+                            coverage_tags=["graph:stable"],
+                            transition_type="exposure",
+                            summary="Graph neighborhoods stay stable.",
+                            assumption_text="Graph neighborhoods remain close to the prepared topology.",
+                        )
+                    ],
+                ),
+            ]
+
+        extra_bridge_weight = 1.0 if has_multi_template_context else 0.8
+        extreme_weight = 2.0 if stress_profile else 1.0
+        return [
+            StructuralUncertaintySpec(
+                uncertainty_id="event_arrival_process",
+                kind="event_arrival_process",
+                label="Event Arrival Process",
+                coverage_tags=["axis:event_arrival"],
+                options=[
+                    option(
+                        option_id="steady_cadence",
+                        label="Steady Cadence",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.event_arrival_process.mode": "steady_cadence",
+                            "structural_uncertainty.event_arrival_process.spacing_hours": 6,
+                            "structural_uncertainty.event_arrival_process.burstiness": 0.2,
+                        },
+                        coverage_tags=["arrival:steady"],
+                        transition_type="event",
+                        summary="Events arrive on a steady cadence.",
+                        assumption_text="Event arrivals remain on a steady cadence.",
+                    ),
+                    option(
+                        option_id="burst_front_loaded",
+                        label="Burst Front Loaded",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.event_arrival_process.mode": "burst_front_loaded",
+                            "structural_uncertainty.event_arrival_process.spacing_hours": 2,
+                            "structural_uncertainty.event_arrival_process.burstiness": 0.8,
+                        },
+                        coverage_tags=["arrival:burst"],
+                        transition_type="event",
+                        summary="Events cluster early in the run.",
+                        assumption_text="Event arrivals cluster early and then decay.",
+                    ),
+                    option(
+                        option_id="delayed_wave",
+                        label="Delayed Wave",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.event_arrival_process.mode": "delayed_wave",
+                            "structural_uncertainty.event_arrival_process.spacing_hours": 10,
+                            "structural_uncertainty.event_arrival_process.burstiness": 0.55,
+                        },
+                        coverage_tags=["arrival:delayed"],
+                        transition_type="event",
+                        summary="Events arrive later in concentrated waves.",
+                        assumption_text="Event arrivals are delayed into later waves.",
+                    ),
+                ],
+            ),
+            StructuralUncertaintySpec(
+                uncertainty_id="exposure_path_variation",
+                kind="exposure_path_variation",
+                label="Exposure Path Variation",
+                coverage_tags=["axis:exposure"],
+                options=[
+                    option(
+                        option_id="community_bridged",
+                        label="Community Bridged",
+                        weight=extra_bridge_weight,
+                        path_values={
+                            "structural_uncertainty.exposure_path_variation.mode": "community_bridged",
+                            "structural_uncertainty.exposure_path_variation.bridge_bias": 0.55,
+                            "structural_uncertainty.exposure_path_variation.cross_platform_handoff_rate": 0.45,
+                        },
+                        coverage_tags=["exposure:bridged"],
+                        transition_type="exposure",
+                        summary="Exposure regularly crosses community boundaries.",
+                        assumption_text="Exposure flows across communities at a moderate rate.",
+                    ),
+                    option(
+                        option_id="siloed_cascade",
+                        label="Siloed Cascade",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.exposure_path_variation.mode": "siloed_cascade",
+                            "structural_uncertainty.exposure_path_variation.bridge_bias": 0.15,
+                            "structural_uncertainty.exposure_path_variation.cross_platform_handoff_rate": 0.1,
+                        },
+                        coverage_tags=["exposure:siloed"],
+                        transition_type="exposure",
+                        summary="Exposure mostly stays inside local silos.",
+                        assumption_text="Exposure stays mostly inside local silos.",
+                    ),
+                    option(
+                        option_id="influencer_funnel",
+                        label="Influencer Funnel",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.exposure_path_variation.mode": "influencer_funnel",
+                            "structural_uncertainty.exposure_path_variation.bridge_bias": 0.65,
+                            "structural_uncertainty.exposure_path_variation.cross_platform_handoff_rate": 0.55,
+                        },
+                        coverage_tags=["exposure:influencer"],
+                        transition_type="exposure",
+                        summary="Exposure concentrates through influencer bridges.",
+                        assumption_text="Exposure concentrates through influencer bridges.",
+                    ),
+                ],
+            ),
+            StructuralUncertaintySpec(
+                uncertainty_id="influencer_activation",
+                kind="influencer_activation",
+                label="Influencer Activation",
+                coverage_tags=["axis:influencer"],
+                options=[
+                    option(
+                        option_id="steady_activation",
+                        label="Steady Activation",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.influencer_activation.mode": "steady_activation",
+                            "structural_uncertainty.influencer_activation.activation_window": "mid",
+                            "structural_uncertainty.influencer_activation.activation_share": 0.25,
+                        },
+                        coverage_tags=["influencer:steady"],
+                        transition_type="intervention",
+                        summary="Influencer activation stays near baseline timing.",
+                        assumption_text="Influencer activation stays near the baseline timing.",
+                    ),
+                    option(
+                        option_id="early_surge",
+                        label="Early Surge",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.influencer_activation.mode": "early_surge",
+                            "structural_uncertainty.influencer_activation.activation_window": "early",
+                            "structural_uncertainty.influencer_activation.activation_share": 0.45,
+                        },
+                        coverage_tags=["influencer:early"],
+                        transition_type="intervention",
+                        summary="Influencers activate early and amplify quickly.",
+                        assumption_text="Influencers activate early and amplify quickly.",
+                    ),
+                    option(
+                        option_id="latent_breakout",
+                        label="Latent Breakout",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.influencer_activation.mode": "latent_breakout",
+                            "structural_uncertainty.influencer_activation.activation_window": "late",
+                            "structural_uncertainty.influencer_activation.activation_share": 0.35,
+                        },
+                        coverage_tags=["influencer:late"],
+                        transition_type="intervention",
+                        summary="Influencers stay quiet until a later breakout.",
+                        assumption_text="Influencers remain latent until a later breakout.",
+                    ),
+                ],
+            ),
+            StructuralUncertaintySpec(
+                uncertainty_id="credibility_shock",
+                kind="credibility_shock",
+                label="Credibility Shock",
+                coverage_tags=["axis:credibility"],
+                options=[
+                    option(
+                        option_id="stable_signal",
+                        label="Stable Signal",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.credibility_shock.mode": "stable_signal",
+                            "structural_uncertainty.credibility_shock.trust_multiplier": 1.0,
+                            "structural_uncertainty.credibility_shock.recovery_window": "none",
+                        },
+                        coverage_tags=["credibility:stable"],
+                        transition_type="belief_update",
+                        summary="Credibility remains stable.",
+                        assumption_text="Credibility remains stable throughout the run.",
+                    ),
+                    option(
+                        option_id="trust_drop",
+                        label="Trust Drop",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.credibility_shock.mode": "trust_drop",
+                            "structural_uncertainty.credibility_shock.trust_multiplier": 0.55,
+                            "structural_uncertainty.credibility_shock.recovery_window": "slow",
+                        },
+                        coverage_tags=["credibility:negative"],
+                        transition_type="belief_update",
+                        summary="Credibility declines after a shock.",
+                        assumption_text="A credibility shock reduces trust in claims.",
+                    ),
+                    option(
+                        option_id="expert_rebound",
+                        label="Expert Rebound",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.credibility_shock.mode": "expert_rebound",
+                            "structural_uncertainty.credibility_shock.trust_multiplier": 1.2,
+                            "structural_uncertainty.credibility_shock.recovery_window": "fast",
+                        },
+                        coverage_tags=["credibility:positive"],
+                        transition_type="belief_update",
+                        summary="Credibility rebounds after expert validation.",
+                        assumption_text="Expert validation produces a credibility rebound.",
+                    ),
+                ],
+            ),
+            StructuralUncertaintySpec(
+                uncertainty_id="moderation_policy_change",
+                kind="moderation_policy_change",
+                label="Moderation Policy Change",
+                coverage_tags=["axis:moderation"],
+                options=[
+                    option(
+                        option_id="status_quo",
+                        label="Status Quo",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.moderation_policy_change.mode": "status_quo",
+                            "structural_uncertainty.moderation_policy_change.policy_intensity": 0.0,
+                            "structural_uncertainty.moderation_policy_change.reach_penalty": 0.0,
+                        },
+                        coverage_tags=["moderation:steady"],
+                        transition_type="intervention",
+                        summary="Moderation stays near status quo.",
+                        assumption_text="Moderation policy remains at status quo.",
+                    ),
+                    option(
+                        option_id="tightened_enforcement",
+                        label="Tightened Enforcement",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.moderation_policy_change.mode": "tightened_enforcement",
+                            "structural_uncertainty.moderation_policy_change.policy_intensity": 0.85,
+                            "structural_uncertainty.moderation_policy_change.reach_penalty": 0.35,
+                        },
+                        coverage_tags=["moderation:strict"],
+                        transition_type="intervention",
+                        summary="Moderation tightens and narrows reach.",
+                        assumption_text="Moderation policy tightens and narrows reach.",
+                    ),
+                    option(
+                        option_id="relaxed_enforcement",
+                        label="Relaxed Enforcement",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.moderation_policy_change.mode": "relaxed_enforcement",
+                            "structural_uncertainty.moderation_policy_change.policy_intensity": 0.25,
+                            "structural_uncertainty.moderation_policy_change.reach_penalty": -0.1,
+                        },
+                        coverage_tags=["moderation:relaxed"],
+                        transition_type="intervention",
+                        summary="Moderation relaxes and allows wider reach.",
+                        assumption_text="Moderation relaxes and allows wider reach.",
+                    ),
+                ],
+            ),
+            StructuralUncertaintySpec(
+                uncertainty_id="graph_rewiring",
+                kind="graph_rewiring",
+                label="Graph Rewiring",
+                coverage_tags=["axis:graph"],
+                options=[
+                    option(
+                        option_id="stable_topology",
+                        label="Stable Topology",
+                        weight=1.0,
+                        path_values={
+                            "structural_uncertainty.graph_rewiring.mode": "stable_topology",
+                            "structural_uncertainty.graph_rewiring.bridge_multiplier": 1.0,
+                            "structural_uncertainty.graph_rewiring.edge_turnover_rate": 0.0,
+                        },
+                        coverage_tags=["graph:stable"],
+                        transition_type="exposure",
+                        summary="Graph neighborhoods stay stable.",
+                        assumption_text="Graph neighborhoods remain close to the prepared topology.",
+                    ),
+                    option(
+                        option_id="bridge_opening",
+                        label="Bridge Opening",
+                        weight=1.0 if has_multi_template_context else 0.8,
+                        path_values={
+                            "structural_uncertainty.graph_rewiring.mode": "bridge_opening",
+                            "structural_uncertainty.graph_rewiring.bridge_multiplier": 1.35,
+                            "structural_uncertainty.graph_rewiring.edge_turnover_rate": 0.2,
+                        },
+                        coverage_tags=["graph:bridged"],
+                        transition_type="exposure",
+                        summary="Graph rewires to open more bridge edges.",
+                        assumption_text="Graph rewiring opens additional bridge edges.",
+                    ),
+                    option(
+                        option_id="silo_hardening",
+                        label="Silo Hardening",
+                        weight=extreme_weight,
+                        path_values={
+                            "structural_uncertainty.graph_rewiring.mode": "silo_hardening",
+                            "structural_uncertainty.graph_rewiring.bridge_multiplier": 0.65,
+                            "structural_uncertainty.graph_rewiring.edge_turnover_rate": 0.3,
+                        },
+                        coverage_tags=["graph:siloed"],
+                        transition_type="exposure",
+                        summary="Graph rewires toward tighter silos.",
+                        assumption_text="Graph rewiring hardens local silos.",
+                    ),
+                ],
+            ),
+        ]
 
     def _instantiate_scenario_template_spec(
         self,
@@ -1488,6 +1970,7 @@ class SimulationManager:
         variable_groups: List[VariableGroupSpec],
         conditional_variables: List[ConditionalVariableSpec],
         scenario_templates: List[ScenarioTemplateSpec],
+        structural_uncertainties: List[StructuralUncertaintySpec],
     ) -> ExperimentDesignSpec:
         """Build the explicit structured design contract used by ensemble planning."""
         scenario_assignment = (
@@ -1507,6 +1990,9 @@ class SimulationManager:
             ],
             scenario_template_ids=[
                 template.template_id for template in scenario_templates
+            ],
+            structural_uncertainty_ids=[
+                item.uncertainty_id for item in structural_uncertainties
             ],
             scenario_assignment=scenario_assignment,
             diversity_axes=diversity_axes,
@@ -1537,6 +2023,11 @@ class SimulationManager:
                     "Variable groups preserve shared-rank structure for related fields across the scenario design."
                     if variable_groups
                     else "No non-fixed shared-rank variable groups were required in this prepare-time slice."
+                ),
+                (
+                    "Structural uncertainty axes are assigned deterministically so every run carries explicit event, exposure, credibility, moderation, influencer, and rewiring assumptions."
+                    if structural_uncertainties
+                    else "No structural uncertainty axes were emitted for this prepare-time slice."
                 ),
             ],
         )
@@ -1581,6 +2072,12 @@ class SimulationManager:
             "variable_group_count": len(uncertainty_spec.variable_groups),
             "conditional_variable_count": len(uncertainty_spec.conditional_variables),
             "scenario_template_count": len(uncertainty_spec.scenario_templates),
+            "structural_uncertainty_count": len(
+                uncertainty_spec.structural_uncertainties
+            ),
+            "structural_uncertainty_kinds": [
+                item.kind for item in uncertainty_spec.structural_uncertainties
+            ],
             "scenario_diversity_enabled": any(
                 bool(template.field_overrides)
                 for template in uncertainty_spec.scenario_templates
@@ -1738,6 +2235,47 @@ class SimulationManager:
             agent_payload.setdefault("comments_per_hour", 1.0)
             agent_payload.setdefault("influence_weight", 1.0)
             agent_payload.setdefault("sentiment_bias", 0.0)
+
+        structural_uncertainty = config_payload.setdefault("structural_uncertainty", {})
+        if isinstance(structural_uncertainty, dict):
+            structural_defaults = {
+                "event_arrival_process": {
+                    "mode": "steady_cadence",
+                    "spacing_hours": 6,
+                    "burstiness": 0.2,
+                },
+                "exposure_path_variation": {
+                    "mode": "community_bridged",
+                    "bridge_bias": 0.5,
+                    "cross_platform_handoff_rate": 0.4,
+                },
+                "influencer_activation": {
+                    "mode": "steady_activation",
+                    "activation_window": "mid",
+                    "activation_share": 0.25,
+                },
+                "credibility_shock": {
+                    "mode": "stable_signal",
+                    "trust_multiplier": 1.0,
+                    "recovery_window": "none",
+                },
+                "moderation_policy_change": {
+                    "mode": "status_quo",
+                    "policy_intensity": 0.0,
+                    "reach_penalty": 0.0,
+                },
+                "graph_rewiring": {
+                    "mode": "stable_topology",
+                    "bridge_multiplier": 1.0,
+                    "edge_turnover_rate": 0.0,
+                },
+            }
+            for structural_key, defaults in structural_defaults.items():
+                structural_payload = structural_uncertainty.setdefault(structural_key, {})
+                if not isinstance(structural_payload, dict):
+                    continue
+                for field_name, field_value in defaults.items():
+                    structural_payload.setdefault(field_name, field_value)
 
         return config_payload
 
