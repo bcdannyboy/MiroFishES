@@ -2128,6 +2128,9 @@ class SimulationRunner:
         # Files to delete, including database files.
         files_to_delete = [
             "run_state.json",
+            "runtime_graph_base_snapshot.json",
+            "runtime_graph_state.json",
+            "runtime_graph_updates.jsonl",
             "metrics.json",
             "simulation_market_manifest.json",
             "agent_belief_book.json",
@@ -2206,6 +2209,30 @@ class SimulationRunner:
         cls._update_run_manifest_artifact_path(
             simulation_id,
             "metrics",
+            None,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+        )
+        cls._update_run_manifest_artifact_path(
+            simulation_id,
+            "runtime_graph_base_snapshot",
+            None,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+        )
+        cls._update_run_manifest_artifact_path(
+            simulation_id,
+            "runtime_graph_state",
+            None,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            run_dir=sim_dir,
+        )
+        cls._update_run_manifest_artifact_path(
+            simulation_id,
+            "runtime_graph_updates",
             None,
             ensemble_id=ensemble_id,
             run_id=run_id,

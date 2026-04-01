@@ -11,6 +11,7 @@ from ..models.project import ProjectManager
 from ..utils.logger import get_logger
 from .ensemble_manager import EnsembleManager
 from .graph_builder import GraphBuilderService
+from .runtime_graph_state_store import RuntimeGraphStateStore
 
 logger = get_logger('mirofish.runtime_graph')
 
@@ -55,6 +56,14 @@ class RuntimeGraphManager:
         ontology = project.ontology if project else None
         if ontology:
             self.graph_builder.set_ontology(runtime_graph_id, ontology)
+        runtime_artifacts = self._initialize_runtime_state(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            project_id=getattr(project, "project_id", None) or getattr(state, "project_id", None),
+            base_graph_id=base_graph_id,
+            runtime_graph_id=runtime_graph_id,
+        )
 
         self._persist_run_graph_ids(
             simulation_id=simulation_id,
@@ -62,6 +71,7 @@ class RuntimeGraphManager:
             run_id=run_id,
             base_graph_id=base_graph_id,
             runtime_graph_id=runtime_graph_id,
+            runtime_artifacts=runtime_artifacts,
         )
         logger.info(
             "Provisioned runtime graph: simulation_id=%s ensemble_id=%s run_id=%s "
@@ -98,6 +108,11 @@ class RuntimeGraphManager:
         runtime_graph_id = run_manifest.get("runtime_graph_id")
         if runtime_graph_id:
             self._delete_graph_safe(runtime_graph_id)
+        self._delete_runtime_artifacts(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
 
         self._persist_run_graph_ids(
             simulation_id=simulation_id,
@@ -105,6 +120,7 @@ class RuntimeGraphManager:
             run_id=run_id,
             base_graph_id=base_graph_id,
             runtime_graph_id=None,
+            runtime_artifacts={},
         )
         logger.info(
             "Cleared runtime graph: simulation_id=%s ensemble_id=%s run_id=%s "
@@ -149,6 +165,7 @@ class RuntimeGraphManager:
         run_id: str,
         base_graph_id: Optional[str],
         runtime_graph_id: Optional[str],
+        runtime_artifacts: Optional[dict[str, str]] = None,
     ) -> None:
         """Keep stored run artifacts aligned with runtime graph ownership."""
         run_dir = self.ensemble_manager._get_run_dir(simulation_id, ensemble_id, run_id)
@@ -160,6 +177,15 @@ class RuntimeGraphManager:
             manifest["base_graph_id"] = base_graph_id
             manifest["runtime_graph_id"] = runtime_graph_id
             manifest["graph_id"] = base_graph_id
+            artifact_paths = manifest.setdefault("artifact_paths", {})
+            for key in (
+                "runtime_graph_base_snapshot",
+                "runtime_graph_state",
+                "runtime_graph_updates",
+            ):
+                artifact_paths.pop(key, None)
+            if runtime_artifacts:
+                artifact_paths.update(runtime_artifacts)
             manifest["updated_at"] = datetime.now().isoformat()
             self._write_json(manifest_path, manifest)
 
@@ -168,8 +194,71 @@ class RuntimeGraphManager:
             resolved_config["base_graph_id"] = base_graph_id
             resolved_config["runtime_graph_id"] = runtime_graph_id
             resolved_config["graph_id"] = base_graph_id
+            for field in (
+                "runtime_graph_base_snapshot_artifact",
+                "runtime_graph_state_artifact",
+                "runtime_graph_updates_artifact",
+            ):
+                resolved_config.pop(field, None)
+            if runtime_artifacts:
+                resolved_config["runtime_graph_base_snapshot_artifact"] = runtime_artifacts.get(
+                    "runtime_graph_base_snapshot"
+                )
+                resolved_config["runtime_graph_state_artifact"] = runtime_artifacts.get(
+                    "runtime_graph_state"
+                )
+                resolved_config["runtime_graph_updates_artifact"] = runtime_artifacts.get(
+                    "runtime_graph_updates"
+                )
             resolved_config["updated_at"] = datetime.now().isoformat()
             self._write_json(resolved_config_path, resolved_config)
+
+    def _initialize_runtime_state(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        project_id: Optional[str],
+        base_graph_id: str,
+        runtime_graph_id: str,
+    ) -> dict[str, str]:
+        sim_dir = self.ensemble_manager._get_simulation_dir(simulation_id)
+        run_dir = self.ensemble_manager._get_run_dir(simulation_id, ensemble_id, run_id)
+        store = RuntimeGraphStateStore(run_dir)
+        store.initialize(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+            project_id=project_id,
+            base_graph_id=base_graph_id,
+            runtime_graph_id=runtime_graph_id,
+            prepared_world_state=self._read_json_if_exists(
+                os.path.join(sim_dir, "prepared_world_state.json")
+            ),
+            prepared_agent_states=self._read_json_if_exists(
+                os.path.join(sim_dir, "prepared_agent_states.json")
+            ),
+            graph_index_payload=ProjectManager.get_graph_entity_index(project_id)
+            if project_id
+            else None,
+        )
+        return store.artifact_paths()
+
+    def _delete_runtime_artifacts(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+    ) -> None:
+        run_dir = self.ensemble_manager._get_run_dir(simulation_id, ensemble_id, run_id)
+        RuntimeGraphStateStore(run_dir).delete_artifacts()
+
+    def _read_json_if_exists(self, file_path: str) -> Optional[dict[str, Any]]:
+        if not os.path.exists(file_path):
+            return None
+        return self._read_json(file_path)
 
     def _delete_graph_safe(self, graph_id: str) -> None:
         """Delete a graph best-effort so cleanup does not wedge on stale IDs."""
@@ -200,4 +289,3 @@ class RuntimeGraphManager:
     def _write_json(self, file_path: str, payload: dict[str, Any]) -> None:
         with open(file_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-

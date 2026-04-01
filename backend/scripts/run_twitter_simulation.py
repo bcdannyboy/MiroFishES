@@ -131,6 +131,12 @@ except ImportError as e:
     print("Please install first: pip install oasis-ai camel-ai")
     sys.exit(1)
 
+from action_logger import (
+    SimulationLogManager,
+    fetch_new_actions_from_db,
+    get_agent_names_from_config,
+)
+
 
 # IPC-related constants
 IPC_COMMANDS_DIR = "ipc_commands"
@@ -444,6 +450,7 @@ class TwitterSimulationRunner:
         self.env = None
         self.agent_graph = None
         self.ipc_handler = None
+        self.log_manager = None
         
     def _load_config(self) -> Dict[str, Any]:
         """Load the config file."""
@@ -622,6 +629,10 @@ class TwitterSimulationRunner:
             model=model,
             available_actions=self.AVAILABLE_ACTIONS,
         )
+        agent_names = get_agent_names_from_config(self.config)
+        for agent_id, agent in self.agent_graph.get_agents():
+            if agent_id not in agent_names:
+                agent_names[agent_id] = getattr(agent, "name", f"Agent_{agent_id}")
         
         # Database path
         db_path = self._get_db_path()
@@ -640,6 +651,11 @@ class TwitterSimulationRunner:
 
         await self.env.reset()
         print("Environment initialization complete\n")
+        self.log_manager = SimulationLogManager(self.simulation_dir)
+        action_logger = self.log_manager.get_twitter_logger()
+        action_logger.log_simulation_start(self.config)
+        total_actions = 0
+        last_rowid = 0
 
         # Initialize the IPC handler
         self.ipc_handler = IPCHandler(self.simulation_dir, self.env, self.agent_graph)
@@ -648,7 +664,9 @@ class TwitterSimulationRunner:
         # Execute initial events
         event_config = self.config.get("event_config", {})
         initial_posts = event_config.get("initial_posts", [])
+        action_logger.log_round_start(0, 0)
 
+        initial_action_count = 0
         if initial_posts:
             print(f"Running initial events ({len(initial_posts)} initial posts)...")
             initial_actions = {}
@@ -661,12 +679,22 @@ class TwitterSimulationRunner:
                         action_type=ActionType.CREATE_POST,
                         action_args={"content": content}
                     )
+                    action_logger.log_action(
+                        round_num=0,
+                        agent_id=agent_id,
+                        agent_name=agent_names.get(agent_id, f"Agent_{agent_id}"),
+                        action_type="CREATE_POST",
+                        action_args={"content": content},
+                    )
+                    total_actions += 1
+                    initial_action_count += 1
                 except Exception as e:
                     print(f"  Warning: could not create the initial post for agent {agent_id}: {e}")
 
             if initial_actions:
                 await self.env.step(initial_actions)
                 print(f"  Published {len(initial_actions)} initial posts")
+        action_logger.log_round_end(0, initial_action_count)
 
         # Main simulation loop
         print("\nStarting simulation loop...")
@@ -682,8 +710,10 @@ class TwitterSimulationRunner:
             active_agents = self._get_active_agents_for_round(
                 self.env, simulated_hour, round_num
             )
+            action_logger.log_round_start(round_num + 1, simulated_hour)
             
             if not active_agents:
+                action_logger.log_round_end(round_num + 1, 0)
                 continue
             
             # Build actions
@@ -694,6 +724,23 @@ class TwitterSimulationRunner:
             
             # Execute actions
             await self.env.step(actions)
+            actual_actions, last_rowid = fetch_new_actions_from_db(
+                db_path,
+                last_rowid,
+                agent_names,
+            )
+            round_action_count = 0
+            for action_data in actual_actions:
+                action_logger.log_action(
+                    round_num=round_num + 1,
+                    agent_id=action_data["agent_id"],
+                    agent_name=action_data["agent_name"],
+                    action_type=action_data["action_type"],
+                    action_args=action_data["action_args"],
+                )
+                total_actions += 1
+                round_action_count += 1
+            action_logger.log_round_end(round_num + 1, round_action_count)
             
             # Print progress
             if (round_num + 1) % 10 == 0 or round_num == 0:
@@ -708,6 +755,7 @@ class TwitterSimulationRunner:
         print("\nSimulation loop complete!")
         print(f"  - Total elapsed time: {total_elapsed:.1f}s")
         print(f"  - Database: {db_path}")
+        action_logger.log_simulation_end(total_rounds, total_actions)
 
         # Enter command wait mode if requested
         if self.wait_for_commands:

@@ -3,7 +3,7 @@
 Date: 2026-03-31
 Branch: `codex/forecast-readiness-chain`
 Status file: `docs/plans/2026-03-31-forecast-readiness-status.json`
-Updated at: 2026-03-31T17:13:46-07:00
+Updated at: 2026-03-31T17:44:45-07:00
 
 ## Chain Contract
 
@@ -26,7 +26,7 @@ Every later prompt in this chain must:
 | P03 | layered forecast-native ontology and graph build | complete |
 | P04 | retrieval wiring over persisted local evidence records | complete |
 | P05 | simulation evidence bridge | complete |
-| P06 | forecast aggregation compatibility adoption | pending |
+| P06 | runtime graph state and structured updates | complete |
 | P07 | report and analyst surfaces adoption | pending |
 | P08 | live workflow stabilization | pending |
 | P09 | readiness verification ladder | pending |
@@ -632,3 +632,153 @@ Prompt 6 must hydrate runtime graph state and structured updates from prepare ou
   - `worldview_summary`
 - P06 should preserve existing runtime operator contracts while making runtime graph hydration and structured updates read these artifacts first.
 - P06 must not redesign forecast aggregation; it should consume the prepared evidence-grounded initialization output and carry it forward into runtime state.
+
+## P06
+
+### Scope
+
+- `backend/app/services/runtime_graph_manager.py`
+- `backend/app/services/runtime_graph_state_store.py`
+- `backend/app/services/zep_graph_memory_updater.py`
+- `backend/app/services/simulation_runner.py`
+- `backend/scripts/action_logger.py`
+- `backend/scripts/run_twitter_simulation.py`
+- `backend/scripts/run_reddit_simulation.py`
+- `backend/tests/unit/test_runtime_graph_state.py`
+- `backend/tests/unit/test_runtime_action_logger.py`
+- `backend/tests/unit/test_simulation_runner_runtime_scope.py`
+- `backend/tests/integration/test_runtime_graph_state_flow.py`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### TDD Record
+
+1. Wrote failing tests first for runtime graph hydration from prepare outputs, structured transition dual-write behavior, and run-scope cleanup of runtime artifacts.
+2. Verified the RED state was the expected missing foundation: no `runtime_graph_base_snapshot.json`, no structured runtime-state store module, and no cleanup path for runtime-state artifacts.
+3. Implemented the smallest additive substrate by introducing a run-scoped runtime graph state store, hydrating it from prepared world/agent state plus graph indexes, and wiring existing runtime flows to append typed transitions.
+4. Hit one verification regression after the first GREEN pass: an integration test imported the conftest `SimulationRunner` stub instead of the real runner module, which broke the runtime-scope assertions during full verification.
+5. Fixed the root cause by forcing the integration test to load the real runner module, then reran the targeted suite, live smoke, and full repo verification.
+
+### Verification
+
+- Targeted runtime-state suites:
+  - command: `backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/test_runtime_action_logger.py backend/tests/unit/test_runtime_script_contracts.py backend/tests/unit/test_simulation_runner_runtime_scope.py backend/tests/unit/test_simulation_runner_run_scope.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q`
+  - result: `55 passed, 1 warning in 1.20s`
+- Live `.env` runtime smoke:
+  - command: `PYTHONPATH=backend backend/.venv/bin/python live runner smoke via SimulationRunner.start_simulation(...) using simulation_id=sim_d2446f5f5438 ensemble_id=0002 platform=twitter max_rounds=1 enable_graph_memory_update=True`
+  - result:
+    - `simulation_id: sim_d2446f5f5438`
+    - `ensemble_id: 0002`
+    - `run_id: 0001`
+    - `runner_status: completed`
+    - `runtime_graph_id: mirofish_74a2dda5f46f4212`
+    - `runtime_state_path: backend/uploads/simulations/sim_d2446f5f5438/ensemble/ensemble_0002/runs/run_0001/runtime_graph_state.json`
+    - `updates_path: backend/uploads/simulations/sim_d2446f5f5438/ensemble/ensemble_0002/runs/run_0001/runtime_graph_updates.jsonl`
+    - `actions_path: backend/uploads/simulations/sim_d2446f5f5438/ensemble/ensemble_0002/runs/run_0001/twitter/actions.jsonl`
+    - `transition_count: 8`
+    - `transition_counts: {"event": 0, "claim": 2, "exposure": 0, "belief_update": 0, "topic_shift": 0, "intervention": 0, "round_state": 6}`
+    - `current_round: 1`
+    - `platform_status: {"twitter": "completed", "reddit": "pending"}`
+    - `recent_transition_types: ["claim", "round_state", "round_state", "round_state", "round_state"]`
+- Full repo gate:
+  - command: `npm run verify`
+  - result: `frontend verify passed, vite build passed, backend pytest passed`
+  - exact backend summary: `357 passed, 1 warning in 6.18s`
+
+### Delivered Foundation
+
+- `RuntimeGraphStateStore` now persists the authoritative run-scoped runtime graph artifacts:
+  - `runtime_graph_base_snapshot.json`
+  - `runtime_graph_state.json`
+  - `runtime_graph_updates.jsonl`
+- `RuntimeGraphManager.provision_runtime_graph(...)` now hydrates runtime state from:
+  - `prepared_world_state.json`
+  - `prepared_agent_states.json`
+  - `graph_entity_index.json`
+  and records artifact paths plus `base_graph_id` / `runtime_graph_id` into `run_manifest.json` and `resolved_config.json`
+- structured runtime transitions are now typed and append-only, with `transition_type in {"event", "claim", "exposure", "belief_update", "topic_shift", "intervention", "round_state"}`
+- every structured transition now preserves run provenance:
+  - `simulation_id`
+  - `ensemble_id`
+  - `run_id`
+  - `project_id`
+  - `base_graph_id`
+  - `runtime_graph_id`
+  - `platform`
+  - `round_num`
+  - `timestamp`
+  - `recorded_at`
+  - `agent`
+  - `provenance.citation_ids`
+  - `provenance.source_unit_ids`
+  - `provenance.graph_object_uuids`
+- `PlatformActionLogger` and the single-platform runtime scripts now dual-write:
+  - human-readable `actions.jsonl`
+  - authoritative structured runtime transitions
+- `ZepGraphMemoryUpdater` now forwards structured JSON memory-update payloads instead of only free-text summaries.
+
+### Compatibility Fixes
+
+- Preserved the existing `actions.jsonl` observability path while making `runtime_graph_updates.jsonl` the authoritative forecasting substrate.
+- Kept launch, stop, retry, and cleanup flows compatible by storing additive runtime artifact paths in `run_manifest.json` and `resolved_config.json`.
+- `run_parallel_simulation.py` required no direct patch because it already routes through `PlatformActionLogger`, which now emits the same typed runtime transitions used by the single-platform runners.
+- Updated graph-memory write-backs to carry structured JSON text payloads so existing Zep ingestion keeps working while downstream phases can parse typed transition semantics.
+
+### Commit Gate
+
+- All required P06 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P07
+
+Prompt 7 must consume the P06 runtime-state artifacts directly instead of replaying free-text action logs:
+
+- read run-scoped artifact pointers from `run_manifest.json.artifact_paths` or `resolved_config.json`:
+  - `runtime_graph_base_snapshot`
+  - `runtime_graph_state`
+  - `runtime_graph_updates`
+- treat `runtime_graph_base_snapshot.json` as the immutable branch seed for any uncertainty or run-variation work:
+  - `simulation_id`
+  - `ensemble_id`
+  - `run_id`
+  - `project_id`
+  - `base_graph_id`
+  - `runtime_graph_id`
+  - `prepared_world_state`
+  - `prepared_agent_states`
+  - `graph_entity_index`
+  - `run_scope`
+- treat `runtime_graph_state.json` as the authoritative current runtime substrate:
+  - `transition_count`
+  - `transition_counts`
+  - `current_round`
+  - `current_simulated_hour`
+  - `platform_status`
+  - `active_topics`
+  - `recent_transitions`
+  - `recent_claims`
+  - `recent_exposures`
+  - `belief_updates`
+  - `recent_events`
+  - `interventions`
+  - `round_history`
+- treat `runtime_graph_updates.jsonl` as the authoritative append-only transition log; every record carries:
+  - `transition_id`
+  - `transition_type`
+  - `simulation_id`
+  - `ensemble_id`
+  - `run_id`
+  - `project_id`
+  - `base_graph_id`
+  - `runtime_graph_id`
+  - `platform`
+  - `round_num`
+  - `timestamp`
+  - `recorded_at`
+  - `agent`
+  - `payload`
+  - `provenance`
+  - `source_artifact`
+  - `human_readable`
+- Prompt 7 can introduce structural uncertainty and run variation by branching from `runtime_graph_base_snapshot.json` and appending additional typed transitions such as `event`, `intervention`, `belief_update`, `topic_shift`, or `exposure`; it must not mutate prior transition history in place.
+- Human-readable logs remain observability aids only. P07 should not treat `actions.jsonl` as the source of truth when authoritative runtime-state artifacts exist.

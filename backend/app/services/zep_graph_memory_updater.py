@@ -30,13 +30,14 @@ class AgentActivity:
     action_args: Dict[str, Any]
     round_num: int
     timestamp: str
+    transition_type: str = ""
     
     def to_episode_text(self) -> str:
         """
-        Convert the activity into a text description that can be sent to Zep.
+        Convert the activity into one structured JSON line for Zep ingestion.
 
-        Natural language descriptions let Zep extract entities and relationships.
-        No simulation-specific prefix is added, to avoid misleading graph updates.
+        The `human_readable` field preserves observability, while the rest of the
+        payload makes the runtime write-back typed instead of free-form text.
         """
         # Generate descriptions based on action type.
         action_descriptions = {
@@ -56,9 +57,25 @@ class AgentActivity:
         
         describe_func = action_descriptions.get(self.action_type, self._describe_generic)
         description = describe_func()
-        
-        # Return `agent_name: activity description` directly, without a simulation prefix.
-        return f"{self.agent_name}: {description}"
+
+        payload = {
+            "artifact_type": "runtime_graph_memory_update",
+            "transition_type": self.transition_type or self._infer_transition_type(),
+            "platform": self.platform,
+            "round_num": self.round_num,
+            "timestamp": self.timestamp,
+            "agent": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+            },
+            "action": {
+                "action_type": self.action_type,
+                "action_args": self.action_args,
+            },
+            "human_readable": f"{self.agent_name}: {description}",
+            "source_artifact": f"{self.platform}/actions.jsonl",
+        }
+        return json.dumps(payload, ensure_ascii=False)
     
     def _describe_create_post(self) -> str:
         content = self.action_args.get("content", "")
@@ -196,6 +213,23 @@ class AgentActivity:
     def _describe_generic(self) -> str:
         # Fall back to a generic description for unknown action types.
         return f"performed action {self.action_type}"
+
+    def _infer_transition_type(self) -> str:
+        if self.action_type in {"CREATE_POST", "CREATE_COMMENT", "QUOTE_POST"}:
+            return "claim"
+        if self.action_type in {
+            "LIKE_POST",
+            "DISLIKE_POST",
+            "REPOST",
+            "LIKE_COMMENT",
+            "DISLIKE_COMMENT",
+            "FOLLOW",
+            "MUTE",
+        }:
+            return "belief_update"
+        if self.action_type in {"SEARCH_POSTS", "SEARCH_USER", "TREND", "REFRESH"}:
+            return "topic_shift"
+        return "exposure"
 
 
 class ZepGraphMemoryUpdater:
@@ -352,6 +386,7 @@ class ZepGraphMemoryUpdater:
             action_args=data.get("action_args", {}),
             round_num=data.get("round", 0),
             timestamp=data.get("timestamp", datetime.now().isoformat()),
+            transition_type="",
         )
         
         self.add_activity(activity)

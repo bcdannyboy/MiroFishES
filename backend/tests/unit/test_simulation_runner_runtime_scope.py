@@ -352,6 +352,9 @@ def test_cleanup_simulation_logs_targets_only_one_run_root(tmp_path, monkeypatch
         (run_dir / "reddit" / "actions.jsonl").write_text("{}", encoding="utf-8")
         (run_dir / "simulation.log").write_text("log", encoding="utf-8")
         (run_dir / "run_state.json").write_text("{}", encoding="utf-8")
+        (run_dir / "runtime_graph_base_snapshot.json").write_text("{}", encoding="utf-8")
+        (run_dir / "runtime_graph_state.json").write_text("{}", encoding="utf-8")
+        (run_dir / "runtime_graph_updates.jsonl").write_text("{}\n", encoding="utf-8")
         (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
         (run_dir / "run_phase_timings.json").write_text("{}", encoding="utf-8")
         (run_dir / "env_status.json").write_text("{}", encoding="utf-8")
@@ -361,7 +364,12 @@ def test_cleanup_simulation_logs_targets_only_one_run_root(tmp_path, monkeypatch
         (run_dir / "reddit_profiles.json").write_text("[]", encoding="utf-8")
 
     run_one_manifest = json.loads((run_one_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    run_one_manifest["artifact_paths"] = {"metrics": "metrics.json"}
+    run_one_manifest["artifact_paths"] = {
+        "metrics": "metrics.json",
+        "runtime_graph_base_snapshot": "runtime_graph_base_snapshot.json",
+        "runtime_graph_state": "runtime_graph_state.json",
+        "runtime_graph_updates": "runtime_graph_updates.jsonl",
+    }
     _write_json(run_one_dir / "run_manifest.json", run_one_manifest)
 
     runner_module = _configure_runner(monkeypatch, simulation_data_dir)
@@ -374,6 +382,9 @@ def test_cleanup_simulation_logs_targets_only_one_run_root(tmp_path, monkeypatch
 
     assert result["success"] is True
     assert not (run_one_dir / "run_state.json").exists()
+    assert not (run_one_dir / "runtime_graph_base_snapshot.json").exists()
+    assert not (run_one_dir / "runtime_graph_state.json").exists()
+    assert not (run_one_dir / "runtime_graph_updates.jsonl").exists()
     assert not (run_one_dir / "simulation.log").exists()
     assert not (run_one_dir / "twitter" / "actions.jsonl").exists()
     assert not (run_one_dir / "reddit" / "actions.jsonl").exists()
