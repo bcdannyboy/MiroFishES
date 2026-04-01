@@ -9,6 +9,8 @@ from .graphiti_factory import GraphitiFactoryScaffold, build_graphiti_factory
 from .namespace_manager import GraphNamespaceManager
 from .neo4j_factory import Neo4jFactoryScaffold, build_neo4j_factory, probe_neo4j_endpoint
 from .ontology_compiler import GraphOntologyCompiler
+from .query_service import GraphQueryService
+from .scan_service import GraphScanService
 from .settings import GraphBackendSettings
 from .types import GraphBackendReadiness
 
@@ -90,6 +92,8 @@ def describe_graph_backend_readiness(
 __all__ = [
     "GraphNamespaceManager",
     "GraphOntologyCompiler",
+    "GraphQueryService",
+    "GraphScanService",
     "GraphitiGraphBackend",
     "GraphBackendRuntime",
     "GraphBackendSettings",

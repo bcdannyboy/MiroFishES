@@ -6,10 +6,11 @@
   ],
   "branch": "codex/graphiti-neo4j-overhaul-chain",
   "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
-  "current_prompt": 2,
+  "current_prompt": 3,
   "completed_prompts": [
     1,
-    2
+    2,
+    3
   ],
   "prompt_status": "completed",
   "chain_owned_paths": [
@@ -26,10 +27,16 @@
     "backend/app/api/graph.py",
     "backend/app/services/graph_builder.py",
     "backend/app/services/graph_backend/",
+    "backend/app/services/zep_entity_reader.py",
+    "backend/app/services/zep_tools.py",
+    "backend/app/utils/graph_scan.py",
     "backend/scripts/",
     "backend/tests/unit/services/graph_backend/",
     "backend/tests/unit/test_graph_backend_readiness_api.py",
-    "backend/tests/unit/test_graph_builder_service.py"
+    "backend/tests/unit/test_graph_builder_service.py",
+    "backend/tests/unit/test_zep_entity_reader.py",
+    "backend/tests/unit/test_zep_tools_multigraph.py",
+    "backend/tests/unit/test_report_agent_hybrid_retrieval.py"
   ],
   "docs_updated": [
     ".env.example",
@@ -65,6 +72,12 @@
         "backend_core_task_id": "task-1775017143887-79ab02",
         "graph_build_task_id": "task-1775017143888-c6070b",
         "docs_task_id": "task-1775017143888-peuzfw"
+      },
+      "prompt_3": {
+        "swarm_id": "swarm-1775019134311-1a0jrw",
+        "query_scan_task_id": "task-1775019134313-7u6tea",
+        "entity_reader_task_id": "task-1775019134313-055lzi",
+        "report_adapter_task_id": "task-1775019134313-zwp74t"
       }
     },
     "neo4j_probe": {
@@ -148,6 +161,58 @@
         "command": "npm run verify:graphiti:all",
         "result": "passed"
       }
+    },
+    "prompt_3": {
+      "prompt_1_2_repo_truth_check": {
+        "unit_wrapper": {
+          "command": "npm run verify:graphiti:unit",
+          "result": "14 passed"
+        },
+        "integration_wrapper": {
+          "command": "npm run verify:graphiti:integration",
+          "result": "passed",
+          "notes": [
+            "Readiness stayed honest with graphiti-core unavailable.",
+            "Readiness stayed honest with NEO4J_PASSWORD still missing."
+          ]
+        }
+      },
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/services/graph_backend/test_query_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q",
+        "result": "5 failed, 6 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/services/graph_backend/test_query_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q",
+        "result": "11 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "14 passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed",
+        "notes": [
+          "Wrapper returned backend-harness-ready.",
+          "Readiness payload still reports graphiti-core unavailable and NEO4J_PASSWORD missing."
+        ]
+      },
+      "wrapper_smoke": {
+        "command": "npm run verify:graphiti:smoke",
+        "result": "passed",
+        "notes": [
+          "Smoke wrapper executed the readiness surface successfully.",
+          "No live Graphiti dependency claims were overstated."
+        ]
+      },
+      "broader_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q",
+        "result": "29 passed"
+      },
+      "prepare_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py -q",
+        "result": "31 passed"
+      }
     }
   },
   "blockers": [
@@ -171,7 +236,7 @@
     {
       "id": "graphiti-core-missing",
       "status": "open",
-      "impact": "The rewritten base graph build seam cannot run a live Graphiti ingestion until graphiti-core is installed in the backend environment."
+      "impact": "Live Graphiti query/build execution remains unavailable until graphiti-core is installed in the backend environment."
     },
     {
       "id": "neo4j-password-missing-in-env",
@@ -179,6 +244,6 @@
       "impact": "Readiness remains configured=false because the current local .env does not expose NEO4J_PASSWORD."
     }
   ],
-  "next_prompt": 3,
+  "next_prompt": 4,
   "merge_ready": false
 }

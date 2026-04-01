@@ -45,6 +45,21 @@
   - `backend/tests/unit/test_graph_builder_service.py`
   - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
   - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+- Prompt 3 may extend the read-side graph query stack, deterministic scans, multigraph runtime/base reads, and report/entity adapters while preserving earlier chain state files
+- Prompt 3 chain-owned paths:
+  - `backend/app/services/graph_backend/__init__.py`
+  - `backend/app/services/graph_backend/query_service.py`
+  - `backend/app/services/graph_backend/scan_service.py`
+  - `backend/app/services/zep_entity_reader.py`
+  - `backend/app/services/zep_tools.py`
+  - `backend/app/utils/graph_scan.py`
+  - `backend/tests/unit/services/graph_backend/test_query_service.py`
+  - `backend/tests/unit/services/graph_backend/test_scan_service.py`
+  - `backend/tests/unit/test_zep_entity_reader.py`
+  - `backend/tests/unit/test_zep_tools_multigraph.py`
+  - `backend/tests/unit/test_report_agent_hybrid_retrieval.py`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
 
 ## Commit Policy
 
@@ -171,6 +186,58 @@
   - failing Prompt 2 tests were written first and observed red before implementation
   - the base graph build code path now runs through the new backend seam, while downstream read/query/runtime update surfaces remain explicitly deferred to later prompts
 
+### Prompt 3
+
+- status: completed
+- scope: backend-neutral read-side graph query stack, deterministic scans, multigraph `base_graph_id` + `runtime_graph_id` reads, and report/entity adapters off the legacy Zep client path
+- startup grounding completed against:
+  - `docs/plans/2026-03-31-graphiti-neo4j-overhaul.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-cutover-prompt-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+  - `docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt`
+- startup branch/status snapshot:
+  - active branch confirmed: `codex/graphiti-neo4j-overhaul-chain`
+  - dirty state re-grounded before work; only baseline dirty files were present outside chain-owned edits
+- Ruflo orchestration records:
+  - workspace verifier result: `swarm-task-only`
+  - workspace launcher swarm id: `swarm-1775019134311-1a0jrw`
+  - query/scan task id: `task-1775019134313-7u6tea`
+  - entity-reader task id: `task-1775019134313-055lzi`
+  - report-adapter task id: `task-1775019134313-zwp74t`
+- Prompt 1 and Prompt 2 repo-truth verification completed before new scope:
+  - `git log` confirmed both prompt commits on the active branch
+  - `npm run verify:graphiti:unit` and `npm run verify:graphiti:integration` both matched the earlier chain claims before Prompt 3 edits began
+- owned files actually changed:
+  - `backend/app/services/graph_backend/__init__.py`
+  - `backend/app/services/graph_backend/query_service.py`
+  - `backend/app/services/graph_backend/scan_service.py`
+  - `backend/app/services/zep_entity_reader.py`
+  - `backend/app/services/zep_tools.py`
+  - `backend/app/utils/graph_scan.py`
+  - `backend/tests/unit/services/graph_backend/test_query_service.py`
+  - `backend/tests/unit/services/graph_backend/test_scan_service.py`
+  - `backend/tests/unit/test_report_agent_hybrid_retrieval.py`
+  - `backend/tests/unit/test_zep_entity_reader.py`
+  - `backend/tests/unit/test_zep_tools_multigraph.py`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+- architectural decisions implemented:
+  - introduced `GraphScanService` under `app.services.graph_backend` to load deterministic node/edge scans from persisted project graph artifacts plus runtime transition artifacts without vendor SDKs
+  - introduced `GraphQueryService` under `app.services.graph_backend` for normalized node reads, node-edge reads, graph statistics, entity summaries, simulation context, and deterministic keyword search across merged graphs
+  - replaced the live Zep dependency inside `zep_entity_reader.py` with artifact-backed scans while preserving the artifact-first `graph_entity_index.json` fast path for single-graph project reads
+  - replaced the live Zep dependency inside `zep_tools.py` with the new query service while preserving the existing report-facing tool contract and hybrid evidence/interview surfaces
+  - treated runtime graph updates as temporal history edges, keeping panorama/history-style reads aware of runtime transitions when `runtime_graph_id` is present
+  - kept the public read-side module names stable for Prompt 3 so report/simulation code paths do not need a parallel rename while the underlying behavior is already backend-neutral
+- deviations from the source plan that were intentional in Prompt 3:
+  - retained compatibility module names `zep_tools.py` and `zep_entity_reader.py` even though their implementations no longer rely on the Zep client, to minimize blast radius for downstream prompts
+  - deterministic search remains artifact-backed keyword retrieval for now; live Graphiti query execution still depends on the unresolved `graphiti-core` installation and `NEO4J_PASSWORD` env gap
+- blockers fixed from prior prompts:
+  - removed the Prompt 2-era runtime dependency on `ZEP_API_KEY` for read-side search/entity/report paths touched in Prompt 3
+- completion summary:
+  - failing Prompt 3 tests were written first and observed red before implementation
+  - merged base/runtime reads, deterministic scans, report quick search, and entity-context enrichment now run through the new backend-neutral read stack
+
 ## Blockers And Resolutions
 
 - blocker: direct MCP Ruflo task tools in this session wrote to `/.claude-flow` instead of the repo workspace
@@ -185,6 +252,8 @@
   - resolution: leave the wrapper verdict honest and keep Prompt 1 limited to deferred scaffolding until a later prompt installs or vendors the dependency
 - blocker: declared `neo4j` version range conflicted with `camel-oasis` transitive expectations during Prompt 2 environment recheck
   - resolution: align `backend/pyproject.toml` and `backend/requirements.txt` to `neo4j>=5.23.0,<6.0.0`, which satisfies the current repo dependency graph while keeping the Graphiti cutover path viable
+- blocker: Prompt 3 needed multigraph reads before live Graphiti query dependencies are locally runnable
+  - resolution: implement artifact-backed deterministic scan/query services so the read path no longer depends on Zep while the live Graphiti runtime blockers remain open
 
 ## Verification Command Ledger
 
@@ -222,6 +291,21 @@
   - result: PASS; unit plus wrapper sanity checks stayed green after the base build cutover
 - `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/services/graph_backend/test_namespace_manager.py backend/tests/unit/services/graph_backend/test_ontology_compiler.py backend/tests/unit/test_graph_backend_readiness_api.py backend/tests/unit/test_graph_builder_service.py backend/tests/unit/test_forecast_grounding.py backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_runtime_graph_state.py backend/tests/integration/test_runtime_graph_state_flow.py -q`
   - result: `25 passed`
+- `npm run verify:ruflo`
+  - result on Prompt 3 recheck: PASS in `swarm-task-only` mode; memory still blocked by external `sql.js`
+- `backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/services/graph_backend/test_query_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q`
+  - result before implementation: `5 failed, 6 passed`
+  - result after implementation: `11 passed`
+- `npm run verify:graphiti:unit`
+  - result on Prompt 3 post-implementation run: `14 passed`
+- `npm run verify:graphiti:integration`
+  - result on Prompt 3 post-implementation run: PASS; readiness remained honest with `graphiti-core` unavailable and `NEO4J_PASSWORD` missing
+- `npm run verify:graphiti:smoke`
+  - result on Prompt 3 post-implementation run: PASS; readiness remained honest with `graphiti-core` unavailable and `NEO4J_PASSWORD` missing
+- `backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q`
+  - result: `29 passed`
+- `backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py -q`
+  - result: `31 passed`
 
 ## Next-Prompt Entry Checklist
 
@@ -229,7 +313,9 @@
 - confirm the active branch matches the chain status branch
 - confirm baseline dirty paths remain unstaged unless explicitly adopted
 - verify Prompt 1 and Prompt 2 commits exist and review their scoped verification evidence
+- verify Prompt 3 commit exists and review its scoped verification evidence
 - re-run Ruflo workspace readiness before new disjoint work
 - expect `graphiti-core` to still be absent and `NEO4J_PASSWORD` to still be missing unless Prompt 3 explicitly changes the environment/install state
 - confirm the Step 1 base graph build path now runs through `backend/app/services/graph_backend/` and that `/api/graph/build` no longer gates on `ZEP_API_KEY`
-- treat the remaining read/query/runtime update Zep paths as Prompt 3+ scope
+- confirm the read-side search/entity/report paths touched in Prompt 3 no longer require live Zep credentials
+- treat the remaining write-side graph memory updater/runtime mutation Zep paths as Prompt 4+ scope
