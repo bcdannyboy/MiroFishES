@@ -99,28 +99,43 @@ class UploadedLocalArtifactEvidenceProvider:
 
         hybrid_hits = []
         if project_id:
-            retrieval = self.hybrid_retriever.retrieve(
-                project_id=project_id,
-                query=question.question_text or question.title,
-                question_type=question.question_type,
-                issue_timestamp=question.issue_timestamp,
-                limit=6,
-            )
-            hybrid_hits = list(retrieval.hits)
-            missing_markers.extend(retrieval.missing_evidence_markers)
-            notes.append(
-                "Hybrid local retrieval searched embedded source units plus graph-native analytical objects."
-            )
-            notes.append(
-                f"Hybrid retrieval indexed {retrieval.index_stats.get('record_count', 0)} local evidence records."
-            )
-            entries.extend(
-                self._normalize_hybrid_entries(
-                    retrieval_hits=hybrid_hits,
+            try:
+                retrieval = self.hybrid_retriever.retrieve(
                     project_id=project_id,
-                    simulation_id=simulation_id,
+                    query=question.question_text or question.title,
+                    question_type=question.question_type,
+                    issue_timestamp=question.issue_timestamp,
+                    limit=6,
                 )
-            )
+                hybrid_hits = list(retrieval.hits)
+                missing_markers.extend(retrieval.missing_evidence_markers)
+                notes.append(
+                    "Hybrid local retrieval searched embedded source units plus graph-native analytical objects."
+                )
+                notes.append(
+                    f"Hybrid retrieval indexed {retrieval.index_stats.get('record_count', 0)} local evidence records."
+                )
+                entries.extend(
+                    self._normalize_hybrid_entries(
+                        retrieval_hits=hybrid_hits,
+                        project_id=project_id,
+                        simulation_id=simulation_id,
+                    )
+                )
+            except Exception as exc:
+                notes.append(
+                    f"Hybrid local retrieval was unavailable and fell back to persisted grounding artifacts: {exc}"
+                )
+                missing_markers.append(
+                    {
+                        "marker_id": f"{self.provider_id}-hybrid-retrieval-unavailable",
+                        "provider_id": self.provider_id,
+                        "provider_kind": self.provider_kind,
+                        "kind": "hybrid_retrieval_unavailable",
+                        "reason": str(exc),
+                        "recorded_at": now,
+                    }
+                )
 
         if not entries and grounding_bundle:
             missing_markers = [

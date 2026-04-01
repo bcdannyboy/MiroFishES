@@ -91,6 +91,53 @@ def _write_project_grounding_artifacts(
         },
     )
     _write_json(
+        project_dir / "source_units.json",
+        {
+            "artifact_type": "source_units",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "generated_at": "2026-03-29T09:02:00",
+            "unit_count": 2,
+            "units": [
+                {
+                    "unit_id": "su-1",
+                    "source_id": "src-1",
+                    "stable_source_id": "memo-md",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 1,
+                    "unit_type": "paragraph",
+                    "char_start": 0,
+                    "char_end": 42,
+                    "combined_text_start": 0,
+                    "combined_text_end": 42,
+                    "text": "Workers mention slowdown risk and policy response.",
+                    "metadata": {"heading_path": ["Economic outlook"]},
+                    "extraction_warnings": [],
+                },
+                {
+                    "unit_id": "su-2",
+                    "source_id": "src-1",
+                    "stable_source_id": "memo-md",
+                    "original_filename": "memo.md",
+                    "relative_path": "files/memo.md",
+                    "source_order": 1,
+                    "unit_order": 2,
+                    "unit_type": "paragraph",
+                    "char_start": 43,
+                    "char_end": 88,
+                    "combined_text_start": 43,
+                    "combined_text_end": 88,
+                    "text": "Inflation revisions could delay policy easing.",
+                    "metadata": {"heading_path": ["Risks"]},
+                    "extraction_warnings": [],
+                },
+            ],
+        },
+    )
+    _write_json(
         project_dir / "graph_build_summary.json",
         {
             "artifact_type": "graph_build_summary",
@@ -99,7 +146,10 @@ def _write_project_grounding_artifacts(
             "project_id": project_id,
             "graph_id": graph_id,
             "generated_at": "2026-03-29T09:05:00",
-            "source_artifacts": {"source_manifest": "source_manifest.json"},
+            "source_artifacts": {
+                "source_manifest": "source_manifest.json",
+                "source_units": "source_units.json",
+            },
             "ontology_summary": {
                 "analysis_summary": "Uploaded evidence emphasizes labor-policy timing.",
                 "entity_type_count": 1,
@@ -111,7 +161,7 @@ def _write_project_grounding_artifacts(
             "graph_counts": {
                 "node_count": 7,
                 "edge_count": 9,
-                "entity_types": ["Person"],
+                "entity_types": ["Person", "Topic", "Claim", "UncertaintyFactor"],
             },
             "warnings": [],
         },
@@ -128,6 +178,8 @@ def _write_project_grounding_artifacts(
             "total_count": 1,
             "filtered_count": 1,
             "entity_types": ["Person"],
+            "analytical_object_count": 3,
+            "analytical_types": ["Claim", "Topic", "UncertaintyFactor"],
             "entities": [
                 {
                     "uuid": "entity-1",
@@ -135,10 +187,221 @@ def _write_project_grounding_artifacts(
                     "labels": ["Entity", "Person"],
                     "summary": "A tracked participant",
                     "attributes": {"role": "analyst"},
-                    "related_edges": [],
-                    "related_nodes": [],
+                    "related_edges": [
+                        {
+                            "direction": "outgoing",
+                            "edge_name": "tracks",
+                            "fact": "Analyst tracks labor slowdown.",
+                            "target_node_uuid": "topic-1",
+                            "provenance": {
+                                "source_unit_ids": ["su-1"],
+                                "citations": [
+                                    {
+                                        "unit_id": "su-1",
+                                        "source_id": "src-1",
+                                        "stable_source_id": "memo-md",
+                                        "original_filename": "memo.md",
+                                        "relative_path": "files/memo.md",
+                                        "unit_type": "paragraph",
+                                        "char_start": 0,
+                                        "char_end": 42,
+                                        "combined_text_start": 0,
+                                        "combined_text_end": 42,
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "related_nodes": [
+                        {
+                            "uuid": "topic-1",
+                            "name": "Labor slowdown",
+                            "labels": ["Entity", "Topic"],
+                            "summary": "Labor conditions are softening.",
+                        },
+                        {
+                            "uuid": "claim-1",
+                            "name": "Policy easing likely",
+                            "labels": ["Entity", "Claim"],
+                            "summary": "Softening labor data supports policy easing.",
+                        },
+                    ],
+                    "provenance": {
+                        "source_unit_ids": ["su-1"],
+                        "citations": [
+                            {
+                                "unit_id": "su-1",
+                                "source_id": "src-1",
+                                "stable_source_id": "memo-md",
+                                "original_filename": "memo.md",
+                                "relative_path": "files/memo.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": 42,
+                                "combined_text_start": 0,
+                                "combined_text_end": 42,
+                            }
+                        ],
+                    },
                 }
             ],
+            "analytical_objects": [
+                {
+                    "uuid": "topic-1",
+                    "name": "Labor slowdown",
+                    "labels": ["Entity", "Topic"],
+                    "summary": "Labor conditions are softening.",
+                    "object_type": "Topic",
+                    "layer": "analytical",
+                    "provenance": {
+                        "source_unit_ids": ["su-1"],
+                        "citations": [
+                            {
+                                "unit_id": "su-1",
+                                "source_id": "src-1",
+                                "stable_source_id": "memo-md",
+                                "original_filename": "memo.md",
+                                "relative_path": "files/memo.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": 42,
+                                "combined_text_start": 0,
+                                "combined_text_end": 42,
+                            }
+                        ],
+                    },
+                    "related_edges": [],
+                    "related_nodes": [
+                        {
+                            "uuid": "entity-1",
+                            "name": "Analyst",
+                            "labels": ["Entity", "Person"],
+                            "summary": "A tracked participant",
+                        }
+                    ],
+                },
+                {
+                    "uuid": "claim-1",
+                    "name": "Policy easing likely",
+                    "labels": ["Entity", "Claim"],
+                    "summary": "Softening labor data supports policy easing.",
+                    "object_type": "Claim",
+                    "layer": "analytical",
+                    "provenance": {
+                        "source_unit_ids": ["su-1"],
+                        "citations": [
+                            {
+                                "unit_id": "su-1",
+                                "source_id": "src-1",
+                                "stable_source_id": "memo-md",
+                                "original_filename": "memo.md",
+                                "relative_path": "files/memo.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": 42,
+                                "combined_text_start": 0,
+                                "combined_text_end": 42,
+                            }
+                        ],
+                    },
+                    "related_edges": [
+                        {
+                            "direction": "incoming",
+                            "edge_name": "supports",
+                            "fact": "Workers mention slowdown risk and policy response.",
+                            "source_node_uuid": "topic-1",
+                            "provenance": {
+                                "source_unit_ids": ["su-1"],
+                                "citations": [
+                                    {
+                                        "unit_id": "su-1",
+                                        "source_id": "src-1",
+                                        "stable_source_id": "memo-md",
+                                        "original_filename": "memo.md",
+                                        "relative_path": "files/memo.md",
+                                        "unit_type": "paragraph",
+                                        "char_start": 0,
+                                        "char_end": 42,
+                                        "combined_text_start": 0,
+                                        "combined_text_end": 42,
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "related_nodes": [
+                        {
+                            "uuid": "entity-1",
+                            "name": "Analyst",
+                            "labels": ["Entity", "Person"],
+                            "summary": "A tracked participant",
+                        }
+                    ],
+                },
+                {
+                    "uuid": "unc-1",
+                    "name": "Inflation revision risk",
+                    "labels": ["Entity", "UncertaintyFactor"],
+                    "summary": "Inflation revisions could delay easing.",
+                    "object_type": "UncertaintyFactor",
+                    "layer": "analytical",
+                    "provenance": {
+                        "source_unit_ids": ["su-2"],
+                        "citations": [
+                            {
+                                "unit_id": "su-2",
+                                "source_id": "src-1",
+                                "stable_source_id": "memo-md",
+                                "original_filename": "memo.md",
+                                "relative_path": "files/memo.md",
+                                "unit_type": "paragraph",
+                                "char_start": 43,
+                                "char_end": 88,
+                                "combined_text_start": 43,
+                                "combined_text_end": 88,
+                            }
+                        ],
+                    },
+                    "related_edges": [
+                        {
+                            "direction": "incoming",
+                            "edge_name": "contradicts",
+                            "fact": "Inflation revisions could delay policy easing.",
+                            "source_node_uuid": "claim-1",
+                            "provenance": {
+                                "source_unit_ids": ["su-2"],
+                                "citations": [
+                                    {
+                                        "unit_id": "su-2",
+                                        "source_id": "src-1",
+                                        "stable_source_id": "memo-md",
+                                        "original_filename": "memo.md",
+                                        "relative_path": "files/memo.md",
+                                        "unit_type": "paragraph",
+                                        "char_start": 43,
+                                        "char_end": 88,
+                                        "combined_text_start": 43,
+                                        "combined_text_end": 88,
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "related_nodes": [
+                        {
+                            "uuid": "entity-1",
+                            "name": "Analyst",
+                            "labels": ["Entity", "Person"],
+                            "summary": "A tracked participant",
+                        }
+                    ],
+                },
+            ],
+            "citation_coverage": {
+                "source_unit_backed_node_count": 4,
+                "source_unit_backed_edge_count": 2,
+                "edge_episode_link_count": 0,
+            },
         },
     )
 
@@ -407,6 +670,7 @@ def test_prepare_simulation_persists_probabilistic_sidecar_artifacts(
         "config_generation",
         "entity_read",
         "profile_generation",
+        "world_state",
     }
     assert summary["schema_version"] == "probabilistic.prepare.v1"
     assert summary["generator_version"] == "probabilistic.prepare.generator.v1"
@@ -671,6 +935,70 @@ def test_prepare_simulation_persists_grounding_bundle_and_summary_when_project_a
         "reason": "",
         "blocking_stage": None,
     }
+
+
+def test_prepare_simulation_persists_evidence_grounded_world_state_artifacts(
+    simulation_data_dir, monkeypatch, tmp_path
+):
+    manager_module = _load_manager_module()
+    _configure_simulation_data_dir(monkeypatch, simulation_data_dir, manager_module)
+    _write_project_grounding_artifacts(
+        monkeypatch,
+        tmp_path / "projects",
+        project_id="proj-1",
+        graph_id="graph-1",
+    )
+
+    captured_profile_kwargs = {}
+    captured_config_kwargs = {}
+
+    class _CapturingProfileGenerator(_FakeProfileGenerator):
+        def generate_profiles_from_entities(self, *args, **kwargs):
+            captured_profile_kwargs.update(kwargs)
+            return super().generate_profiles_from_entities(*args, **kwargs)
+
+    class _CapturingSimulationConfigGenerator(_FakeSimulationConfigGenerator):
+        def generate_config(self, **kwargs):
+            captured_config_kwargs.update(kwargs)
+            return super().generate_config(**kwargs)
+
+    class _FakeReader:
+        def filter_defined_entities(self, *args, **kwargs):
+            return _fake_filtered_entities()
+
+    monkeypatch.setattr(manager_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(manager_module, "OasisProfileGenerator", _CapturingProfileGenerator)
+    monkeypatch.setattr(
+        manager_module, "SimulationConfigGenerator", _CapturingSimulationConfigGenerator
+    )
+
+    manager = manager_module.SimulationManager()
+    state = manager.create_simulation("proj-1", "graph-1")
+
+    manager.prepare_simulation(
+        simulation_id=state.simulation_id,
+        simulation_requirement="Forecast discussion spread",
+        document_text="Workers mention slowdown risk and policy response.",
+        probabilistic_mode=True,
+        uncertainty_profile="balanced",
+        outcome_metrics=["simulation.total_actions"],
+    )
+
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+    world_state_path = sim_dir / "prepared_world_state.json"
+    agent_states_path = sim_dir / "prepared_agent_states.json"
+    phase_timings = json.loads((sim_dir / "prepare_phase_timings.json").read_text(encoding="utf-8"))
+    summary = manager.get_prepare_artifact_summary(state.simulation_id)
+
+    assert world_state_path.exists()
+    assert agent_states_path.exists()
+    assert "world_state" in phase_timings["phases"]
+    assert captured_profile_kwargs["world_state"]["artifact_type"] == "prepared_world_state"
+    assert captured_profile_kwargs["agent_states_by_uuid"]["entity-1"]["entity_uuid"] == "entity-1"
+    assert captured_config_kwargs["world_state"]["retrieval_contract"]["status"] == "ready"
+    assert captured_config_kwargs["agent_states_by_uuid"]["entity-1"]["topic_names"] == ["Labor slowdown"]
+    assert summary["artifacts"]["prepared_world_state"]["exists"] is True
+    assert summary["artifacts"]["prepared_agent_states"]["exists"] is True
 
 
 def test_prepare_simulation_uses_fixed_variable_catalog_for_deterministic_baseline(

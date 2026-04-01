@@ -124,6 +124,186 @@ def _seed_project_grounding_artifacts(
             "warnings": [],
         },
     )
+    _write_json(
+        project_dir / "source_units.json",
+        {
+            "artifact_type": "source_units",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "generated_at": "2026-03-29T09:03:00",
+            "unit_count": 1,
+            "units": [
+                {
+                    "unit_id": "fixture-unit-1",
+                    "source_id": "fixture-source-1",
+                    "stable_source_id": "fixture-md",
+                    "original_filename": "fixture.md",
+                    "relative_path": "files/fixture.md",
+                    "source_order": 1,
+                    "unit_order": 1,
+                    "unit_type": "paragraph",
+                    "char_start": 0,
+                    "char_end": len(document_text),
+                    "combined_text_start": 0,
+                    "combined_text_end": len(document_text),
+                    "text": document_text,
+                    "metadata": {"heading_path": ["Fixture"]},
+                    "extraction_warnings": [],
+                }
+            ],
+        },
+    )
+    _write_json(
+        project_dir / "graph_entity_index.json",
+        {
+            "artifact_type": "graph_entity_index",
+            "schema_version": "forecast.grounding.v1",
+            "generator_version": "forecast.grounding.generator.v1",
+            "project_id": project_id,
+            "graph_id": graph_id,
+            "generated_at": "2026-03-29T09:06:00",
+            "total_count": 1,
+            "filtered_count": 1,
+            "entity_types": ["Person"],
+            "entities": [
+                {
+                    "uuid": "entity-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "A tracked participant",
+                    "attributes": {"role": "analyst"},
+                    "related_edges": [
+                        {
+                            "direction": "outgoing",
+                            "edge_name": "tracks",
+                            "fact": excerpt,
+                            "target_node_uuid": "topic-1",
+                            "provenance": {
+                                "source_unit_ids": ["fixture-unit-1"],
+                                "citations": [
+                                    {
+                                        "unit_id": "fixture-unit-1",
+                                        "source_id": "fixture-source-1",
+                                        "stable_source_id": "fixture-md",
+                                        "original_filename": "fixture.md",
+                                        "relative_path": "files/fixture.md",
+                                        "unit_type": "paragraph",
+                                        "char_start": 0,
+                                        "char_end": len(document_text),
+                                        "combined_text_start": 0,
+                                        "combined_text_end": len(document_text),
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "related_nodes": [
+                        {
+                            "uuid": "topic-1",
+                            "name": "Labor slowdown",
+                            "labels": ["Entity", "Topic"],
+                            "summary": "Fixture topic for preparation.",
+                        }
+                    ],
+                    "provenance": {
+                        "source_unit_ids": ["fixture-unit-1"],
+                        "citations": [
+                            {
+                                "unit_id": "fixture-unit-1",
+                                "source_id": "fixture-source-1",
+                                "stable_source_id": "fixture-md",
+                                "original_filename": "fixture.md",
+                                "relative_path": "files/fixture.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": len(document_text),
+                                "combined_text_start": 0,
+                                "combined_text_end": len(document_text),
+                            }
+                        ],
+                    },
+                }
+            ],
+            "analytical_object_count": 2,
+            "analytical_types": ["Claim", "Topic"],
+            "analytical_objects": [
+                {
+                    "uuid": "topic-1",
+                    "name": "Labor slowdown",
+                    "labels": ["Entity", "Topic"],
+                    "summary": "Fixture topic for preparation.",
+                    "object_type": "Topic",
+                    "layer": "analytical",
+                    "provenance": {
+                        "source_unit_ids": ["fixture-unit-1"],
+                        "citations": [
+                            {
+                                "unit_id": "fixture-unit-1",
+                                "source_id": "fixture-source-1",
+                                "stable_source_id": "fixture-md",
+                                "original_filename": "fixture.md",
+                                "relative_path": "files/fixture.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": len(document_text),
+                                "combined_text_start": 0,
+                                "combined_text_end": len(document_text),
+                            }
+                        ],
+                    },
+                    "related_edges": [],
+                    "related_nodes": [
+                        {
+                            "uuid": "entity-1",
+                            "name": "Analyst",
+                            "labels": ["Entity", "Person"],
+                            "summary": "A tracked participant",
+                        }
+                    ],
+                },
+                {
+                    "uuid": "claim-1",
+                    "name": "Spread likely",
+                    "labels": ["Entity", "Claim"],
+                    "summary": "Fixture claim for preparation.",
+                    "object_type": "Claim",
+                    "layer": "analytical",
+                    "provenance": {
+                        "source_unit_ids": ["fixture-unit-1"],
+                        "citations": [
+                            {
+                                "unit_id": "fixture-unit-1",
+                                "source_id": "fixture-source-1",
+                                "stable_source_id": "fixture-md",
+                                "original_filename": "fixture.md",
+                                "relative_path": "files/fixture.md",
+                                "unit_type": "paragraph",
+                                "char_start": 0,
+                                "char_end": len(document_text),
+                                "combined_text_start": 0,
+                                "combined_text_end": len(document_text),
+                            }
+                        ],
+                    },
+                    "related_edges": [],
+                    "related_nodes": [
+                        {
+                            "uuid": "entity-1",
+                            "name": "Analyst",
+                            "labels": ["Entity", "Person"],
+                            "summary": "A tracked participant",
+                        }
+                    ],
+                },
+            ],
+            "citation_coverage": {
+                "source_unit_backed_node_count": 3,
+                "source_unit_backed_edge_count": 1,
+                "edge_episode_link_count": 0,
+            },
+        },
+    )
 
 
 def _build_app_client(monkeypatch):
@@ -349,6 +529,34 @@ def _prepare_simulation(simulation_data_dir, monkeypatch):
         outcome_metrics=["simulation.total_actions"],
     )
     return state
+
+
+def test_prepare_integration_persists_evidence_grounded_world_state_artifacts(
+    simulation_data_dir,
+    monkeypatch,
+    probabilistic_prepare_enabled,
+):
+    state = _prepare_simulation(simulation_data_dir, monkeypatch)
+    manager_module = _load_manager_module()
+    manager = manager_module.SimulationManager()
+    sim_dir = Path(manager._get_simulation_dir(state.simulation_id))
+
+    world_state = json.loads(
+        (sim_dir / "prepared_world_state.json").read_text(encoding="utf-8")
+    )
+    agent_states = json.loads(
+        (sim_dir / "prepared_agent_states.json").read_text(encoding="utf-8")
+    )
+    summary = manager.get_prepare_artifact_summary(state.simulation_id)
+
+    assert world_state["artifact_type"] == "prepared_world_state"
+    assert world_state["retrieval_contract"]["status"] == "ready"
+    assert world_state["world_summary"]["topic_count"] == 1
+    assert agent_states["artifact_type"] == "prepared_agent_states"
+    assert agent_states["agent_state_count"] == 1
+    assert agent_states["agent_states"][0]["topic_names"] == ["Labor slowdown"]
+    assert summary["artifacts"]["prepared_world_state"]["exists"] is True
+    assert summary["artifacts"]["prepared_agent_states"]["exists"] is True
 
 
 def _create_ensemble(client, simulation_id, *, run_count=1, max_concurrency=1, root_seed=101):

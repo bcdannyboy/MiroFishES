@@ -37,6 +37,7 @@ from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 from .grounding_bundle_builder import GroundingBundleBuilder
 from .phase_timing import PhaseTimingRecorder
+from .world_state_compiler import PreparedWorldStateCompiler
 from forecast_archive import (
     FORECAST_ARCHIVE_FILENAME,
     is_forecast_archived,
@@ -177,6 +178,8 @@ class SimulationManager:
         "outcome_spec": "outcome_spec.json",
         "prepare_phase_timings": "prepare_phase_timings.json",
         "prepared_snapshot": "prepared_snapshot.json",
+        "prepared_world_state": "prepared_world_state.json",
+        "prepared_agent_states": "prepared_agent_states.json",
     }
     REQUIRED_PROBABILISTIC_ARTIFACT_KEYS = (
         "base_config",
@@ -1804,6 +1807,8 @@ class SimulationManager:
         grounding_summary: Dict[str, Any],
         uncertainty_spec: UncertaintySpec,
         outcome_spec: Dict[str, Any],
+        world_state_payload: Optional[Dict[str, Any]],
+        agent_states_payload: Optional[Dict[str, Any]],
         sim_dir: str,
     ) -> Dict[str, Any]:
         """Build a deterministic summary of the prepared probabilistic artifact layer."""
@@ -1814,6 +1819,8 @@ class SimulationManager:
             "grounding_bundle": self._describe_artifact(sim_dir, "grounding_bundle"),
             "uncertainty_spec": self._describe_artifact(sim_dir, "uncertainty_spec"),
             "outcome_spec": self._describe_artifact(sim_dir, "outcome_spec"),
+            "prepared_world_state": self._describe_artifact(sim_dir, "prepared_world_state"),
+            "prepared_agent_states": self._describe_artifact(sim_dir, "prepared_agent_states"),
             "prepared_snapshot": {
                 "filename": self.PREPARE_ARTIFACT_FILENAMES["prepared_snapshot"],
                 "exists": True,
@@ -1835,6 +1842,10 @@ class SimulationManager:
             "feature_metadata": {
                 "probabilistic_mode": True,
                 "legacy_config_compatible": True,
+                "evidence_grounded_initialization": world_state_payload is not None,
+                "prepared_agent_state_count": int(
+                    (agent_states_payload or {}).get("agent_state_count") or 0
+                ),
                 "outcome_metrics": [
                     metric["metric_id"] for metric in outcome_spec.get("metrics", [])
                 ],
@@ -2063,6 +2074,54 @@ class SimulationManager:
                 state.error = "No matching entities were found. Please verify that the graph was built correctly."
                 self._save_simulation_state(state)
                 return state
+
+            world_state_compiler = PreparedWorldStateCompiler()
+            if phase_timing is not None:
+                with phase_timing.measure_phase(
+                    "world_state",
+                    metadata={"entity_count": filtered.filtered_count},
+                ) as world_state_metadata:
+                    compiled_state = world_state_compiler.compile(
+                        simulation_id=simulation_id,
+                        project_id=state.project_id,
+                        graph_id=state.graph_id,
+                        simulation_requirement=simulation_requirement,
+                        entities=filtered.entities,
+                    )
+                    world_state_metadata["agent_state_count"] = int(
+                        (compiled_state.get("agent_states") or {}).get("agent_state_count") or 0
+                    )
+                    world_state_metadata["topic_count"] = len(
+                        (
+                            (compiled_state.get("world_state") or {})
+                            .get("registries", {})
+                            .get("topics", [])
+                        )
+                    )
+            else:
+                compiled_state = world_state_compiler.compile(
+                    simulation_id=simulation_id,
+                    project_id=state.project_id,
+                    graph_id=state.graph_id,
+                    simulation_requirement=simulation_requirement,
+                    entities=filtered.entities,
+                )
+
+            world_state_payload = compiled_state["world_state"]
+            agent_states_payload = compiled_state["agent_states"]
+            agent_states_by_uuid = compiled_state["agent_states_by_uuid"]
+            self._write_json(
+                os.path.join(
+                    sim_dir, self.PREPARE_ARTIFACT_FILENAMES["prepared_world_state"]
+                ),
+                world_state_payload,
+            )
+            self._write_json(
+                os.path.join(
+                    sim_dir, self.PREPARE_ARTIFACT_FILENAMES["prepared_agent_states"]
+                ),
+                agent_states_payload,
+            )
             
             # ========== Stage 2: generate agent profiles ==========
             total_entities = len(filtered.entities)
@@ -2111,7 +2170,9 @@ class SimulationManager:
                         graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
                         parallel_count=parallel_profile_count,  # Parallel generation count
                         realtime_output_path=realtime_output_path,  # Realtime output path
-                        output_platform=realtime_platform  # Output format
+                        output_platform=realtime_platform,  # Output format
+                        world_state=world_state_payload,
+                        agent_states_by_uuid=agent_states_by_uuid,
                     )
                     profile_metadata["profile_count"] = len(profiles)
             else:
@@ -2122,7 +2183,9 @@ class SimulationManager:
                     graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
                     parallel_count=parallel_profile_count,  # Parallel generation count
                     realtime_output_path=realtime_output_path,  # Realtime output path
-                    output_platform=realtime_platform  # Output format
+                    output_platform=realtime_platform,  # Output format
+                    world_state=world_state_payload,
+                    agent_states_by_uuid=agent_states_by_uuid,
                 )
             
             state.profiles_count = len(profiles)
@@ -2192,7 +2255,9 @@ class SimulationManager:
                         document_text=document_text,
                         entities=filtered.entities,
                         enable_twitter=state.enable_twitter,
-                        enable_reddit=state.enable_reddit
+                        enable_reddit=state.enable_reddit,
+                        world_state=world_state_payload,
+                        agent_states_by_uuid=agent_states_by_uuid,
                     )
                     config_metadata["agent_config_count"] = len(
                         (sim_params.to_dict() or {}).get("agent_configs", [])
@@ -2206,7 +2271,9 @@ class SimulationManager:
                     document_text=document_text,
                     entities=filtered.entities,
                     enable_twitter=state.enable_twitter,
-                    enable_reddit=state.enable_reddit
+                    enable_reddit=state.enable_reddit,
+                    world_state=world_state_payload,
+                    agent_states_by_uuid=agent_states_by_uuid,
                 )
             
             if progress_callback:
@@ -2289,6 +2356,8 @@ class SimulationManager:
                         grounding_summary=grounding_summary,
                         uncertainty_spec=uncertainty_spec,
                         outcome_spec=outcome_spec,
+                        world_state_payload=world_state_payload,
+                        agent_states_payload=agent_states_payload,
                         sim_dir=sim_dir,
                     ),
                 )

@@ -152,12 +152,40 @@
       "blockers": []
     },
     "P05": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed evidence-grounded simulation initialization with deterministic prepare-time world and agent state artifacts, plus additive persona/config wiring. Verified by targeted unit and integration suites, one live .env prepare smoke on a real project artifact set, and a fresh full `npm run verify` pass.",
+      "owned_paths": [
+        "backend/app/services/oasis_profile_generator.py",
+        "backend/app/services/simulation_config_generator.py",
+        "backend/app/services/simulation_manager.py",
+        "backend/app/services/world_state_compiler.py",
+        "backend/app/services/evidence_bundle_service.py",
+        "backend/tests/unit/test_evidence_grounded_initialization.py",
+        "backend/tests/unit/test_probabilistic_prepare.py",
+        "backend/tests/integration/test_probabilistic_operator_flow.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "cd backend && pytest tests/unit/test_evidence_grounded_initialization.py tests/unit/test_probabilistic_prepare.py tests/integration/test_probabilistic_operator_flow.py -> 41 passed in 0.90s",
+        "cd backend && pytest tests/integration/test_hybrid_evidence_bundle_flow.py -> 1 passed in 0.09s",
+        "cd backend && uv run python live prepare smoke using project_id=proj_62646edbad5f graph_id=mirofish_7a3656f8e25647fe -> simulation_id=sim_d2446f5f5438, status=ready, entities_count=2, profiles_count=2, world_state_retrieval_status=ready, world_state_topic_count=6, agent_state_count=2, prepared_world_state_exists=True, prepared_agent_states_exists=True, summary_grounding_status=ready, summary_workflow_ready=True",
+        "npm run verify -> frontend verify passed, vite build passed, backend pytest passed with 353 passed, 1 warning in 6.05s"
+      ],
+      "artifacts": [
+        "backend/app/services/world_state_compiler.py",
+        "prepared_world_state.json",
+        "prepared_agent_states.json",
+        "prepared_snapshot.json",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Preserved legacy operator flows by falling back to persisted grounding artifacts when hybrid retrieval is unavailable.",
+        "Kept the new prepare-time world and agent state artifacts additive to the existing simulation, grounding, and probabilistic artifact contracts.",
+        "Left probabilistic readiness gates unchanged so the new artifacts improve initialization without becoming new blockers.",
+        "Degraded prepare-time evidence compilation to bounded-empty state instead of aborting when live embedding calls are unavailable."
+      ],
       "blockers": []
     },
     "P06": {

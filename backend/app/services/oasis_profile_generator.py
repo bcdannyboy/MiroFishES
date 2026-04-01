@@ -216,7 +216,9 @@ class OasisProfileGenerator:
         self, 
         entity: EntityNode, 
         user_id: int,
-        use_llm: bool = True
+        use_llm: bool = True,
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_state: Optional[Dict[str, Any]] = None,
     ) -> OasisAgentProfile:
         """
         Generate an OASIS Agent Profile from a Zep entity.
@@ -236,7 +238,11 @@ class OasisProfileGenerator:
         user_name = self._generate_username(name)
         
         # Build context information
-        context = self._build_entity_context(entity)
+        context = self._build_entity_context(
+            entity,
+            world_state=world_state,
+            agent_state=agent_state,
+        )
         
         if use_llm:
             # Use the LLM to generate a detailed persona.
@@ -245,7 +251,7 @@ class OasisProfileGenerator:
                 entity_type=entity_type,
                 entity_summary=entity.summary,
                 entity_attributes=entity.attributes,
-                context=context
+                context=context,
             )
         else:
             # Use rules to generate a baseline persona.
@@ -253,7 +259,9 @@ class OasisProfileGenerator:
                 entity_name=name,
                 entity_type=entity_type,
                 entity_summary=entity.summary,
-                entity_attributes=entity.attributes
+                entity_attributes=entity.attributes,
+                world_state=world_state,
+                agent_state=agent_state,
             )
         
         return OasisAgentProfile(
@@ -440,7 +448,13 @@ class OasisProfileGenerator:
         
         return results
     
-    def _build_entity_context(self, entity: EntityNode) -> str:
+    def _build_entity_context(
+        self,
+        entity: EntityNode,
+        *,
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_state: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """
         Build the full context bundle for an entity.
 
@@ -524,6 +538,31 @@ class OasisProfileGenerator:
                 "### Related Nodes Retrieved from Zep\n" +
                 "\n".join(f"- {s}" for s in zep_results["node_summaries"][:10])
             )
+
+        if world_state:
+            headline = (
+                (world_state.get("world_summary") or {}).get("headline")
+                or ""
+            )
+            if headline:
+                context_parts.append(f"### World State Headline\n- {headline}")
+
+        if agent_state:
+            focus_topics = list(agent_state.get("topic_names") or [])
+            focus_claims = list(agent_state.get("claim_names") or [])
+            uncertainty_names = list(agent_state.get("uncertainty_names") or [])
+            worldview_summary = str(agent_state.get("worldview_summary") or "").strip()
+            lines: List[str] = []
+            if focus_topics:
+                lines.append(f"- Topic focus: {', '.join(focus_topics[:3])}")
+            if focus_claims:
+                lines.append(f"- Claim focus: {', '.join(focus_claims[:3])}")
+            if uncertainty_names:
+                lines.append(f"- Uncertainty focus: {', '.join(uncertainty_names[:3])}")
+            if worldview_summary:
+                lines.append(f"- Worldview: {worldview_summary}")
+            if lines:
+                context_parts.append("### Prepared Agent State\n" + "\n".join(lines))
         
         return "\n\n".join(context_parts)
     
@@ -826,9 +865,49 @@ Important:
         entity_name: str,
         entity_type: str,
         entity_summary: str,
-        entity_attributes: Dict[str, Any]
+        entity_attributes: Dict[str, Any],
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate a baseline persona with rules."""
+
+        if agent_state:
+            topic_names = list(agent_state.get("topic_names") or [])
+            claim_names = list(agent_state.get("claim_names") or [])
+            uncertainty_names = list(agent_state.get("uncertainty_names") or [])
+            worldview_summary = str(agent_state.get("worldview_summary") or "").strip()
+            interested_topics = topic_names + [
+                claim for claim in claim_names if claim not in topic_names
+            ]
+            focus_line = ", ".join((topic_names + claim_names)[:3])
+            if not focus_line:
+                focus_line = entity_summary or entity_name
+            caution_line = ""
+            if uncertainty_names:
+                caution_line = f" They remain attentive to {', '.join(uncertainty_names[:2])}."
+            bio = f"{entity_type} focused on {focus_line}.{caution_line}".strip()
+            persona_parts = [
+                f"{entity_name} is an evidence-grounded {entity_type.lower()} account.",
+                worldview_summary or entity_summary or f"{entity_name} participates in discussion from a structured evidence base.",
+            ]
+            if claim_names:
+                persona_parts.append(
+                    f"Core claims in view: {', '.join(claim_names[:3])}."
+                )
+            if uncertainty_names:
+                persona_parts.append(
+                    f"Known uncertainty factors: {', '.join(uncertainty_names[:3])}."
+                )
+            return {
+                "bio": bio,
+                "persona": " ".join(part.strip() for part in persona_parts if part).strip(),
+                "age": 30 if self._is_group_entity(entity_type) else random.randint(25, 50),
+                "gender": "other" if self._is_group_entity(entity_type) else random.choice(["male", "female"]),
+                "mbti": "ISTJ" if self._is_group_entity(entity_type) else random.choice(self.MBTI_TYPES),
+                "country": random.choice(self.COUNTRIES),
+                "profession": entity_attributes.get("occupation", entity_type),
+                "interested_topics": interested_topics or ["General", "Social Issues"],
+            }
         
         # Generate different personas based on entity type.
         entity_type_lower = entity_type.lower()
@@ -906,7 +985,9 @@ Important:
         graph_id: Optional[str] = None,
         parallel_count: int = 5,
         realtime_output_path: Optional[str] = None,
-        output_platform: str = "reddit"
+        output_platform: str = "reddit",
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_states_by_uuid: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> List[OasisAgentProfile]:
         """
         Generate Agent Profiles from entities in batch, with optional parallelism.
@@ -974,7 +1055,9 @@ Important:
                 profile = self.generate_profile_from_entity(
                     entity=entity,
                     user_id=idx,
-                    use_llm=use_llm
+                    use_llm=use_llm,
+                    world_state=world_state,
+                    agent_state=(agent_states_by_uuid or {}).get(entity.uuid),
                 )
                 
                 # Emit the generated persona to the console.

@@ -3,7 +3,7 @@
 Date: 2026-03-31
 Branch: `codex/forecast-readiness-chain`
 Status file: `docs/plans/2026-03-31-forecast-readiness-status.json`
-Updated at: 2026-03-31T16:44:20-07:00
+Updated at: 2026-03-31T17:13:46-07:00
 
 ## Chain Contract
 
@@ -25,7 +25,7 @@ Every later prompt in this chain must:
 | P02 | ingestion compatibility hooks over the new evidence foundation | complete |
 | P03 | layered forecast-native ontology and graph build | complete |
 | P04 | retrieval wiring over persisted local evidence records | complete |
-| P05 | simulation evidence bridge | pending |
+| P05 | simulation evidence bridge | complete |
 | P06 | forecast aggregation compatibility adoption | pending |
 | P07 | report and analyst surfaces adoption | pending |
 | P08 | live workflow stabilization | pending |
@@ -521,3 +521,114 @@ Prompt 5 must consume the P04 evidence interfaces directly instead of reconstruc
   - `HybridEvidenceRetriever.retrieve(...)`
   - `ZepToolsService.hybrid_evidence_search(...)`
 - Prompt 5 must not redesign forecast aggregation. It should only consume these structured evidence and citation inputs to improve simulation initialization and world-state grounding.
+
+## P05
+
+### Scope
+
+- `backend/app/services/oasis_profile_generator.py`
+- `backend/app/services/simulation_config_generator.py`
+- `backend/app/services/simulation_manager.py`
+- `backend/app/services/world_state_compiler.py`
+- `backend/app/services/evidence_bundle_service.py`
+- `backend/tests/unit/test_evidence_grounded_initialization.py`
+- `backend/tests/unit/test_probabilistic_prepare.py`
+- `backend/tests/integration/test_probabilistic_operator_flow.py`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### TDD Record
+
+1. Wrote failing tests for a new prepare-time world-state compiler, structured `world_state` / `agent_state` inputs on persona and config generation, and persisted prepare artifacts.
+2. Verified the RED state came from the missing `app.services.world_state_compiler` module, missing structured-state kwargs on existing generators, and absent `prepared_world_state.json` / `prepared_agent_states.json`.
+3. Implemented the smallest additive bridge: compile deterministic world and agent state before prepare-time profile/config generation, then persist and thread those artifacts through the existing flow.
+4. Hit one broader compatibility regression after the GREEN pass: forecast workspace creation now touched hybrid retrieval and failed when embeddings were unavailable in the test harness.
+5. Traced that failure to `UploadedLocalArtifactEvidenceProvider.collect(...)` and fixed it by degrading explicitly to persisted grounding artifacts instead of raising, which preserved bounded operator flows.
+
+### Verification
+
+- Targeted prepare/state suites:
+  - command: `cd backend && pytest tests/unit/test_evidence_grounded_initialization.py tests/unit/test_probabilistic_prepare.py tests/integration/test_probabilistic_operator_flow.py`
+  - result: `41 passed in 0.90s`
+- Hybrid evidence regression suite:
+  - command: `cd backend && pytest tests/integration/test_hybrid_evidence_bundle_flow.py`
+  - result: `1 passed in 0.09s`
+- Live `.env` prepare smoke:
+  - command: `cd backend && uv run python - <<'PY' ... ProjectManager.get_project('proj_62646edbad5f') ... SimulationManager().prepare_simulation(... use_llm_for_profiles=False, probabilistic_mode=True, uncertainty_profile='balanced', outcome_metrics=['simulation.total_actions']) ... PY`
+  - result: `simulation_id=sim_d2446f5f5438`, `status=ready`, `entities_count=2`, `profiles_count=2`, `world_state_retrieval_status=ready`, `world_state_topic_count=6`, `agent_state_count=2`, `prepared_world_state_exists=True`, `prepared_agent_states_exists=True`, `summary_grounding_status=ready`, `summary_workflow_ready=True`
+- Full repo gate:
+  - command: `npm run verify`
+  - result: `frontend verify passed, vite build passed, backend pytest passed with 353 passed, 1 warning in 6.05s`
+
+### Delivered Foundation
+
+- `PreparedWorldStateCompiler` now compiles deterministic prepare-time evidence state from:
+  - `graph_entity_index.json`
+  - `source_units.json`
+  - `GroundingBundleBuilder.build_bundle(...).retrieval_contract`
+  - retrieval-backed `EvidenceBundleService` entries and `metadata.forecast_hints`
+- `SimulationManager.prepare_simulation(...)` now persists:
+  - `prepared_world_state.json`
+  - `prepared_agent_states.json`
+- `SimulationManager.prepare_simulation(...)` now passes:
+  - `world_state`
+  - `agent_states_by_uuid`
+  into both `OasisProfileGenerator.generate_profiles_from_entities(...)` and `SimulationConfigGenerator.generate_config(...)`
+- `OasisProfileGenerator` now accepts structured prepare state and uses it for rule-based persona generation plus additive LLM context.
+- `SimulationConfigGenerator` now accepts structured prepare state, adds world-state context for generation, and deterministically repairs sparse event and agent outputs from prepared evidence state.
+
+### Compatibility Fixes
+
+- Preserved legacy operator flows by making `EvidenceBundleService` fall back to persisted grounding artifacts when hybrid retrieval is unavailable.
+- Kept the new prepare artifacts additive: existing `simulation_config.json`, profiles, grounding bundle, uncertainty spec, outcome spec, and prepared snapshot contracts remain intact.
+- Left probabilistic completeness gates unchanged; the new world-state artifacts surface in summaries without becoming new readiness blockers.
+- When prepare-time live embeddings are unavailable, the compiler now emits bounded-empty evidence state instead of aborting the prepare path.
+
+### Commit Gate
+
+- All required P05 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P06
+
+Prompt 6 must hydrate runtime graph state and structured updates from prepare outputs instead of reconstructing state from loose summaries:
+
+- read `backend/uploads/simulations/<simulation_id>/prepared_world_state.json`
+- read `backend/uploads/simulations/<simulation_id>/prepared_agent_states.json`
+- treat `prepared_world_state.json` as the authoritative prepare-time world substrate:
+  - `retrieval_contract`
+  - `grounding_summary`
+  - `world_summary`
+  - `registries.topics`
+  - `registries.claims`
+  - `registries.evidence`
+  - `registries.metrics`
+  - `registries.time_windows`
+  - `registries.scenarios`
+  - `registries.uncertainty_factors`
+  - `registries.events`
+  - `evidence_signals`
+  - `conflict_summary`
+  - `missing_evidence_markers`
+  - `citation_ids`
+  - `source_unit_ids`
+- treat each `prepared_agent_states.json.agent_states[]` item as the runtime hydration seed for one simulation actor:
+  - `entity_uuid`
+  - `entity_name`
+  - `entity_type`
+  - `topic_names`
+  - `claim_names`
+  - `evidence_names`
+  - `metric_names`
+  - `time_window_names`
+  - `scenario_names`
+  - `event_names`
+  - `uncertainty_names`
+  - `citation_ids`
+  - `source_unit_ids`
+  - `evidence_signals`
+  - `stance_hint`
+  - `sentiment_bias_hint`
+  - `worldview_summary`
+- P06 should preserve existing runtime operator contracts while making runtime graph hydration and structured updates read these artifacts first.
+- P06 must not redesign forecast aggregation; it should consume the prepared evidence-grounded initialization output and carry it forward into runtime state.

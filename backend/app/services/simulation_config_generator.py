@@ -252,6 +252,8 @@ class SimulationConfigGenerator:
         enable_twitter: bool = True,
         enable_reddit: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_states_by_uuid: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> SimulationParameters:
         """
         Generate the full simulation configuration in staged steps.
@@ -291,7 +293,9 @@ class SimulationConfigGenerator:
         context = self._build_context(
             simulation_requirement=simulation_requirement,
             document_text=document_text,
-            entities=entities
+            entities=entities,
+            world_state=world_state,
+            agent_states_by_uuid=agent_states_by_uuid,
         )
         
         reasoning_parts = []
@@ -307,6 +311,10 @@ class SimulationConfigGenerator:
         report_progress(2, "Generating event configuration and hot topics...")
         event_config_result = self._generate_event_config(context, simulation_requirement, entities)
         event_config = self._parse_event_config(event_config_result)
+        event_config = self._apply_world_state_to_event_config(
+            event_config,
+            world_state=world_state,
+        )
         reasoning_parts.append(f"Event configuration: {event_config_result.get('reasoning', 'Succeeded')}")
         
         # ========== Step 3-N: Generate agent configuration in batches ==========
@@ -328,6 +336,11 @@ class SimulationConfigGenerator:
                 simulation_requirement=simulation_requirement
             )
             all_agent_configs.extend(batch_configs)
+
+        all_agent_configs = self._apply_agent_states_to_configs(
+            all_agent_configs,
+            agent_states_by_uuid=agent_states_by_uuid,
+        )
         
         reasoning_parts.append(f"Agent configuration: successfully generated {len(all_agent_configs)} items")
         
@@ -386,7 +399,9 @@ class SimulationConfigGenerator:
         self,
         simulation_requirement: str,
         document_text: str,
-        entities: List[EntityNode]
+        entities: List[EntityNode],
+        world_state: Optional[Dict[str, Any]] = None,
+        agent_states_by_uuid: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> str:
         """Build the LLM context and truncate it to the maximum length."""
         
@@ -407,8 +422,125 @@ class SimulationConfigGenerator:
             if len(document_text) > remaining_length:
                 doc_text += "\n...(document truncated)"
             context_parts.append(f"\n## Original Document Content\n{doc_text}")
+
+        world_state_summary = self._summarize_world_state(
+            world_state=world_state,
+            agent_states_by_uuid=agent_states_by_uuid,
+        )
+        if world_state_summary:
+            context_parts.append(f"\n## Prepared World State\n{world_state_summary}")
         
         return "\n".join(context_parts)
+
+    def _summarize_world_state(
+        self,
+        *,
+        world_state: Optional[Dict[str, Any]],
+        agent_states_by_uuid: Optional[Dict[str, Dict[str, Any]]],
+    ) -> str:
+        if not world_state:
+            return ""
+
+        lines: List[str] = []
+        headline = ((world_state.get("world_summary") or {}).get("headline") or "").strip()
+        if headline:
+            lines.append(f"- Headline: {headline}")
+
+        registries = dict(world_state.get("registries") or {})
+        for label, key in (
+            ("Topics", "topics"),
+            ("Claims", "claims"),
+            ("Uncertainty", "uncertainty_factors"),
+        ):
+            names = [
+                item.get("name")
+                for item in registries.get(key, [])
+                if isinstance(item, dict) and item.get("name")
+            ][:4]
+            if names:
+                lines.append(f"- {label}: {', '.join(names)}")
+
+        signals = list(world_state.get("evidence_signals") or [])
+        if signals:
+            signal_labels = [str(item.get("signal") or "") for item in signals[:4]]
+            lines.append(f"- Evidence signals: {', '.join(signal_labels)}")
+
+        if agent_states_by_uuid:
+            lines.append(f"- Prepared agent states: {len(agent_states_by_uuid)}")
+
+        return "\n".join(lines)
+
+    def _apply_world_state_to_event_config(
+        self,
+        event_config: EventConfig,
+        *,
+        world_state: Optional[Dict[str, Any]],
+    ) -> EventConfig:
+        if not world_state:
+            return event_config
+
+        registries = dict(world_state.get("registries") or {})
+        topic_names = [
+            item.get("name")
+            for item in registries.get("topics", [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        claim_names = [
+            item.get("name")
+            for item in registries.get("claims", [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        uncertainty_names = [
+            item.get("name")
+            for item in registries.get("uncertainty_factors", [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        headline = ((world_state.get("world_summary") or {}).get("headline") or "").strip()
+        if not event_config.hot_topics:
+            event_config.hot_topics = topic_names[:5] or claim_names[:3]
+        if not event_config.narrative_direction:
+            if headline:
+                event_config.narrative_direction = headline
+                return event_config
+            narrative_parts: List[str] = []
+            if claim_names:
+                narrative_parts.append(
+                    f"Discussion initially concentrates on {claim_names[0]}"
+                )
+            elif topic_names:
+                narrative_parts.append(
+                    f"Discussion initially concentrates on {topic_names[0]}"
+                )
+            if uncertainty_names:
+                narrative_parts.append(
+                    f"while {uncertainty_names[0]} keeps the outlook contested"
+                )
+            event_config.narrative_direction = ". ".join(
+                part.rstrip(".") for part in narrative_parts if part
+            ).strip()
+            if event_config.narrative_direction:
+                event_config.narrative_direction += "."
+        return event_config
+
+    def _apply_agent_states_to_configs(
+        self,
+        agent_configs: List[AgentActivityConfig],
+        *,
+        agent_states_by_uuid: Optional[Dict[str, Dict[str, Any]]],
+    ) -> List[AgentActivityConfig]:
+        if not agent_states_by_uuid:
+            return agent_configs
+        for config in agent_configs:
+            agent_state = agent_states_by_uuid.get(config.entity_uuid)
+            if not agent_state:
+                continue
+            stance_hint = str(agent_state.get("stance_hint") or "").strip()
+            if stance_hint and config.stance in {"", "neutral", "observer"}:
+                config.stance = stance_hint
+            bias_hint = agent_state.get("sentiment_bias_hint")
+            if bias_hint is not None and abs(float(config.sentiment_bias or 0.0)) < 0.01:
+                config.sentiment_bias = float(bias_hint)
+        return agent_configs
     
     def _summarize_entities(self, entities: List[EntityNode]) -> str:
         """Generate an entity summary."""
