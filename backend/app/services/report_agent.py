@@ -879,6 +879,9 @@ You are a concise and efficient simulation report assistant.
 Background:
 Forecast condition: {simulation_requirement}
 
+Authoritative scoped forecast answer facts:
+{authoritative_answer_brief}
+
 Generated analysis report:
 {report_content}
 
@@ -886,10 +889,14 @@ Scoped probabilistic report context for this exact report or report request:
 {probabilistic_context}
 
 Rules:
-1. Prioritize answering based on the report content above
-2. Answer directly and avoid long reasoning monologues
-3. Only call tools when the report content is insufficient to answer the question
-4. Keep answers concise, clear, and well-structured
+1. Treat the authoritative scoped forecast answer facts as the source of truth for exact saved forecast values, confidence status, calibration status, evidence regime, and ensemble policy
+2. Use the scoped probabilistic report context as the next-most authoritative source for scoped forecasting details
+3. Use the generated analysis report for qualitative explanation and narrative context
+4. Never replace an exact saved probability or status with vague words like "pending" or with a different evidence regime
+5. If the scoped context says confidence is not ready or uncalibrated, state that explicitly and do not claim calibration
+6. Answer directly and avoid long reasoning monologues
+7. Only call tools when the report content and scoped context are insufficient to answer the question
+8. Keep answers concise, clear, and well-structured
 
 Available tools: use only if needed, and call at most 1 to 2 times
 {tools_description}
@@ -1034,6 +1041,86 @@ class ReportAgent:
             context_text = context_text[:4000] + "\n... [Probabilistic context truncated] ..."
         return context_text
 
+    @classmethod
+    def _build_chat_authoritative_answer_brief(
+        cls,
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Surface exact saved forecast-answer facts in a compact, model-friendly form."""
+        if not probabilistic_context:
+            return {
+                "status": "unavailable",
+                "reason": "no_saved_probabilistic_context",
+            }
+
+        safe_context = cls._build_prompt_safe_probabilistic_context(probabilistic_context)
+        workspace = safe_context.get("forecast_workspace") or {}
+        forecast_question = workspace.get("forecast_question") or {}
+        forecast_answer = workspace.get("forecast_answer") or {}
+        answer_payload = forecast_answer.get("answer_payload") or {}
+        best_estimate = answer_payload.get("best_estimate") or {}
+        answer_confidence = (
+            safe_context.get("answer_confidence_status")
+            or workspace.get("answer_confidence_status")
+            or {}
+        )
+        ensemble_policy = answer_payload.get("ensemble_policy") or {}
+        evidence_regime = answer_confidence.get("evidence_regime")
+        if not evidence_regime:
+            evidence_regime = (ensemble_policy.get("evidence_regime") or {}).get("label")
+
+        return {
+            "status": "available",
+            "scope_level": (safe_context.get("scope") or {}).get("level"),
+            "forecast_id": forecast_question.get("forecast_id"),
+            "question_type": forecast_question.get("question_type"),
+            "answer_id": forecast_answer.get("answer_id"),
+            "answer_type": forecast_answer.get("answer_type"),
+            "best_estimate_probability": (
+                best_estimate.get("value")
+                if best_estimate.get("value_type") == "probability"
+                or best_estimate.get("semantics") == "forecast_probability"
+                else None
+            ),
+            "best_estimate_value": best_estimate.get("value"),
+            "best_estimate_semantics": best_estimate.get("semantics"),
+            "confidence_semantics": (
+                forecast_answer.get("confidence_semantics")
+                or answer_confidence.get("confidence_semantics")
+            ),
+            "answer_confidence_status": answer_confidence.get("status"),
+            "calibration_kind": answer_confidence.get("calibration_kind"),
+            "backtest_status": (
+                answer_confidence.get("backtest_status")
+                or (forecast_answer.get("backtest_summary") or {}).get("status")
+            ),
+            "calibration_status": (
+                answer_confidence.get("calibration_status")
+                or (forecast_answer.get("calibration_summary") or {}).get("status")
+            ),
+            "ensemble_policy_name": ensemble_policy.get("policy_name")
+            or answer_confidence.get("policy_name"),
+            "evidence_regime": evidence_regime,
+            "abstain": answer_payload.get("abstain"),
+            "abstain_reason": answer_payload.get("abstain_reason"),
+            "summary": forecast_answer.get("summary"),
+        }
+
+    @classmethod
+    def _format_chat_authoritative_answer_brief(
+        cls,
+        probabilistic_context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Keep the most decision-critical forecast-answer facts explicit in chat."""
+        brief_text = json.dumps(
+            cls._build_chat_authoritative_answer_brief(probabilistic_context),
+            ensure_ascii=False,
+            indent=2,
+        )
+        if len(brief_text) > 1500:
+            brief_text = brief_text[:1500] + "\n... [Authoritative answer brief truncated] ..."
+        return brief_text
+
     @staticmethod
     def _build_prompt_safe_grounding_context(
         probabilistic_context: Optional[Dict[str, Any]],
@@ -1137,6 +1224,9 @@ class ReportAgent:
             "answer_type": latest_answer.get("answer_type"),
             "summary": latest_answer.get("summary"),
             "confidence_semantics": latest_answer.get("confidence_semantics"),
+            "backtest_summary": latest_answer.get("backtest_summary"),
+            "calibration_summary": latest_answer.get("calibration_summary"),
+            "confidence_basis": latest_answer.get("confidence_basis"),
             "created_at": latest_answer.get("created_at"),
             "prediction_entry_ids": (latest_answer.get("prediction_entry_ids") or [])[:4],
             "worker_ids": (latest_answer.get("worker_ids") or [])[:4],
@@ -1144,6 +1234,7 @@ class ReportAgent:
                 "abstain": latest_answer_payload.get("abstain"),
                 "abstain_reason": latest_answer_payload.get("abstain_reason"),
                 "best_estimate": latest_answer_payload.get("best_estimate"),
+                "ensemble_policy": latest_answer_payload.get("ensemble_policy"),
                 "counterevidence": (latest_answer_payload.get("counterevidence") or [])[:4],
                 "assumption_summary": latest_answer_payload.get("assumption_summary"),
                 "uncertainty_decomposition": latest_answer_payload.get(
@@ -1169,6 +1260,7 @@ class ReportAgent:
                 "supported_question_templates": supported_question_templates,
             },
             "forecast_workspace_status": workspace.get("forecast_workspace_status"),
+            "answer_confidence_status": workspace.get("answer_confidence_status"),
             "evidence_bundle": {
                 "bundle_id": evidence_bundle.get("bundle_id"),
                 "status": evidence_bundle.get("status"),
@@ -1242,6 +1334,7 @@ class ReportAgent:
             "grounding_context": cls._build_prompt_safe_grounding_context(context),
             "probability_semantics": context.get("probability_semantics"),
             "confidence_status": context.get("confidence_status"),
+            "answer_confidence_status": context.get("answer_confidence_status"),
             "calibration_provenance": context.get("calibration_provenance"),
             "quality_summary": context.get("quality_summary"),
             "forecast_workspace": cls._build_prompt_safe_forecast_workspace_context(context),
@@ -2250,6 +2343,9 @@ class ReportAgent:
         
         system_prompt = CHAT_SYSTEM_PROMPT_TEMPLATE.format(
             simulation_requirement=self.simulation_requirement,
+            authoritative_answer_brief=self._format_chat_authoritative_answer_brief(
+                probabilistic_context
+            ),
             report_content=report_content if report_content else "(No report available yet)",
             probabilistic_context=self._format_chat_probabilistic_context(
                 probabilistic_context

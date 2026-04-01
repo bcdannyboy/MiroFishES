@@ -1,5 +1,7 @@
 """Task-scoped model routing helpers."""
 
+from __future__ import annotations
+
 from dataclasses import replace
 
 from ..config import Config, TaskModelRoute

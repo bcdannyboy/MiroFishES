@@ -3,7 +3,7 @@
 Date: 2026-03-31
 Branch: `codex/forecast-readiness-chain`
 Status file: `docs/plans/2026-03-31-forecast-readiness-status.json`
-Updated at: 2026-03-31T18:05:45-07:00
+Updated at: 2026-03-31T19:30:20-07:00
 
 ## Chain Contract
 
@@ -28,8 +28,8 @@ Every later prompt in this chain must:
 | P05 | simulation evidence bridge | complete |
 | P06 | runtime graph state and structured updates | complete |
 | P07 | structural uncertainty, experiment design, and assumption ledgers | complete |
-| P08 | analytics extraction over prepare and runtime artifacts | pending |
-| P09 | readiness verification ladder | pending |
+| P08 | analytics extraction over prepare and runtime artifacts | complete |
+| P09 | forecast engine and confidence semantics | complete |
 | P10 | final chain closeout and follow-up truth audit | pending |
 
 ## P01
@@ -1099,3 +1099,142 @@ Prompt 9 should treat the P08 analytics layer as the worker-facing empirical inp
   - scenario-family shares are `observed_run_share`, not calibrated real-world probabilities
   - sensitivity rankings are descriptive or designed-comparison evidence, not earned causal certainty
   - simulation-market signals are heuristic simulation evidence bounded by the available runtime transitions and attached provenance
+
+## P09
+
+### Scope
+
+- `backend/app/services/forecast_engine.py`
+- `backend/app/services/probabilistic_report_context.py`
+- `backend/app/services/report_agent.py`
+- `backend/app/config.py`
+- `backend/app/utils/llm_client.py`
+- `backend/app/utils/model_routing.py`
+- `backend/app/utils/embedding_client.py`
+- backend unit/integration tests covering forecast answers, confidence semantics, and report-agent chat truthfulness
+
+### TDD Record
+
+1. Wrote failing tests for calibrated binary answer support, empirically tuned ensemble policy emission, report-context confidence surfacing, and prompt-safe Step 5 answer semantics.
+2. Verified the RED failures were the missing pieces:
+   - binary answers still lacked answer-level backtest and calibration readiness summaries
+   - worker-family weighting was not being surfaced as an explicit ensemble policy
+   - probabilistic report context did not expose one stable answer-confidence contract for Step 4 and Step 5
+   - report chat had no authoritative saved-answer brief and could drift away from persisted forecast facts
+3. Implemented the smallest additive fix:
+   - tuned worker-family weighting by question type and evidence regime inside the hybrid forecast engine
+   - reused persisted workspace evaluation evidence to build answer-level binary backtest/calibration summaries
+   - surfaced one `answer_confidence_status` contract through probabilistic report context
+   - kept simulation support-only and preserved abstention gates
+4. Hit one live post-GREEN regression after the first pass: the Step 5 scoped chat still answered with vague `pending` wording and the wrong evidence regime even though the saved probabilistic context was correct.
+5. Traced that issue to prompt authority order rather than missing data, added an explicit authoritative scoped forecast-answer brief plus stricter prompt rules, reran the failing test, then reran the full P09 gate set.
+
+### Verification
+
+- Focused forecast/report backend suite:
+  - command: `python3 -m pytest backend/tests/unit/test_forecast_engine.py backend/tests/unit/test_hybrid_forecast_service.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py -q`
+  - result: `57 passed in 1.57s`
+- Adjacent forecast manager and integration suite:
+  - command: `python3 -m pytest backend/tests/unit/test_forecast_manager.py backend/tests/unit/test_backtest_manager.py backend/tests/unit/test_calibration_manager.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/integration/test_inference_ready_forecast_flow.py -q`
+  - result: `24 passed in 0.57s`
+- Live `.env` report-generation plus scoped-interaction smoke:
+  - command: `cd backend && uv run python /tmp/p09_live_report_smoke.py`
+  - result:
+    - `report_id: report_da14bb2f1326`
+    - `task_id: 51060c3d-e30c-4fc9-ae17-da80df51cdd9`
+    - `status: completed`
+    - `scope.level: run`
+    - `answer_confidence_status.status: not_ready`
+    - `answer_confidence_status.confidence_semantics: uncalibrated`
+    - `report_ensemble_policy_name: empirically_tuned_worker_ensemble`
+    - `report_evidence_regime: corroborated_local_evidence`
+    - scoped chat verification:
+      - `contains_probability: true`
+      - `contains_answer_confidence_status: true`
+      - `contains_confidence_semantics: true`
+      - `contains_policy_name: true`
+      - `contains_evidence_regime: true`
+      - `avoids_pending: true`
+      - `avoids_status_quo: true`
+    - response preview:
+      - `probability: 0.666926`
+      - `answer_confidence_status: not_ready`
+      - `confidence_semantics: uncalibrated`
+      - `ensemble_policy_name: empirically_tuned_worker_ensemble`
+      - `evidence_regime: corroborated_local_evidence`
+- Typed forecast analytics gate:
+  - command: `npm run verify:nonbinary`
+  - result: `verify:nonbinary:backend -> 108 passed, 1 warning in 2.50s; verify:nonbinary:frontend -> 81 passed`
+- Confidence/report-context gate:
+  - command: `npm run verify:confidence`
+  - result: `backend -> 114 passed, 1 warning in 1.96s; frontend -> 81 passed`
+- Forecasting ladder gate:
+  - command: `npm run verify:forecasting`
+  - result:
+    - broad repo verify: `backend 376 passed, 1 warning in 5.54s`
+    - targeted non-binary verify: passed
+    - confidence verify: passed
+    - artifact conformance scan: no active conformance failures
+    - fixture-backed smoke verify: `10 passed (19.4s)`
+
+### Files Touched
+
+- `backend/app/services/forecast_engine.py`
+- `backend/app/services/probabilistic_report_context.py`
+- `backend/app/services/report_agent.py`
+- `backend/app/config.py`
+- `backend/app/utils/llm_client.py`
+- `backend/app/utils/model_routing.py`
+- `backend/app/utils/embedding_client.py`
+- `backend/tests/unit/test_forecast_engine.py`
+- `backend/tests/unit/test_hybrid_forecast_service.py`
+- `backend/tests/unit/test_probabilistic_report_context.py`
+- `backend/tests/unit/test_probabilistic_report_api.py`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### Delivered Foundation
+
+- `HybridForecastEngine` now emits an explicit `ensemble_policy` shaped by worker family, question type, and evidence regime instead of relying on fixed-weight heuristics alone.
+- Binary answers can now earn answer-level `backtest_summary`, `calibration_summary`, and `confidence_basis` from real workspace evaluation evidence, matching the existing categorical/numeric answer contract style.
+- Forecast answer payloads now carry bounded analytics context from the P08 layer so workers can use structured simulation evidence without collapsing it into generic prose.
+- `ProbabilisticReportContextBuilder` now exposes one top-level `answer_confidence_status` contract for Step 4 and Step 5, including readiness, semantics, calibration kind, policy name, evidence regime, and boundary notes.
+- `ReportAgent.chat(...)` now anchors Step 5 on an authoritative scoped forecast-answer brief before it sees the narrative report text, which keeps saved probability, confidence status, and evidence regime truthful under live interaction.
+
+### Compatibility Fixes
+
+- Preserved support-only simulation semantics by tuning worker-family weights additively rather than turning simulation outputs into first-class calibrated evidence.
+- Kept legacy report consumers working by falling back to nested `answer_payload` confidence fields when older saved probabilistic contexts lack the new top-level `answer_confidence_status`.
+- Added `from __future__ import annotations` to `backend/app/config.py`, `backend/app/utils/llm_client.py`, `backend/app/utils/model_routing.py`, and `backend/app/utils/embedding_client.py` so `npm run verify:confidence` remains compatible with the repo’s Python 3.9 path.
+- Limited the Step 5 fix to prompt authority and prompt-safe payload shaping; no retrieval, simulation, or aggregation contracts were redesigned in this phase.
+
+### Commit Gate
+
+- All required P09 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P10
+
+Prompt 10 should treat P09 as the final forecast-answer semantics layer and rerun the broad verification ladder fresh before any audit claims:
+
+- rerun `npm run verify`
+- rerun `npm run verify:nonbinary`
+- rerun `npm run verify:confidence`
+- rerun `npm run verify:forecasting`
+- rerun one live report-generation plus scoped Step 5 interaction smoke against a real probabilistic report scope and verify that the chat response still echoes the saved:
+  - probability
+  - `answer_confidence_status`
+  - `confidence_semantics`
+  - `ensemble_policy_name`
+  - `evidence_regime`
+- audit these answer-level interfaces as the canonical Prompt 9 output surface:
+  - `forecast_answer.backtest_summary`
+  - `forecast_answer.calibration_summary`
+  - `forecast_answer.confidence_basis`
+  - `forecast_answer.answer_payload.ensemble_policy`
+  - `forecast_answer.answer_payload.analytics_context`
+  - `probabilistic_report_context.answer_confidence_status`
+- preserve these truthfulness boundaries during the final audit:
+  - `not_ready` or `uncalibrated` answers must not be described as calibrated
+  - scenario-family shares remain descriptive simulation evidence, not earned real-world probabilities
+  - Step 5 must keep using the saved scoped answer facts as the authority for exact answer-level tokens

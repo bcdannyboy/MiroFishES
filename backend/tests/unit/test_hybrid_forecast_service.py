@@ -1040,6 +1040,47 @@ def _numeric_workspace_payload(forecast_id: str):
     }
 
 
+def _binary_calibrated_workspace_payload(forecast_id: str):
+    payload = _workspace_payload(
+        forecast_id,
+        title="Support threshold outlook",
+        question_text="Will policy support exceed 55% by June 30, 2026?",
+        conflicting_bundle=False,
+    )
+    case_specs = [
+        ("case-1", 0.1, 0.41),
+        ("case-2", 0.1, 0.42),
+        ("case-3", 0.2, 0.44),
+        ("case-4", 0.2, 0.66),
+        ("case-5", 0.3, 0.45),
+        ("case-6", 0.3, 0.68),
+        ("case-7", 0.7, 0.63),
+        ("case-8", 0.7, 0.46),
+        ("case-9", 0.9, 0.72),
+        ("case-10", 0.9, 0.74),
+    ]
+    payload["evaluation_cases"] = [
+        {
+            "case_id": f"{forecast_id}-{case_id}",
+            "forecast_id": forecast_id,
+            "criteria_id": f"{forecast_id}-criteria",
+            "status": "resolved",
+            "issued_at": "2026-03-01T00:00:00",
+            "question_class": "binary_support",
+            "comparable_question_class": "binary_support",
+            "forecast_probability": forecast_probability,
+            "observed_outcome": {"survey.support_share": observed_support},
+            "resolved_at": "2026-06-30T00:00:00",
+            "evaluation_split": "rolling_holdout",
+            "window_id": "2026H1",
+            "benchmark_id": "binary-support-threshold",
+            "confidence_basis": {"status": "resolved"},
+        }
+        for case_id, forecast_probability, observed_support in case_specs
+    ]
+    return payload
+
+
 def test_hybrid_forecast_service_aggregates_non_simulation_workers_without_let_simulation_dominate():
     from app.services.hybrid_forecast_service import HybridForecastService
 
@@ -1397,6 +1438,30 @@ def test_hybrid_forecast_service_can_issue_calibrated_numeric_answer():
     assert payload["question_type"] == "numeric"
     assert payload["best_estimate"]["value_type"] == "numeric_interval"
     assert payload["best_estimate"]["intervals"]["80"]["low"] < payload["best_estimate"]["intervals"]["80"]["high"]
+    assert payload["backtest_summary"]["status"] == "available"
+    assert payload["calibration_summary"]["status"] == "ready"
+    assert answer.confidence_semantics == "calibrated"
+
+
+def test_hybrid_forecast_service_can_issue_calibrated_binary_answer():
+    from app.services.hybrid_forecast_service import HybridForecastService
+
+    service = HybridForecastService()
+    workspace = _workspace_from_payload(
+        _binary_calibrated_workspace_payload("forecast-binary-calibrated")
+    )
+
+    result = service.run(
+        workspace=workspace,
+        comparable_workspaces=[],
+        issued_at="2026-03-30T12:00:00",
+    )
+
+    answer = result.forecast_answer
+    payload = answer.answer_payload
+
+    assert payload["question_type"] == "binary"
+    assert payload["best_estimate"]["value_type"] == "probability"
     assert payload["backtest_summary"]["status"] == "available"
     assert payload["calibration_summary"]["status"] == "ready"
     assert answer.confidence_semantics == "calibrated"

@@ -743,6 +743,45 @@ def _workspace_payload(*, include_non_simulation_workers: bool = True) -> dict:
     }
 
 
+def _calibrated_binary_workspace_payload() -> dict:
+    payload = _workspace_payload()
+    case_specs = [
+        ("case-1", 0.1, 0.41),
+        ("case-2", 0.1, 0.42),
+        ("case-3", 0.2, 0.44),
+        ("case-4", 0.2, 0.66),
+        ("case-5", 0.3, 0.45),
+        ("case-6", 0.3, 0.68),
+        ("case-7", 0.7, 0.63),
+        ("case-8", 0.7, 0.46),
+        ("case-9", 0.9, 0.72),
+        ("case-10", 0.9, 0.74),
+    ]
+    payload["evaluation_cases"] = [
+        {
+            "case_id": case_id,
+            "forecast_id": QUESTION_ID,
+            "criteria_id": "criteria-1",
+            "status": "resolved",
+            "issued_at": "2026-03-01T09:00:00",
+            "question_class": "binary_support",
+            "comparable_question_class": "binary_support",
+            "forecast_probability": forecast_probability,
+            "observed_outcome": {"survey.support_share": observed_support},
+            "resolved_at": "2026-03-20T09:00:00",
+            "evaluation_split": "rolling_holdout",
+            "window_id": "2026Q1",
+            "benchmark_id": "support-threshold",
+            "confidence_basis": {
+                "status": "resolved",
+                "source": "historical_workspace_case",
+            },
+        }
+        for case_id, forecast_probability, observed_support in case_specs
+    ]
+    return payload
+
+
 def test_hybrid_engine_assembles_best_estimate_without_let_simulation_dominate(
     simulation_data_dir,
     monkeypatch,
@@ -938,3 +977,74 @@ def test_hybrid_engine_rejects_simulation_market_with_invalid_provenance(
     assert sim_market_trace["abstain_reason"] == "invalid_simulation_market_provenance"
     assert answer_payload["abstain"] is True
     assert answer_payload["abstain_reason"] == "insufficient_non_simulation_evidence"
+
+
+def test_hybrid_engine_can_issue_calibrated_binary_answer_when_workspace_cases_support_it(
+    simulation_data_dir,
+    monkeypatch,
+):
+    manager_module = importlib.import_module("app.services.ensemble_manager")
+    monkeypatch.setattr(
+        manager_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+    forecast_engine_module = importlib.import_module("app.services.forecast_engine")
+    workspace = ForecastWorkspaceRecord.from_dict(_calibrated_binary_workspace_payload())
+
+    result = forecast_engine_module.HybridForecastEngine(
+        simulation_data_dir=str(simulation_data_dir)
+    ).execute(workspace, recorded_at="2026-03-30T11:00:00")
+
+    answer = result.forecast_answer
+    payload = answer.answer_payload
+
+    assert payload["question_type"] == "binary"
+    assert payload["backtest_summary"]["status"] == "available"
+    assert payload["backtest_summary"]["question_type"] == "binary"
+    assert payload["calibration_summary"]["status"] == "ready"
+    assert payload["calibration_summary"]["calibration_kind"] == "binary_reliability"
+    assert payload["confidence_basis"]["backtest_status"] == "available"
+    assert payload["confidence_basis"]["calibration_status"] == "ready"
+    assert answer.confidence_semantics == "calibrated"
+
+
+def test_hybrid_engine_records_empirically_tuned_ensemble_policy_for_answer_weighting(
+    simulation_data_dir,
+    monkeypatch,
+):
+    manager_module = importlib.import_module("app.services.ensemble_manager")
+    monkeypatch.setattr(
+        manager_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+    _write_ensemble_root(
+        simulation_data_dir,
+        "sim-001",
+        values=[0.49, 0.57, 0.61, 0.66, 0.72],
+    )
+
+    forecast_engine_module = importlib.import_module("app.services.forecast_engine")
+    payload = _workspace_payload()
+    payload["evidence_bundle"]["source_entries"] = payload["evidence_bundle"]["source_entries"][:1]
+    workspace = ForecastWorkspaceRecord.from_dict(payload)
+
+    result = forecast_engine_module.HybridForecastEngine(
+        simulation_data_dir=str(simulation_data_dir)
+    ).execute(workspace, recorded_at="2026-03-30T11:00:00")
+
+    answer_payload = result.forecast_answer.answer_payload
+    trace = {item["worker_id"]: item for item in answer_payload["worker_contribution_trace"]}
+    ensemble_policy = answer_payload["ensemble_policy"]
+
+    assert ensemble_policy["policy_name"] == "empirically_tuned_worker_ensemble"
+    assert ensemble_policy["question_type"] == "binary"
+    assert ensemble_policy["evidence_regime"]["label"] == "corroborated_local_evidence"
+    assert (
+        ensemble_policy["normalized_family_weights"]["retrieval_synthesis"]
+        > ensemble_policy["normalized_family_weights"]["base_rate"]
+    )
+    assert trace["worker-retrieval"]["effective_weight"] > trace["worker-base-rate"]["effective_weight"]

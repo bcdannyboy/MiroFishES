@@ -23,7 +23,10 @@ from ..models.forecasting import (
     PredictionLedgerEntry,
     ResolutionCriteria,
 )
+from .ensemble_manager import EnsembleManager
 from .forecast_signal_provenance import ForecastSignalProvenanceValidator
+from .scenario_clusterer import ScenarioClusterer
+from .sensitivity_analyzer import SensitivityAnalyzer
 from .simulation_market_aggregator import SimulationMarketAggregator
 
 
@@ -453,6 +456,75 @@ def _case_prediction_numeric_payload(case: Any) -> dict[str, Any]:
     return normalized
 
 
+def _case_prediction_probability(case: Any) -> Optional[float]:
+    forecast_probability = getattr(case, "forecast_probability", None)
+    if isinstance(forecast_probability, (int, float)):
+        return _clamp(float(forecast_probability))
+    payload = dict(getattr(case, "prediction_payload", {}) or {})
+    for key in ("forecast_probability", "probability", "estimate", "value"):
+        candidate = payload.get(key)
+        if isinstance(candidate, (int, float)):
+            return _clamp(float(candidate))
+    distribution = payload.get("distribution")
+    if isinstance(distribution, dict):
+        lowered_lookup = {
+            str(label).strip().lower(): value
+            for label, value in distribution.items()
+            if str(label).strip()
+        }
+        for key in ("yes", "true", "resolved_true", "positive"):
+            candidate = lowered_lookup.get(key)
+            if isinstance(candidate, (int, float)):
+                return _clamp(float(candidate))
+    return None
+
+
+def _extract_binary_outcome(
+    case: Any,
+    *,
+    metric_id: Optional[str],
+    operator: Optional[str],
+    threshold: Optional[float],
+) -> Optional[float]:
+    for candidate in (
+        getattr(case, "observed_outcome", None),
+        getattr(case, "observed_value", None),
+    ):
+        if isinstance(candidate, bool):
+            return 1.0 if candidate else 0.0
+        if isinstance(candidate, dict):
+            if metric_id and metric_id in candidate:
+                try:
+                    return _compare_threshold(
+                        float(candidate[metric_id]),
+                        operator,
+                        threshold,
+                    )
+                except (TypeError, ValueError):
+                    pass
+            state = candidate.get("resolved_state")
+            if state == "resolved_true":
+                return 1.0
+            if state == "resolved_false":
+                return 0.0
+            numeric_values = [
+                float(value)
+                for value in candidate.values()
+                if isinstance(value, (int, float))
+            ]
+            if len(numeric_values) == 1 and threshold is not None:
+                return _compare_threshold(numeric_values[0], operator, threshold)
+    return None
+
+
+def _determine_confidence_label(*, ready: bool, case_count: int) -> str:
+    if not ready:
+        return "insufficient"
+    if case_count >= 25:
+        return "moderate"
+    return "limited"
+
+
 def _categorical_log_loss(distribution: dict[str, float], observed_label: str) -> Optional[float]:
     if not distribution or not observed_label:
         return None
@@ -574,6 +646,15 @@ class HybridForecastEngine:
 
     def __init__(self, *, simulation_data_dir: Optional[str] = None):
         self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self.ensemble_manager = EnsembleManager(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.scenario_clusterer = ScenarioClusterer(
+            simulation_data_dir=self.simulation_data_dir
+        )
+        self.sensitivity_analyzer = SensitivityAnalyzer(
+            simulation_data_dir=self.simulation_data_dir
+        )
         self.simulation_market_aggregator = SimulationMarketAggregator(
             simulation_data_dir=self.simulation_data_dir
         )
@@ -683,10 +764,18 @@ class HybridForecastEngine:
                     )
                 )
 
+        analytics_context = self._load_analytics_context(workspace)
+        ensemble_policy = self._apply_ensemble_policy(
+            workspace=workspace,
+            worker_results=worker_results,
+            analytics_context=analytics_context,
+        )
         answer_payload = self._build_answer_payload(
             workspace,
             worker_results,
             comparable_workspaces=comparable_workspaces,
+            analytics_context=analytics_context,
+            ensemble_policy=ensemble_policy,
         )
         prediction_entries = self._build_prediction_entries(
             workspace,
@@ -716,6 +805,336 @@ class HybridForecastEngine:
             prediction_entries=prediction_entries,
             worker_results=worker_results,
         )
+
+    def _load_analytics_context(
+        self,
+        workspace: ForecastWorkspaceRecord,
+    ) -> dict[str, Any]:
+        scope = workspace.simulation_scope
+        if (
+            scope is None
+            or not scope.simulation_id
+            or not scope.latest_ensemble_id
+        ):
+            return {}
+
+        simulation_id = str(scope.simulation_id).strip()
+        ensemble_id = str(scope.latest_ensemble_id).strip()
+        run_id = str(scope.latest_run_id).strip() if scope.latest_run_id else None
+        context: dict[str, Any] = {
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "run_id": run_id,
+        }
+
+        try:
+            aggregate_summary = self.ensemble_manager.get_aggregate_summary(
+                simulation_id,
+                ensemble_id,
+            )
+        except Exception:
+            aggregate_summary = None
+        if isinstance(aggregate_summary, dict):
+            context["aggregate_summary"] = {
+                "quality_status": aggregate_summary.get("quality_summary", {}).get("status"),
+                "belief_summary": aggregate_summary.get("belief_summary"),
+                "trajectory_summary": aggregate_summary.get("trajectory_summary"),
+                "regime_summary": aggregate_summary.get("regime_summary"),
+                "assumption_alignment": aggregate_summary.get("assumption_alignment"),
+            }
+
+        try:
+            scenario_clusters = self.scenario_clusterer.get_scenario_clusters(
+                simulation_id,
+                ensemble_id,
+            )
+        except Exception:
+            scenario_clusters = None
+        if isinstance(scenario_clusters, dict):
+            coverage_metrics = (
+                scenario_clusters.get("diversity_diagnostics", {})
+                .get("coverage_metrics", {})
+            )
+            context["scenario_clusters"] = {
+                "cluster_count": scenario_clusters.get("cluster_count"),
+                "structural_uncertainty_coverage_ratio": coverage_metrics.get(
+                    "structural_uncertainty_coverage_ratio"
+                ),
+            }
+
+        try:
+            sensitivity = self.sensitivity_analyzer.get_sensitivity_analysis(
+                simulation_id,
+                ensemble_id,
+            )
+        except Exception:
+            sensitivity = None
+        if isinstance(sensitivity, dict):
+            context["sensitivity"] = {
+                "analysis_mode": sensitivity.get("analysis_mode"),
+                "designed_comparison_count": sensitivity.get(
+                    "designed_comparison_count",
+                    len(sensitivity.get("designed_comparisons", []) or []),
+                ),
+                "support_assessment": sensitivity.get("quality_summary", {}).get(
+                    "support_assessment"
+                ),
+            }
+
+        if run_id:
+            try:
+                run_payload = self.ensemble_manager.load_run(
+                    simulation_id,
+                    ensemble_id,
+                    run_id,
+                )
+            except Exception:
+                run_payload = None
+            if isinstance(run_payload, dict):
+                context["selected_run"] = {
+                    "run_id": run_id,
+                    "simulation_market_summary": run_payload.get("simulation_market_summary"),
+                    "simulation_market_provenance": run_payload.get(
+                        "simulation_market_provenance"
+                    ),
+                }
+        return context
+
+    def _derive_evidence_regime(
+        self,
+        workspace: ForecastWorkspaceRecord,
+        *,
+        analytics_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        analytics_context = analytics_context or {}
+        supportive_count = 0
+        contradictory_count = 0
+        mixed_count = 0
+        hint_count = 0
+        for entry in workspace.evidence_bundle.source_entries:
+            conflict_status = str(entry.conflict_status or "").strip()
+            if conflict_status == "supports":
+                supportive_count += 1
+            elif conflict_status == "contradicts":
+                contradictory_count += 1
+            elif conflict_status == "mixed":
+                mixed_count += 1
+            hints = entry.metadata.get("forecast_hints") if isinstance(entry.metadata, dict) else None
+            if isinstance(hints, list):
+                hint_count += len([item for item in hints if isinstance(item, dict)])
+
+        missing_count = len(workspace.evidence_bundle.missing_evidence_markers)
+        label = "mixed_local_evidence"
+        if missing_count and supportive_count == 0 and contradictory_count == 0:
+            label = "sparse_evidence"
+        elif contradictory_count > 0 and contradictory_count >= supportive_count:
+            label = "conflicted_evidence"
+        elif supportive_count > 0 and contradictory_count == 0:
+            label = "corroborated_local_evidence"
+
+        modifiers: list[str] = []
+        scenario_clusters = analytics_context.get("scenario_clusters") or {}
+        structural_coverage_ratio = scenario_clusters.get(
+            "structural_uncertainty_coverage_ratio"
+        )
+        sensitivity = analytics_context.get("sensitivity") or {}
+        designed_comparison_count = int(
+            sensitivity.get("designed_comparison_count") or 0
+        )
+        if designed_comparison_count > 0 and isinstance(structural_coverage_ratio, (int, float)):
+            if float(structural_coverage_ratio) >= 0.5:
+                modifiers.append("designed_comparison_informed")
+
+        run_context = analytics_context.get("selected_run") or {}
+        simulation_market_provenance = (
+            run_context.get("simulation_market_provenance") or {}
+        )
+        if simulation_market_provenance.get("status") == "ready":
+            modifiers.append("simulation_market_ready")
+
+        return {
+            "label": label,
+            "supportive_entry_count": supportive_count,
+            "contradictory_entry_count": contradictory_count,
+            "mixed_entry_count": mixed_count,
+            "hint_count": hint_count,
+            "missing_evidence_count": missing_count,
+            "modifiers": modifiers,
+            "designed_comparison_count": designed_comparison_count,
+            "structural_uncertainty_coverage_ratio": structural_coverage_ratio,
+        }
+
+    @staticmethod
+    def _family_prior(
+        *,
+        question_type: str,
+        evidence_regime: dict[str, Any],
+        family: str,
+    ) -> float:
+        label = str(evidence_regime.get("label") or "mixed_local_evidence")
+        modifiers = set(evidence_regime.get("modifiers") or [])
+        family = str(family or "")
+        priors: dict[str, dict[str, float]] = {
+            "binary": {
+                "base_rate": 0.26,
+                "reference_class": 0.27,
+                "retrieval_synthesis": 0.29,
+                "simulation_market": 0.18,
+                "simulation": 0.0,
+            },
+            "categorical": {
+                "base_rate": 0.2,
+                "reference_class": 0.34,
+                "retrieval_synthesis": 0.3,
+                "simulation_market": 0.16,
+                "simulation": 0.0,
+            },
+            "numeric": {
+                "base_rate": 0.28,
+                "reference_class": 0.36,
+                "retrieval_synthesis": 0.36,
+                "simulation_market": 0.0,
+                "simulation": 0.0,
+            },
+        }
+        prior = priors.get(question_type, priors["binary"]).get(family, 0.1)
+        if label == "corroborated_local_evidence":
+            if family == "retrieval_synthesis":
+                prior *= 1.35
+            elif family == "base_rate":
+                prior *= 0.85
+        elif label == "conflicted_evidence":
+            if family == "retrieval_synthesis":
+                prior *= 0.85
+            elif family in {"base_rate", "reference_class"}:
+                prior *= 1.15
+        elif label == "sparse_evidence":
+            if family == "retrieval_synthesis":
+                prior *= 0.75
+            elif family in {"base_rate", "reference_class"}:
+                prior *= 1.2
+        if "designed_comparison_informed" in modifiers and family in {
+            "reference_class",
+            "simulation_market",
+        }:
+            prior *= 1.1
+        if "simulation_market_ready" in modifiers and family == "simulation_market":
+            prior *= 1.1
+        return max(float(prior), 0.0)
+
+    @staticmethod
+    def _local_weight_multiplier(
+        result: HybridWorkerResult,
+        *,
+        evidence_regime: dict[str, Any],
+    ) -> float:
+        inputs = result.confidence_inputs or {}
+        family = str(result.worker_kind or "")
+        if family == "base_rate":
+            sample_count = int(inputs.get("sample_count") or 0)
+            return _clamp(0.85 + min(sample_count, 30) / 100.0, 0.7, 1.25)
+        if family == "reference_class":
+            case_count = int(inputs.get("case_count") or 0)
+            total_case_weight = float(inputs.get("total_case_weight") or 0.0)
+            return _clamp(0.8 + min(case_count, 8) * 0.04 + min(total_case_weight, 6.0) * 0.03, 0.7, 1.3)
+        if family == "retrieval_synthesis":
+            entry_count = int(inputs.get("entry_count") or 0)
+            contradiction_count = int(inputs.get("contradiction_count") or 0)
+            multiplier = 0.85 + min(entry_count, 6) * 0.06 - min(contradiction_count, 3) * 0.08
+            if evidence_regime.get("label") == "corroborated_local_evidence":
+                multiplier += 0.08
+            return _clamp(multiplier, 0.65, 1.3)
+        if family == "simulation_market":
+            disagreement_index = float(inputs.get("disagreement_index") or 0.0)
+            participant_count = int(inputs.get("participant_count") or 0)
+            multiplier = 0.8 + min(participant_count, 4) * 0.05 - min(disagreement_index, 0.5) * 0.5
+            if inputs.get("provenance_status") == "ready":
+                multiplier += 0.05
+            return _clamp(multiplier, 0.5, 1.2)
+        return 1.0
+
+    def _apply_ensemble_policy(
+        self,
+        *,
+        workspace: ForecastWorkspaceRecord,
+        worker_results: list[HybridWorkerResult],
+        analytics_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        question_type = _workspace_question_type(workspace)
+        evidence_regime = self._derive_evidence_regime(
+            workspace,
+            analytics_context=analytics_context,
+        )
+        candidates = [
+            result
+            for result in worker_results
+            if result.status == "completed"
+            and result.influences_best_estimate
+            and (result.estimate is not None or result.value is not None)
+        ]
+        if not candidates:
+            return {
+                "policy_name": "empirically_tuned_worker_ensemble",
+                "question_type": question_type,
+                "evidence_regime": evidence_regime,
+                "normalized_family_weights": {},
+                "analytics_context": analytics_context or {},
+                "notes": [
+                    "No completed best-estimate workers were available for tuned aggregation.",
+                ],
+            }
+
+        raw_weights: dict[str, float] = {}
+        worker_weight_details: dict[str, dict[str, Any]] = {}
+        for result in candidates:
+            family = str(result.worker_kind or "")
+            prior_weight = self._family_prior(
+                question_type=question_type,
+                evidence_regime=evidence_regime,
+                family=family,
+            )
+            local_multiplier = self._local_weight_multiplier(
+                result,
+                evidence_regime=evidence_regime,
+            )
+            raw_weight = max(float(result.effective_weight or 0.0), 0.05) * prior_weight * local_multiplier
+            raw_weights[result.worker_id] = raw_weight
+            worker_weight_details[result.worker_id] = {
+                "family": family,
+                "base_worker_weight": round(float(result.effective_weight or 0.0), 6),
+                "prior_weight": round(float(prior_weight), 6),
+                "local_multiplier": round(float(local_multiplier), 6),
+                "raw_weight": round(float(raw_weight), 6),
+            }
+
+        total_weight = sum(raw_weights.values())
+        normalized_family_weights: dict[str, float] = {}
+        for result in candidates:
+            normalized_weight = (
+                raw_weights.get(result.worker_id, 0.0) / total_weight if total_weight > 0 else 0.0
+            )
+            result.effective_weight = normalized_weight
+            result.confidence_inputs["weight_plan"] = {
+                **worker_weight_details[result.worker_id],
+                "normalized_weight": round(float(normalized_weight), 6),
+                "evidence_regime": evidence_regime.get("label"),
+            }
+            normalized_family_weights[result.worker_kind] = round(
+                float(normalized_family_weights.get(result.worker_kind, 0.0) + normalized_weight),
+                6,
+            )
+
+        return {
+            "policy_name": "empirically_tuned_worker_ensemble",
+            "question_type": question_type,
+            "evidence_regime": evidence_regime,
+            "normalized_family_weights": normalized_family_weights,
+            "worker_weights": worker_weight_details,
+            "analytics_context": analytics_context or {},
+            "notes": [
+                "Worker weights are tuned by worker family, question type, and current evidence regime.",
+            ],
+        }
 
     def _run_base_rate_worker(
         self,
@@ -2116,6 +2535,8 @@ class HybridForecastEngine:
         worker_results: list[HybridWorkerResult],
         *,
         comparable_workspaces: Optional[list[ForecastWorkspaceRecord]] = None,
+        analytics_context: Optional[dict[str, Any]] = None,
+        ensemble_policy: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         question_type = _workspace_question_type(workspace)
         trace = [item.to_trace_item() for item in worker_results]
@@ -2462,6 +2883,8 @@ class HybridForecastEngine:
             "backtest_summary": backtest_summary,
             "calibration_summary": calibration_summary,
             "confidence_basis": confidence_basis,
+            "ensemble_policy": dict(ensemble_policy or {}),
+            "analytics_context": dict(analytics_context or {}),
             "uncertainty_decomposition": {
                 "drivers": drivers,
                 "components": components,
@@ -2570,6 +2993,154 @@ class HybridForecastEngine:
                 }
                 for item in ranked
             ],
+        }
+
+    def _build_binary_backtest_summary(
+        self,
+        *,
+        workspace: ForecastWorkspaceRecord,
+        evaluation_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        metric_id, operator, threshold = _first_metric_threshold(workspace.resolution_criteria)
+        case_results: list[dict[str, Any]] = []
+        question_class_counts: dict[str, int] = {}
+        comparable_class_counts: dict[str, int] = {}
+        split_counts: dict[str, int] = {}
+        warnings: list[str] = []
+        positive_case_count = 0
+        negative_case_count = 0
+        for case in workspace.evaluation_cases:
+            if case.status != "resolved":
+                continue
+            if case.question_class:
+                question_class_counts[case.question_class] = question_class_counts.get(case.question_class, 0) + 1
+            comparable_class = case.comparable_question_class or case.question_class
+            if comparable_class:
+                comparable_class_counts[comparable_class] = comparable_class_counts.get(comparable_class, 0) + 1
+            if case.evaluation_split:
+                split_counts[case.evaluation_split] = split_counts.get(case.evaluation_split, 0) + 1
+
+            forecast_probability = _case_prediction_probability(case)
+            observed_value = _extract_binary_outcome(
+                case,
+                metric_id=metric_id,
+                operator=operator,
+                threshold=threshold,
+            )
+            if forecast_probability is None or observed_value is None:
+                if "degraded_case_records" not in warnings:
+                    warnings.append("degraded_case_records")
+                continue
+            if observed_value >= 0.5:
+                positive_case_count += 1
+            else:
+                negative_case_count += 1
+            clipped_probability = min(
+                max(float(forecast_probability), Config.CALIBRATION_LOG_SCORE_EPSILON),
+                1.0 - Config.CALIBRATION_LOG_SCORE_EPSILON,
+            )
+            clipped = clipped_probability != float(forecast_probability)
+            case_warnings = []
+            if clipped:
+                case_warnings.append("probability_clipped_for_log_score")
+            brier_score = (float(forecast_probability) - float(observed_value)) ** 2
+            log_score = -(
+                (float(observed_value) * math.log(clipped_probability))
+                + ((1.0 - float(observed_value)) * math.log(1.0 - clipped_probability))
+            )
+            case_results.append(
+                {
+                    "case_id": case.case_id,
+                    "forecast_probability": round(float(forecast_probability), 12),
+                    "observed_value": bool(observed_value >= 0.5),
+                    "scores": {
+                        "brier_score": round(float(brier_score), 12),
+                        "log_score": round(float(log_score), 12),
+                    },
+                    "score_inputs": {
+                        "log_score_probability": round(float(clipped_probability), 12),
+                        "probability_clipped": clipped,
+                    },
+                    "warnings": case_warnings,
+                }
+            )
+        if not case_results:
+            return {
+                "status": "not_run",
+                "reason": "No resolved binary evaluation cases carried explicit forecast probabilities.",
+                "evaluation_case_count": evaluation_summary.get("case_count", 0),
+                "resolved_case_count": evaluation_summary.get("resolved_case_count", 0),
+                "workspace_forecast_id": workspace.forecast_question.forecast_id,
+                "question_type": "binary",
+                "references": evaluation_summary.get("references", {}),
+            }
+        observed_event_rate = positive_case_count / len(case_results)
+        mean_forecast_probability = sum(
+            float(item["forecast_probability"]) for item in case_results
+        ) / len(case_results)
+        mean_brier = _mean([item["scores"]["brier_score"] for item in case_results]) or 0.0
+        mean_log = _mean([item["scores"]["log_score"] for item in case_results]) or 0.0
+        scores = {
+            "brier_score": round(float(mean_brier), 12),
+            "log_score": round(float(mean_log), 12),
+        }
+        climatology_brier = observed_event_rate * (1.0 - observed_event_rate)
+        if climatology_brier > 0:
+            scores["brier_skill_score"] = round(
+                float(1.0 - (mean_brier / climatology_brier)),
+                12,
+            )
+        benchmark_probabilities = {
+            "historical_base_rate": observed_event_rate,
+            "uniform_50_50": 0.5,
+        }
+        benchmarks = {}
+        for benchmark_id, benchmark_probability in benchmark_probabilities.items():
+            benchmark_brier = _mean(
+                [
+                    (float(benchmark_probability) - (1.0 if item["observed_value"] else 0.0)) ** 2
+                    for item in case_results
+                ]
+            ) or 0.0
+            benchmark_log = _mean(
+                [
+                    -(
+                        ((1.0 if item["observed_value"] else 0.0) * math.log(min(max(float(benchmark_probability), Config.CALIBRATION_LOG_SCORE_EPSILON), 1.0 - Config.CALIBRATION_LOG_SCORE_EPSILON)))
+                        + ((0.0 if item["observed_value"] else 1.0) * math.log(1.0 - min(max(float(benchmark_probability), Config.CALIBRATION_LOG_SCORE_EPSILON), 1.0 - Config.CALIBRATION_LOG_SCORE_EPSILON)))
+                    )
+                    for item in case_results
+                ]
+            ) or 0.0
+            benchmarks[benchmark_id] = {
+                "forecast_probability": round(float(benchmark_probability), 12),
+                "scores": {
+                    "brier_score": round(float(benchmark_brier), 12),
+                    "log_score": round(float(benchmark_log), 12),
+                },
+            }
+        return {
+            "status": "available",
+            "question_type": "binary",
+            "workspace_forecast_id": workspace.forecast_question.forecast_id,
+            "evaluation_case_count": evaluation_summary.get("case_count", 0),
+            "resolved_case_count": len(case_results),
+            "case_count": len(case_results),
+            "positive_case_count": positive_case_count,
+            "negative_case_count": negative_case_count,
+            "observed_event_rate": round(float(observed_event_rate), 12),
+            "mean_forecast_probability": round(float(mean_forecast_probability), 12),
+            "scoring_rules": ["brier_score", "log_score"],
+            "scores": scores,
+            "benchmarks": benchmarks,
+            "case_results": case_results,
+            "question_class_counts": question_class_counts,
+            "comparable_question_class_counts": comparable_class_counts,
+            "split_counts": split_counts,
+            "references": {
+                **evaluation_summary.get("references", {}),
+                "backtest_summary_artifact": "forecast_answer.backtest_summary",
+            },
+            "warnings": warnings,
         }
 
     def _build_categorical_backtest_summary(
@@ -2980,6 +3551,113 @@ class HybridForecastEngine:
             "warnings": [],
         }
 
+    def _build_binary_calibration_summary(
+        self,
+        *,
+        workspace: ForecastWorkspaceRecord,
+        evaluation_summary: dict[str, Any],
+        backtest_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        if backtest_summary.get("status") not in {"available", "ready"}:
+            return {
+                "status": "not_applicable",
+                "reason": "Binary calibration requires scored workspace backtest results.",
+                "workspace_forecast_id": workspace.forecast_question.forecast_id,
+                "question_type": "binary",
+            }
+        case_results = list(backtest_summary.get("case_results") or [])
+        bin_count = max(int(Config.CALIBRATION_BIN_COUNT), 1)
+        buckets: list[list[dict[str, Any]]] = [[] for _ in range(bin_count)]
+        for case_result in case_results:
+            probability = float(case_result.get("forecast_probability") or 0.0)
+            bucket_index = min(int(probability * bin_count), bin_count - 1)
+            buckets[bucket_index].append(case_result)
+        reliability_bins: list[dict[str, Any]] = []
+        weighted_gaps: list[float] = []
+        absolute_gaps: list[float] = []
+        for index, bucket in enumerate(buckets):
+            lower_bound = index / bin_count
+            upper_bound = (index + 1) / bin_count
+            if bucket:
+                mean_probability = _mean(
+                    [float(item.get("forecast_probability") or 0.0) for item in bucket]
+                )
+                observed_frequency = _mean(
+                    [1.0 if item.get("observed_value") else 0.0 for item in bucket]
+                )
+                gap = abs(float(observed_frequency or 0.0) - float(mean_probability or 0.0))
+                weighted_gaps.append((len(bucket) / max(len(case_results), 1)) * gap)
+                absolute_gaps.append(gap)
+            else:
+                mean_probability = None
+                observed_frequency = None
+            reliability_bins.append(
+                {
+                    "bin_index": index,
+                    "lower_bound": lower_bound,
+                    "upper_bound": upper_bound,
+                    "case_count": len(bucket),
+                    "mean_forecast_probability": mean_probability,
+                    "observed_frequency": observed_frequency,
+                    "observed_minus_forecast": (
+                        float(observed_frequency) - float(mean_probability)
+                        if observed_frequency is not None and mean_probability is not None
+                        else None
+                    ),
+                }
+            )
+        positive_case_count = int(backtest_summary.get("positive_case_count") or 0)
+        negative_case_count = int(backtest_summary.get("negative_case_count") or 0)
+        supported_bin_count = sum(1 for item in reliability_bins if item["case_count"] > 0)
+        gating_reasons: list[str] = []
+        if len(case_results) < Config.CALIBRATION_MIN_CASE_COUNT:
+            gating_reasons.append("insufficient_case_count")
+        if positive_case_count < Config.CALIBRATION_MIN_POSITIVE_CASE_COUNT:
+            gating_reasons.append("insufficient_positive_case_count")
+        if negative_case_count < Config.CALIBRATION_MIN_NEGATIVE_CASE_COUNT:
+            gating_reasons.append("insufficient_negative_case_count")
+        if supported_bin_count < Config.CALIBRATION_MIN_SUPPORTED_BIN_COUNT:
+            gating_reasons.append("insufficient_supported_bin_count")
+        if not backtest_summary.get("scoring_rules"):
+            gating_reasons.append("missing_supported_scores")
+        ready = not gating_reasons
+        return {
+            "status": "ready" if ready else "available",
+            "question_type": "binary",
+            "calibration_kind": "binary_reliability",
+            "workspace_forecast_id": workspace.forecast_question.forecast_id,
+            "evaluation_case_count": evaluation_summary.get("case_count", 0),
+            "resolved_case_count": len(case_results),
+            "supported_scoring_rules": list(backtest_summary.get("scoring_rules") or []),
+            "readiness": {
+                "ready": ready,
+                "actual_case_count": len(case_results),
+                "minimum_case_count": Config.CALIBRATION_MIN_CASE_COUNT,
+                "minimum_positive_case_count": Config.CALIBRATION_MIN_POSITIVE_CASE_COUNT,
+                "actual_positive_case_count": positive_case_count,
+                "minimum_negative_case_count": Config.CALIBRATION_MIN_NEGATIVE_CASE_COUNT,
+                "actual_negative_case_count": negative_case_count,
+                "supported_bin_count": supported_bin_count,
+                "minimum_supported_bin_count": Config.CALIBRATION_MIN_SUPPORTED_BIN_COUNT,
+                "gating_reasons": gating_reasons,
+                "confidence_label": _determine_confidence_label(
+                    ready=ready,
+                    case_count=len(case_results),
+                ),
+            },
+            "reliability_bins": reliability_bins,
+            "diagnostics": {
+                "expected_calibration_error": round(float(sum(weighted_gaps)), 12),
+                "max_calibration_gap": round(float(max(absolute_gaps or [0.0])), 12),
+                "observed_event_rate": backtest_summary.get("observed_event_rate"),
+                "mean_forecast_probability": backtest_summary.get("mean_forecast_probability"),
+            },
+            "boundary_note": (
+                "Binary calibration is earned from resolved workspace probabilities and reliability diagnostics."
+            ),
+            "warnings": list(backtest_summary.get("warnings") or []),
+        }
+
     def _build_categorical_calibration_summary(
         self,
         *,
@@ -3199,6 +3877,11 @@ class HybridForecastEngine:
         evaluation_summary: dict[str, Any],
     ) -> dict[str, Any]:
         question_type = _workspace_question_type(workspace)
+        if question_type == "binary":
+            return self._build_binary_backtest_summary(
+                workspace=workspace,
+                evaluation_summary=evaluation_summary,
+            )
         if question_type == "categorical":
             return self._build_categorical_backtest_summary(
                 workspace=workspace,
@@ -3225,6 +3908,12 @@ class HybridForecastEngine:
         backtest_summary: dict[str, Any],
     ) -> dict[str, Any]:
         question_type = _workspace_question_type(workspace)
+        if question_type == "binary":
+            return self._build_binary_calibration_summary(
+                workspace=workspace,
+                evaluation_summary=evaluation_summary,
+                backtest_summary=backtest_summary,
+            )
         if question_type == "categorical":
             return self._build_categorical_calibration_summary(
                 workspace=workspace,
@@ -3267,7 +3956,7 @@ class HybridForecastEngine:
         question_type = _workspace_question_type(workspace)
         if (
             not abstain
-            and question_type in {"categorical", "numeric"}
+            and question_type in {"binary", "categorical", "numeric"}
             and calibration_summary.get("status") == "ready"
             and backtest_summary.get("status") in {"available", "ready"}
             and benchmark_summary.get("status") == "available"
@@ -3286,7 +3975,7 @@ class HybridForecastEngine:
             "note": (
                 "Typed workspace evaluation and calibration metadata support this answer."
                 if (
-                    question_type in {"categorical", "numeric"}
+                    question_type in {"binary", "categorical", "numeric"}
                     and calibration_summary.get("status") == "ready"
                     and resolved_case_count > 0
                 )
@@ -3309,6 +3998,8 @@ class HybridForecastEngine:
         evaluation_note = ""
         if answer_payload.get("evaluation_summary", {}).get("resolved_case_count", 0):
             evaluation_note = " Workspace evaluation cases are tracked separately."
+        if answer_payload.get("calibration_summary", {}).get("status") == "ready":
+            evaluation_note += " This answer carries ready backtest and calibration support."
         if question_type == "categorical":
             return (
                 f"Hybrid outcome distribution favors {best_estimate.get('top_label') or 'an unresolved label'} "
@@ -3338,6 +4029,11 @@ class HybridForecastEngine:
         if answer_payload["abstain"]:
             notes.append(
                 "The hybrid path abstained because simulation scenario evidence only or internally inconsistent non-simulation signals were available."
+            )
+        ensemble_policy = answer_payload.get("ensemble_policy") or {}
+        if ensemble_policy.get("policy_name"):
+            notes.append(
+                "Best-estimate worker weights were tuned by worker family, question type, and current evidence regime."
             )
         if answer_payload.get("question_type") == "categorical":
             notes.append(

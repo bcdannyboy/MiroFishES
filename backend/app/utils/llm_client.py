@@ -3,6 +3,8 @@ LLM client wrapper.
 Uses an OpenAI-compatible API interface.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 import json
 import re

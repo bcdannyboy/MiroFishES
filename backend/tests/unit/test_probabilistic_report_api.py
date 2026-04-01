@@ -1854,6 +1854,196 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
     assert '"signal_provenance_summary"' in system_prompt
 
 
+def test_report_agent_chat_includes_answer_confidence_status_and_ensemble_policy(
+    tmp_path, monkeypatch
+):
+    report_agent_module = _load_report_agent_module()
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+
+    probabilistic_report = report_agent_module.Report(
+        report_id="report-probabilistic-answer-confidence",
+        simulation_id="sim-chat",
+        graph_id="graph-1",
+        simulation_requirement="Forecast discussion spread",
+        status=report_agent_module.ReportStatus.COMPLETED,
+        markdown_content="# Probabilistic report body\n\nObserved ensemble summary.\n",
+        created_at="2026-03-09T10:02:00",
+        completed_at="2026-03-09T10:03:00",
+        ensemble_id="0001",
+        probabilistic_context={
+            "artifact_type": "probabilistic_report_context",
+            "ensemble_id": "0001",
+            "answer_confidence_status": {
+                "status": "ready",
+                "confidence_semantics": "calibrated",
+                "question_type": "binary",
+                "calibration_kind": "binary_reliability",
+                "policy_name": "empirically_tuned_worker_ensemble",
+                "evidence_regime": "corroborated_local_evidence",
+            },
+            "forecast_workspace": {
+                "forecast_question": {
+                    "forecast_id": "forecast-1",
+                    "question_text": "Will the upgraded forecast lane remain truthful?",
+                    "question_type": "binary",
+                },
+                "forecast_answer": {
+                    "answer_id": "answer-1",
+                    "answer_type": "hybrid_forecast",
+                    "summary": "Bounded hybrid forecast answer.",
+                    "confidence_semantics": "calibrated",
+                    "answer_payload": {
+                        "best_estimate": {"value": 0.62, "value_type": "probability"},
+                        "ensemble_policy": {
+                            "policy_name": "empirically_tuned_worker_ensemble",
+                            "evidence_regime": {"label": "corroborated_local_evidence"},
+                        },
+                    },
+                },
+                "truthfulness_surface": {
+                    "calibrated_confidence_earned": True,
+                },
+            },
+        },
+    )
+    report_agent_module.ReportManager.save_report(probabilistic_report)
+
+    class _FakeLLM:
+        def __init__(self):
+            self.messages = None
+
+        def chat(self, messages, temperature=0.5):
+            self.messages = messages
+            return "Scoped answer"
+
+    fake_llm = _FakeLLM()
+    agent = report_agent_module.ReportAgent(
+        graph_id="graph-1",
+        simulation_id="sim-chat",
+        simulation_requirement="Forecast discussion spread",
+        llm_client=fake_llm,
+        zep_tools=object(),
+        report_id="report-probabilistic-answer-confidence",
+        probabilistic_context=probabilistic_report.probabilistic_context,
+    )
+
+    response = agent.chat("What supports confidence in the answer?")
+
+    assert response["response"] == "Scoped answer"
+    system_prompt = fake_llm.messages[0]["content"]
+    assert '"answer_confidence_status"' in system_prompt
+    assert '"policy_name": "empirically_tuned_worker_ensemble"' in system_prompt
+    assert '"evidence_regime": "corroborated_local_evidence"' in system_prompt
+
+
+def test_report_agent_chat_includes_authoritative_scoped_answer_brief(
+    tmp_path, monkeypatch
+):
+    report_agent_module = _load_report_agent_module()
+    reports_dir = tmp_path / "backend" / "uploads" / "reports"
+    monkeypatch.setattr(
+        report_agent_module.ReportManager,
+        "REPORTS_DIR",
+        str(reports_dir),
+        raising=False,
+    )
+
+    probabilistic_report = report_agent_module.Report(
+        report_id="report-probabilistic-authoritative-answer-brief",
+        simulation_id="sim-chat",
+        graph_id="graph-1",
+        simulation_requirement="Forecast discussion spread",
+        status=report_agent_module.ReportStatus.COMPLETED,
+        markdown_content="# Probabilistic report body\n\nObserved ensemble summary.\n",
+        created_at="2026-03-31T19:16:00",
+        completed_at="2026-03-31T19:17:00",
+        ensemble_id="0001",
+        run_id="0001",
+        probabilistic_context={
+            "artifact_type": "probabilistic_report_context",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "answer_confidence_status": {
+                "status": "not_ready",
+                "confidence_semantics": "uncalibrated",
+                "question_type": "binary",
+                "backtest_status": "not_run",
+                "calibration_status": "not_applicable",
+                "policy_name": "empirically_tuned_worker_ensemble",
+                "evidence_regime": "corroborated_local_evidence",
+            },
+            "forecast_workspace": {
+                "forecast_question": {
+                    "forecast_id": "forecast-1",
+                    "question_text": "Will the upgraded forecast lane remain truthful?",
+                    "question_type": "binary",
+                },
+                "forecast_answer": {
+                    "answer_id": "answer-1",
+                    "answer_type": "hybrid_forecast",
+                    "summary": "Bounded hybrid forecast answer.",
+                    "confidence_semantics": "uncalibrated",
+                    "backtest_summary": {"status": "not_run"},
+                    "calibration_summary": {"status": "not_applicable"},
+                    "answer_payload": {
+                        "best_estimate": {
+                            "value": 0.666926,
+                            "value_type": "probability",
+                            "semantics": "forecast_probability",
+                        },
+                        "ensemble_policy": {
+                            "policy_name": "empirically_tuned_worker_ensemble",
+                            "evidence_regime": {"label": "corroborated_local_evidence"},
+                        },
+                    },
+                },
+                "truthfulness_surface": {
+                    "calibrated_confidence_earned": False,
+                },
+            },
+        },
+    )
+    report_agent_module.ReportManager.save_report(probabilistic_report)
+
+    class _FakeLLM:
+        def __init__(self):
+            self.messages = None
+
+        def chat(self, messages, temperature=0.5):
+            self.messages = messages
+            return "Scoped answer"
+
+    fake_llm = _FakeLLM()
+    agent = report_agent_module.ReportAgent(
+        graph_id="graph-1",
+        simulation_id="sim-chat",
+        simulation_requirement="Forecast discussion spread",
+        llm_client=fake_llm,
+        zep_tools=object(),
+        report_id="report-probabilistic-authoritative-answer-brief",
+        probabilistic_context=probabilistic_report.probabilistic_context,
+    )
+
+    response = agent.chat("What is the actual saved probability and confidence status?")
+
+    assert response["response"] == "Scoped answer"
+    system_prompt = fake_llm.messages[0]["content"]
+    assert "Authoritative scoped forecast answer facts" in system_prompt
+    assert '"best_estimate_probability": 0.666926' in system_prompt
+    assert '"answer_confidence_status": "not_ready"' in system_prompt
+    assert '"confidence_semantics": "uncalibrated"' in system_prompt
+    assert '"backtest_status": "not_run"' in system_prompt
+    assert '"calibration_status": "not_applicable"' in system_prompt
+    assert '"ensemble_policy_name": "empirically_tuned_worker_ensemble"' in system_prompt
+    assert '"evidence_regime": "corroborated_local_evidence"' in system_prompt
+
+
 def test_report_agent_generate_report_persists_report_phase_timings(
     tmp_path, monkeypatch
 ):

@@ -34,6 +34,60 @@ def test_workspace_calibrated_confidence_earned_requires_resolved_backtest_basis
     )
 
 
+def test_workspace_answer_confidence_status_surfaces_calibrated_binary_lane():
+    context_module = _load_context_module()
+    status = (
+        context_module.ProbabilisticReportContextBuilder._build_answer_confidence_status(
+            {
+                "forecast_question": {
+                    "question_type": "binary",
+                },
+                "forecast_answer": {
+                    "confidence_semantics": "calibrated",
+                    "answer_payload": {
+                        "ensemble_policy": {
+                            "policy_name": "empirically_tuned_worker_ensemble",
+                            "evidence_regime": {"label": "corroborated_local_evidence"},
+                        }
+                    },
+                    "confidence_basis": {
+                        "status": "available",
+                        "resolved_case_count": 10,
+                        "benchmark_status": "available",
+                        "backtest_status": "available",
+                        "calibration_status": "ready",
+                    },
+                    "backtest_summary": {
+                        "status": "available",
+                        "question_type": "binary",
+                    },
+                    "calibration_summary": {
+                        "status": "ready",
+                        "calibration_kind": "binary_reliability",
+                        "readiness": {"ready": True, "gating_reasons": []},
+                    },
+                },
+            }
+        )
+    )
+
+    assert status == {
+        "status": "ready",
+        "confidence_semantics": "calibrated",
+        "question_type": "binary",
+        "calibration_kind": "binary_reliability",
+        "backtest_status": "available",
+        "calibration_status": "ready",
+        "benchmark_status": "available",
+        "resolved_case_count": 10,
+        "gating_reasons": [],
+        "warnings": [],
+        "evidence_regime": "corroborated_local_evidence",
+        "policy_name": "empirically_tuned_worker_ensemble",
+        "boundary_note": "Answer-level confidence remains scoped to the saved forecast workspace and its resolved evaluation lane.",
+    }
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1950,6 +2004,23 @@ def test_build_context_surfaces_hybrid_forecast_workspace_payload(
             "calibrated and carries ready backtest and calibration metadata on a supported "
             "evaluation lane with resolved cases."
         ),
+        "answer_confidence_status": {
+            "status": "not_ready",
+            "confidence_semantics": "uncalibrated",
+            "question_type": "binary",
+            "calibration_kind": None,
+            "backtest_status": "not_run",
+            "calibration_status": "not_applicable",
+            "benchmark_status": "available",
+            "resolved_case_count": 1,
+            "gating_reasons": [],
+            "warnings": [],
+            "evidence_regime": None,
+            "policy_name": None,
+            "boundary_note": (
+                "Answer-level confidence remains scoped to the saved forecast workspace and its resolved evaluation lane."
+            ),
+        },
     }
     assert artifact["forecast_object"] == {
         "forecast_id": "forecast-001",

@@ -328,12 +328,48 @@
       "blockers": []
     },
     "P09": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed the forecast-answer semantics upgrade with empirically tuned worker-family weighting, answer-level binary backtest/calibration support, and a truthful scoped Step 5 chat contract. Verified by focused forecast/report suites, one live .env report-generation plus scoped interaction smoke, and fresh `npm run verify:nonbinary`, `npm run verify:confidence`, and `npm run verify:forecasting` passes.",
+      "owned_paths": [
+        "backend/app/services/forecast_engine.py",
+        "backend/app/services/probabilistic_report_context.py",
+        "backend/app/services/report_agent.py",
+        "backend/app/config.py",
+        "backend/app/utils/llm_client.py",
+        "backend/app/utils/model_routing.py",
+        "backend/app/utils/embedding_client.py",
+        "backend/tests/unit/test_forecast_engine.py",
+        "backend/tests/unit/test_hybrid_forecast_service.py",
+        "backend/tests/unit/test_probabilistic_report_context.py",
+        "backend/tests/unit/test_probabilistic_report_api.py",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "python3 -m pytest backend/tests/unit/test_forecast_engine.py backend/tests/unit/test_hybrid_forecast_service.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_probabilistic_report_api.py -q -> 57 passed in 1.57s",
+        "python3 -m pytest backend/tests/unit/test_forecast_manager.py backend/tests/unit/test_backtest_manager.py backend/tests/unit/test_calibration_manager.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/integration/test_inference_ready_forecast_flow.py -q -> 24 passed in 0.57s",
+        "cd backend && uv run python /tmp/p09_live_report_smoke.py -> report_id=report_da14bb2f1326, task_id=51060c3d-e30c-4fc9-ae17-da80df51cdd9, status=completed, scope.level=run, answer_confidence_status.status=not_ready, confidence_semantics=uncalibrated, ensemble_policy_name=empirically_tuned_worker_ensemble, evidence_regime=corroborated_local_evidence, scoped chat verified exact saved facts and avoided pending/status_quo drift",
+        "npm run verify:nonbinary -> verify:nonbinary:backend 108 passed, 1 warning in 2.50s; verify:nonbinary:frontend 81 passed",
+        "npm run verify:confidence -> backend 114 passed, 1 warning in 1.96s; frontend 81 passed",
+        "npm run verify:forecasting -> broad backend 376 passed, 1 warning in 5.54s; targeted non-binary passed; confidence passed; active artifact conformance scan found no failures; fixture-backed smoke 10 passed (19.4s)"
+      ],
+      "artifacts": [
+        "forecast_answers.json[].backtest_summary",
+        "forecast_answers.json[].calibration_summary",
+        "forecast_answers.json[].confidence_basis",
+        "forecast_answers.json[].answer_payload.ensemble_policy",
+        "forecast_answers.json[].answer_payload.analytics_context",
+        "probabilistic_report_context.answer_confidence_status",
+        "report prompt authoritative scoped forecast answer facts",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "compatibility_fixes": [
+        "Preserved support-only simulation semantics by tuning worker-family weights additively rather than turning simulation outputs into first-class calibrated evidence.",
+        "Kept legacy report consumers working by falling back to nested answer-payload confidence fields when older saved probabilistic contexts lack the new top-level answer_confidence_status.",
+        "Added `from __future__ import annotations` to config and OpenAI utility modules so `npm run verify:confidence` stays compatible with the repo's Python 3.9 path.",
+        "Limited the Step 5 fix to prompt authority and prompt-safe payload shaping without redesigning retrieval, simulation, or aggregation contracts."
+      ],
       "blockers": []
     },
     "P10": {

@@ -39,6 +39,9 @@ FORECAST_WORKSPACE_CALIBRATION_BOUNDARY_NOTE = (
     "calibrated and carries ready backtest and calibration metadata on a supported "
     "evaluation lane with resolved cases."
 )
+FORECAST_ANSWER_CONFIDENCE_BOUNDARY_NOTE = (
+    "Answer-level confidence remains scoped to the saved forecast workspace and its resolved evaluation lane."
+)
 
 
 class ProbabilisticReportContextBuilder:
@@ -85,6 +88,126 @@ class ProbabilisticReportContextBuilder:
             and benchmark_status in {"available", "ready"}
             and backtest_status in {"available", "ready"}
         )
+
+    @classmethod
+    def _build_answer_confidence_status(
+        cls,
+        forecast_workspace: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not isinstance(forecast_workspace, dict):
+            return {
+                "status": "absent",
+                "confidence_semantics": "not_applicable",
+                "question_type": None,
+                "calibration_kind": None,
+                "backtest_status": "absent",
+                "calibration_status": "absent",
+                "benchmark_status": "absent",
+                "resolved_case_count": 0,
+                "gating_reasons": ["missing_forecast_workspace"],
+                "warnings": [],
+                "evidence_regime": None,
+                "policy_name": None,
+                "boundary_note": FORECAST_ANSWER_CONFIDENCE_BOUNDARY_NOTE,
+            }
+
+        forecast_question = forecast_workspace.get("forecast_question")
+        if not isinstance(forecast_question, dict):
+            forecast_question = {}
+        latest_answer = forecast_workspace.get("forecast_answer")
+        if not isinstance(latest_answer, dict):
+            latest_answer = {}
+        latest_answer_payload = latest_answer.get("answer_payload")
+        if not isinstance(latest_answer_payload, dict):
+            latest_answer_payload = {}
+        confidence_basis = latest_answer.get("confidence_basis")
+        if not isinstance(confidence_basis, dict):
+            confidence_basis = {}
+        if not confidence_basis and isinstance(
+            latest_answer_payload.get("confidence_basis"), dict
+        ):
+            confidence_basis = dict(latest_answer_payload.get("confidence_basis") or {})
+        backtest_summary = latest_answer.get("backtest_summary")
+        if not isinstance(backtest_summary, dict):
+            backtest_summary = {}
+        if not backtest_summary and isinstance(
+            latest_answer_payload.get("backtest_summary"), dict
+        ):
+            backtest_summary = dict(latest_answer_payload.get("backtest_summary") or {})
+        calibration_summary = latest_answer.get("calibration_summary")
+        if not isinstance(calibration_summary, dict):
+            calibration_summary = {}
+        if not calibration_summary and isinstance(
+            latest_answer_payload.get("calibration_summary"), dict
+        ):
+            calibration_summary = dict(
+                latest_answer_payload.get("calibration_summary") or {}
+            )
+        ensemble_policy = latest_answer_payload.get("ensemble_policy")
+        if not isinstance(ensemble_policy, dict):
+            ensemble_policy = {}
+        evidence_regime = ensemble_policy.get("evidence_regime")
+        if isinstance(evidence_regime, dict):
+            evidence_regime_label = evidence_regime.get("label")
+        else:
+            evidence_regime_label = evidence_regime
+
+        warnings = cls._dedupe_strings(
+            list(backtest_summary.get("warnings", []))
+            + list(calibration_summary.get("warnings", []))
+        )
+        readiness = calibration_summary.get("readiness")
+        if not isinstance(readiness, dict):
+            readiness = {}
+        gating_reasons = cls._dedupe_strings(list(readiness.get("gating_reasons", [])))
+        confidence_semantics = cls._get_answer_confidence_semantics(latest_answer)
+        question_type = forecast_question.get("question_type")
+        benchmark_status = str(confidence_basis.get("benchmark_status") or "absent")
+        backtest_status = str(
+            backtest_summary.get("status")
+            or confidence_basis.get("backtest_status")
+            or "absent"
+        )
+        calibration_status = str(
+            calibration_summary.get("status")
+            or confidence_basis.get("calibration_status")
+            or "absent"
+        )
+        resolved_case_count = int(
+            confidence_basis.get("resolved_case_count")
+            or latest_answer_payload.get("evaluation_summary", {}).get("resolved_case_count")
+            or 0
+        )
+        if latest_answer_payload.get("abstain") or latest_answer_payload.get("abstained"):
+            status = "not_applicable"
+        elif cls._workspace_calibrated_confidence_earned(
+            latest_answer=latest_answer,
+            confidence_basis=confidence_basis,
+            calibration_summary=calibration_summary,
+        ):
+            status = "ready"
+        elif latest_answer:
+            status = "not_ready"
+        else:
+            status = "absent"
+            if "missing_forecast_answer" not in gating_reasons:
+                gating_reasons.append("missing_forecast_answer")
+
+        return {
+            "status": status,
+            "confidence_semantics": confidence_semantics or "not_applicable",
+            "question_type": question_type,
+            "calibration_kind": calibration_summary.get("calibration_kind"),
+            "backtest_status": backtest_status,
+            "calibration_status": calibration_status,
+            "benchmark_status": benchmark_status,
+            "resolved_case_count": resolved_case_count,
+            "gating_reasons": gating_reasons,
+            "warnings": warnings,
+            "evidence_regime": evidence_regime_label,
+            "policy_name": ensemble_policy.get("policy_name"),
+            "boundary_note": FORECAST_ANSWER_CONFIDENCE_BOUNDARY_NOTE,
+        }
 
     def get_report_context(
         self,
@@ -177,6 +300,7 @@ class ProbabilisticReportContextBuilder:
             linked_forecast_questions=linked_forecast_questions,
             confidence_status=confidence_status,
         )
+        answer_confidence_status = self._build_answer_confidence_status(forecast_workspace)
         forecast_object = self._build_forecast_object_summary(forecast_workspace)
         selected_run_market = (
             selected_run.get("simulation_market") or {}
@@ -258,6 +382,7 @@ class ProbabilisticReportContextBuilder:
                 ),
             },
             "forecast_workspace": forecast_workspace,
+            "answer_confidence_status": answer_confidence_status,
             "forecast_object": forecast_object,
             "simulation_market_summary": simulation_market_summary,
             "signal_provenance_summary": signal_provenance_summary,
@@ -1823,6 +1948,13 @@ class ProbabilisticReportContextBuilder:
             ),
             "boundary_note": FORECAST_WORKSPACE_CALIBRATION_BOUNDARY_NOTE,
         }
+        answer_confidence_status = self._build_answer_confidence_status(
+            {
+                "forecast_question": forecast_question,
+                "forecast_answer": latest_answer,
+            }
+        )
+        truthfulness_surface["answer_confidence_status"] = answer_confidence_status
 
         workspace_payload.update(
             {
@@ -1831,6 +1963,7 @@ class ProbabilisticReportContextBuilder:
                 "forecast_workspace_status": "available",
                 "supported_question_templates": list(forecast_question.get("supported_question_templates", [])),
                 "truthfulness_surface": truthfulness_surface,
+                "answer_confidence_status": answer_confidence_status,
                 "prediction_ledger": prediction_ledger,
                 "worker_comparison": {
                     "worker_count": len(forecast_workers),
@@ -2122,7 +2255,8 @@ class ProbabilisticReportContextBuilder:
                 }
         return None
 
-    def _dedupe_strings(self, values: List[str]) -> List[str]:
+    @staticmethod
+    def _dedupe_strings(values: List[str]) -> List[str]:
         deduped: List[str] = []
         for value in values:
             if value and value not in deduped:

@@ -1,5 +1,7 @@
 """Embedding client backed by an OpenAI-compatible embeddings API."""
 
+from __future__ import annotations
+
 import math
 from typing import Iterable, Sequence
 
