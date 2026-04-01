@@ -1238,3 +1238,182 @@ Prompt 10 should treat P09 as the final forecast-answer semantics layer and reru
   - `not_ready` or `uncalibrated` answers must not be described as calibrated
   - scenario-family shares remain descriptive simulation evidence, not earned real-world probabilities
   - Step 5 must keep using the saved scoped answer facts as the authority for exact answer-level tokens
+
+## P10
+
+### Scope
+
+- whole-repo final audit, verification, and remediation
+- `README.md`
+- `docs/what-mirofishes-adds.md`
+- `docs/local-probabilistic-operator-runbook.md`
+- `tests/live/probabilistic-operator-local.spec.mjs`
+- `tests/live/probabilistic-operator-local.helpers.mjs`
+- `frontend/tests/unit/liveOperatorSelection.test.mjs`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### Audit Findings
+
+1. A fresh rerun of the verification ladder showed the broad repo, non-binary, confidence, and artifact wrappers already green, but the live mutating operator gate was not trustworthy enough to close the chain: the Step 4/5 portion could hang for minutes because mutation-mode selection chose `sim_2de8f94e6f08`, whose fresh live run could complete with `simulation_market_manifest.extraction_status = no_signals` and `metrics.json -> simulation.total_actions = 0`.
+2. Root-cause evidence came from the fresh failing live artifacts under `backend/uploads/simulations/sim_2de8f94e6f08/ensemble/ensemble_0003/runs/run_0001`, which showed:
+   - `run_state.json.runner_status: completed`
+   - `simulation_market_manifest.json.extraction_status: no_signals`
+   - `simulation_market_manifest.json.signal_counts.agent_beliefs: 0`
+   - `metrics.json.metric_values["simulation.total_actions"].value: 0`
+3. Comparison against `sim_e93d43d721f3` showed the live Step 4/5 path itself was still viable when the harness selected an evidence-bearing family. A fresh run there produced:
+   - `simulation_market_manifest.json.extraction_status: ready`
+   - `signal_counts.agent_beliefs: 3`
+   - `signal_counts.belief_updates: 6`
+   - non-zero action logs on both platforms
+
+### TDD And Remediation
+
+1. Wrote a failing regression test first in `frontend/tests/unit/liveOperatorSelection.test.mjs`.
+2. Verified the RED state:
+   - `node --test frontend/tests/unit/liveOperatorSelection.test.mjs`
+   - result: `ERR_MODULE_NOT_FOUND` because the live-operator helper module did not exist yet.
+3. Implemented the smallest fix:
+   - added `tests/live/probabilistic-operator-local.helpers.mjs`
+   - rewired `tests/live/probabilistic-operator-local.spec.mjs` to use the shared helper
+   - mutation-mode Step 4/5 selection now prefers the newest prepared-and-grounded simulation family that already has completed ready run-scoped evidence
+   - the wait loop now fails fast on terminal non-ready run evidence instead of burning the full live timeout on `no_signals` runs
+4. Verified GREEN:
+   - `node --test frontend/tests/unit/liveOperatorSelection.test.mjs`
+   - result: `2 passed`
+5. Updated front-door docs and runbooks so they match the verified code:
+   - sensitivity is described as descriptive or designed-comparison evidence, not observational-only or causal
+   - Step 4/5 use `answer_confidence_status`
+   - the live operator harness auto-selection rule now matches the code that passed the final audit
+
+### Verification
+
+- `npm run verify`
+  - result: passed
+  - evidence: frontend `92` tests passed, Vite build passed, backend `376 passed, 1 warning`
+- `npm run verify:nonbinary`
+  - result: passed
+  - evidence: backend `108 passed, 1 warning`; frontend `81 passed`
+- `npm run verify:confidence`
+  - result: passed
+  - evidence: backend `114 passed, 1 warning`; frontend `81 passed`
+- `npm run verify:forecasting:artifacts`
+  - result: passed
+  - evidence: scanned `32` simulation directories, `30` active, `26` probabilistic prepared, `29` probabilistic report contexts, `13` forecast workspaces, `5` typed forecast answers; no active conformance failures
+- `npm run verify:forecasting:artifacts:all`
+  - result: passed
+  - evidence: scanned `32` directories including archived history; no unresolved conformance failures; `2` archived historical simulations remain explicitly quarantined as non-ready historical evidence
+- `npm run verify:forecasting`
+  - result: passed
+  - evidence: broad repo verify passed, targeted non-binary passed, confidence passed, active artifact scan passed, fixture-backed smoke passed with `10 passed (21.4s)`
+- `npm run verify:smoke`
+  - result: passed
+  - evidence: `10 passed (23.1s)`
+- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`
+  - result: passed
+  - evidence:
+    - `2 passed (3.0m)`
+    - Step 2/3 live operator proof persisted in `output/playwright/live-operator/latest.json`
+    - Step 4/5 live operator proof persisted in `output/playwright/live-operator/report-latest.json`
+    - fresh Step 4/5 live artifacts:
+      - `simulationId: sim_e93d43d721f3`
+      - `ensembleId: 0015`
+      - `runId: 0001`
+      - `generatedReportId: report_c3df9fc8ec79`
+      - `forecastId: live-forecast-sim_e93d43d721f3-mnfgewuv`
+      - `answer_confidence_status.status: not_ready`
+      - `provenanceStatus: partial`
+      - Step 5 chat completed with `responseLength: 1588`
+
+### Files Touched
+
+- `README.md`
+- `docs/what-mirofishes-adds.md`
+- `docs/local-probabilistic-operator-runbook.md`
+- `tests/live/probabilistic-operator-local.spec.mjs`
+- `tests/live/probabilistic-operator-local.helpers.mjs`
+- `frontend/tests/unit/liveOperatorSelection.test.mjs`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### Compatibility Fixes
+
+- Kept Step 2/3 live operator selection unchanged so the existing Step 2 handoff proof still uses the newest prepared-and-grounded local simulation.
+- Scoped the mutation-mode Step 4/5 change to the live verification harness only; no product retrieval, simulation, analytics, or forecast-engine contracts changed in P10.
+- Added fail-fast handling for terminal non-ready live run evidence so future audits do not misreport a dead-end `no_signals` run as a generic long timeout.
+- Updated docs to the current additive artifact contract without inflating claims beyond local, verified evidence.
+
+### Commit Gate
+
+- All required P10 gates passed.
+- Commit is allowed for this phase.
+
+## Audit And Readiness
+
+### Commands Run
+
+- `rg -n "observational|sensitivity|simulation market|calibrated|confidence|operator local|verify:operator:local|forecasting:artifacts|structured runtime|run-scoped" README.md docs/what-mirofishes-adds.md docs/local-probabilistic-operator-runbook.md docs/plans/2026-03-31-forecast-readiness-chain.md docs/plans/2026-03-31-forecast-readiness-status.json`
+  - exit: `0`
+  - note: identified stale front-door wording around observational-only sensitivity and `confidence_status`
+- `npm run verify`
+  - exit: `0`
+- `npm run verify:nonbinary`
+  - exit: `0`
+- `npm run verify:confidence`
+  - exit: `0`
+- `npm run verify:forecasting:artifacts`
+  - exit: `0`
+- `npm run verify:forecasting:artifacts:all`
+  - exit: `0`
+- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`
+  - pre-fix behavior: live Step 4/5 did not close promptly because the fresh run selected from `sim_2de8f94e6f08` terminated with `no_signals`
+- `node --test frontend/tests/unit/liveOperatorSelection.test.mjs`
+  - first exit: `1`
+  - note: expected RED state before the helper existed
+- `node --test frontend/tests/unit/liveOperatorSelection.test.mjs`
+  - second exit: `0`
+  - note: regression fixed with `2 passed`
+- `npm run verify`
+  - post-fix exit: `0`
+- `npm run verify:nonbinary`
+  - post-fix exit: `0`
+- `npm run verify:confidence`
+  - post-fix exit: `0`
+- `npm run verify:forecasting:artifacts`
+  - post-fix exit: `0`
+- `npm run verify:forecasting:artifacts:all`
+  - post-fix exit: `0`
+- `npm run verify:forecasting`
+  - post-fix exit: `0`
+- `npm run verify:smoke`
+  - post-fix exit: `0`
+- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`
+  - post-fix exit: `0`
+
+### Fixes Made
+
+- Added a shared live-operator artifact helper and regression test for mutation-mode Step 4/5 selection.
+- Changed the live operator harness so Step 4/5 selects an evidence-capable simulation family instead of whichever prepared-and-grounded family was newest overall.
+- Added fail-fast handling for terminal `no_signals` live runs.
+- Updated README and runbooks to match the verified `answer_confidence_status`, designed-comparison sensitivity, and live auto-selection contract.
+
+### Residual Risks
+
+- Non-blocking warning remains from pytest config option `asyncio_default_fixture_loop_scope`; verification is green despite the warning.
+- Non-blocking frontend build warnings remain about dynamic import chunking and large bundle size.
+- Live operator proof is now fresh local evidence, but it is still local-environment evidence, not a release-grade deployment proof.
+
+### Final Readiness Summary
+
+The full readiness ladder is green and freshly rerun after the P10 fix:
+
+- `npm run verify`
+- `npm run verify:nonbinary`
+- `npm run verify:confidence`
+- `npm run verify:forecasting:artifacts`
+- `npm run verify:forecasting:artifacts:all`
+- `npm run verify:forecasting`
+- `npm run verify:smoke`
+- `PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local`
+
+No unresolved internal blocker remains. The chain is ready under the repo’s current bounded, local, artifact-gated contract.

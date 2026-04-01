@@ -102,7 +102,7 @@ Use it only when:
 
 It covers Step 2 handoff, Step 3 recovery actions, Step 4 report generation, Step 4 compare handoff, and one real Step 5 Report Agent message against a saved live report context.
 
-If `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset, the harness auto-selects the newest non-archived prepared-and-grounded simulation and skips smoke fixtures.
+If `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset, the Step 2/3 portion of the harness uses the newest non-archived prepared-and-grounded simulation, while the live Step 4/5 portion prefers the newest prepared-and-grounded simulation family that already has completed ready run-scoped evidence. Smoke fixtures and archived simulations are skipped automatically.
 
 ## Workflow And Evidence Terms
 
@@ -226,7 +226,7 @@ Treat that probabilistic layer as descriptive:
 
 - ensemble and family summaries are empirical
 - selected runs are observed
-- sensitivity is observational
+- sensitivity is descriptive or designed-comparison evidence, not causal proof
 
 Step 4 can surface:
 
@@ -235,7 +235,7 @@ Step 4 can surface:
 - support counts and warnings
 - representative runs and selected family evidence
 - selected-run assumption ledger details when present
-- `confidence_status`
+- `answer_confidence_status`
 - calibration provenance only when the confidence gate is truly ready
 - one bounded compare workspace
 

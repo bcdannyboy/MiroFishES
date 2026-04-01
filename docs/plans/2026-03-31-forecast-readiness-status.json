@@ -373,13 +373,55 @@
       "blockers": []
     },
     "P10": {
-      "status": "pending",
-      "summary": "",
-      "owned_paths": [],
-      "commands": [],
-      "artifacts": [],
-      "compatibility_fixes": [],
+      "status": "complete",
+      "summary": "Completed the final global audit and readiness remediation by fixing the live operator Step 4/5 selection and timeout drift, rerunning the full verification ladder fresh, and aligning front-door docs with the verified additive forecast contract.",
+      "owned_paths": [
+        "README.md",
+        "docs/what-mirofishes-adds.md",
+        "docs/local-probabilistic-operator-runbook.md",
+        "tests/live/probabilistic-operator-local.spec.mjs",
+        "tests/live/probabilistic-operator-local.helpers.mjs",
+        "frontend/tests/unit/liveOperatorSelection.test.mjs",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json"
+      ],
+      "commands": [
+        "node --test frontend/tests/unit/liveOperatorSelection.test.mjs -> RED before implementation: ERR_MODULE_NOT_FOUND for tests/live/probabilistic-operator-local.helpers.mjs",
+        "node --test frontend/tests/unit/liveOperatorSelection.test.mjs -> GREEN with 2 passed",
+        "npm run verify -> frontend 92 passed + vite build passed; backend 376 passed, 1 warning in 7.58s",
+        "npm run verify:nonbinary -> backend 108 passed, 1 warning in 2.65s; frontend 81 passed",
+        "npm run verify:confidence -> backend 114 passed, 1 warning in 2.00s; frontend 81 passed",
+        "npm run verify:forecasting:artifacts -> scanned 32 simulation directories / 30 active / 26 probabilistic prepared / 29 report contexts / 13 workspaces / 5 typed answers; no active conformance failures",
+        "npm run verify:forecasting:artifacts:all -> scanned 32 directories including archived history; no unresolved conformance failures; 2 archived simulations quarantined non-ready",
+        "npm run verify:forecasting -> passed; broad verify passed; non-binary passed; confidence passed; active artifact scan passed; smoke 10 passed (21.4s)",
+        "npm run verify:smoke -> 10 passed (23.1s)",
+        "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local -> 2 passed (3.0m); Step 2/3 live proof on sim_2de8f94e6f08 ensemble_0004, Step 4/5 live proof on sim_e93d43d721f3 ensemble_0015 run_0001, generated report_id=report_c3df9fc8ec79"
+      ],
+      "artifacts": [
+        "output/playwright/live-operator/latest.json",
+        "output/playwright/live-operator/report-latest.json",
+        "docs/plans/2026-03-31-forecast-readiness-chain.md",
+        "docs/plans/2026-03-31-forecast-readiness-status.json",
+        "README.md",
+        "docs/what-mirofishes-adds.md",
+        "docs/local-probabilistic-operator-runbook.md"
+      ],
+      "compatibility_fixes": [
+        "Kept Step 2/3 live operator selection unchanged while limiting the new Step 4/5 preference to evidence-capable simulation families.",
+        "Added fail-fast handling for terminal non-ready live run evidence instead of letting `no_signals` runs consume the full live timeout.",
+        "Updated docs from `confidence_status` to `answer_confidence_status` and from observational-only sensitivity wording to the verified designed-comparison contract."
+      ],
       "blockers": []
     }
+  },
+  "overall_status": {
+    "status": "complete",
+    "summary": "All 10 forecast-readiness phases are complete under the repo's bounded local contract. The full verification ladder reran fresh after the P10 remediation and passed end to end.",
+    "final_verified_at": "2026-04-01T03:01:25Z",
+    "residual_risks": [
+      "Pytest still emits the known non-blocking asyncio_default_fixture_loop_scope config warning.",
+      "The frontend production build still emits non-blocking chunking and bundle-size warnings.",
+      "Live operator proof is fresh local evidence, not a release-grade deployment proof."
+    ]
   }
 }

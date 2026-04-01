@@ -4,13 +4,16 @@ import { fileURLToPath } from 'node:url'
 
 import { expect, test } from '@playwright/test'
 
+import {
+  createLiveOperatorArtifactReader
+} from './probabilistic-operator-local.helpers.mjs'
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const repoRoot = path.resolve(__dirname, '..', '..')
 const liveEvidenceDir = path.join(repoRoot, 'output', 'playwright', 'live-operator')
 const simulationsRoot = path.join(repoRoot, 'backend', 'uploads', 'simulations')
 const reportsRoot = path.join(repoRoot, 'backend', 'uploads', 'reports')
-const smokeFixtureMarkerFilename = 'probabilistic_smoke_fixture.json'
 const actionTimeout = 30_000
 const readinessTimeout = 5_000
 const reportTimeout = 300_000
@@ -18,514 +21,16 @@ const liveStep45Timeout = 600_000
 const liveBackendPort = process.env.PLAYWRIGHT_BACKEND_PORT || '50141'
 const liveBackendBaseURL = process.env.PLAYWRIGHT_BACKEND_BASE_URL || `http://127.0.0.1:${liveBackendPort}`
 
-const safeReadJson = (filePath) => {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-  } catch {
-    return null
-  }
-}
+const liveArtifactReader = createLiveOperatorArtifactReader({
+  simulationsRoot,
+  reportsRoot,
+  processEnv: process.env
+})
 
-const isProbabilisticPrepared = (snapshot) => {
-  if (!snapshot || typeof snapshot !== 'object') {
-    return false
-  }
-  if (snapshot.probabilistic_mode === true) {
-    return true
-  }
-  if (typeof snapshot.mode === 'string' && snapshot.mode.trim() === 'probabilistic') {
-    return true
-  }
-  const preparedSummary = snapshot.prepared_artifact_summary
-  if (!preparedSummary || typeof preparedSummary !== 'object') {
-    return false
-  }
-  return (
-    preparedSummary.probabilistic_mode === true
-    || (typeof preparedSummary.mode === 'string' && preparedSummary.mode.trim() === 'probabilistic')
-  )
-}
-
-const readLiveSimulationRecord = (simulationId) => {
-  if (!simulationId) {
-    return null
-  }
-
-  const simulationDir = path.join(simulationsRoot, simulationId)
-  if (!fs.existsSync(simulationDir) || !fs.statSync(simulationDir).isDirectory()) {
-    return null
-  }
-  if (fs.existsSync(path.join(simulationDir, smokeFixtureMarkerFilename))) {
-    return null
-  }
-  if (fs.existsSync(path.join(simulationDir, 'forecast_archive.json'))) {
-    return null
-  }
-
-  const preparedSnapshot = safeReadJson(path.join(simulationDir, 'prepared_snapshot.json'))
-  const groundingBundle = safeReadJson(path.join(simulationDir, 'grounding_bundle.json'))
-  const state = safeReadJson(path.join(simulationDir, 'state.json'))
-  const configReasoning = typeof state?.config_reasoning === 'string'
-    ? state.config_reasoning
-    : ''
-  const sourceRequirement = groundingBundle?.source_summary?.simulation_requirement
-
-  return {
-    simulationId,
-    createdAt: state?.created_at || state?.updated_at || null,
-    preparedGrounded: (
-      isProbabilisticPrepared(preparedSnapshot)
-      && groundingBundle?.status === 'ready'
-      && !configReasoning.includes('Synthetic smoke-fixture configuration')
-      && !(
-        typeof sourceRequirement === 'string'
-        && sourceRequirement.includes('Smoke-test the probabilistic Step 2 to Step 3 handoff')
-      )
-    )
-  }
-}
-
-const listLiveSimulationCandidates = () => {
-  if (!fs.existsSync(simulationsRoot)) {
-    return []
-  }
-
-  const candidates = []
-  for (const entry of fs.readdirSync(simulationsRoot)) {
-    if (!entry || entry.startsWith('.')) {
-      continue
-    }
-
-    const record = readLiveSimulationRecord(entry)
-    if (!record?.preparedGrounded) {
-      continue
-    }
-    candidates.push(record)
-  }
-
-  candidates.sort((left, right) => {
-    const leftKey = left.createdAt || ''
-    const rightKey = right.createdAt || ''
-    return rightKey.localeCompare(leftKey) || right.simulationId.localeCompare(left.simulationId)
-  })
-
-  return candidates
-}
-
-const resolveLiveSimulationSelection = () => {
-  if (process.env.PLAYWRIGHT_LIVE_SIMULATION_ID) {
-    return {
-      simulationId: process.env.PLAYWRIGHT_LIVE_SIMULATION_ID,
-      source: 'env'
-    }
-  }
-
-  const candidates = listLiveSimulationCandidates()
-  if (candidates.length === 0) {
-    return {
-      simulationId: null,
-      source: 'auto',
-      reason: fs.existsSync(simulationsRoot)
-        ? 'No active prepared-and-grounded simulation was found under backend/uploads/simulations.'
-        : `No simulation storage root found at ${simulationsRoot}`
-    }
-  }
-
-  return {
-    simulationId: candidates[0].simulationId,
-    source: 'auto'
-  }
-}
-
-const resolvedSimulationSelection = resolveLiveSimulationSelection()
+const resolvedSimulationSelection = liveArtifactReader.resolveLiveSimulationSelection()
 const defaultSimulationId = resolvedSimulationSelection.simulationId
 
-const hasSavedReportInferenceEvidence = (probabilisticContext) => {
-  if (!probabilisticContext || typeof probabilisticContext !== 'object') {
-    return false
-  }
-
-  const selectedRun = probabilisticContext.selected_run
-  const simulationMarket = (
-    selectedRun
-    && typeof selectedRun === 'object'
-    && selectedRun.simulation_market
-    && typeof selectedRun.simulation_market === 'object'
-  )
-    ? selectedRun.simulation_market
-    : null
-  const answerPayload = (
-    probabilisticContext.forecast_workspace
-    && typeof probabilisticContext.forecast_workspace === 'object'
-    && probabilisticContext.forecast_workspace.forecast_answer
-    && typeof probabilisticContext.forecast_workspace.forecast_answer === 'object'
-    && probabilisticContext.forecast_workspace.forecast_answer.answer_payload
-    && typeof probabilisticContext.forecast_workspace.forecast_answer.answer_payload === 'object'
-  )
-    ? probabilisticContext.forecast_workspace.forecast_answer.answer_payload
-    : null
-
-  return Boolean(
-    probabilisticContext.simulation_market_summary
-    && probabilisticContext.signal_provenance_summary
-    && simulationMarket?.market_snapshot
-    && answerPayload?.best_estimate
-  )
-}
-
-const listCompletedProbabilisticReportScopes = ({ simulationId = null } = {}) => {
-  if (!fs.existsSync(reportsRoot)) {
-    return []
-  }
-
-  const reportScopes = []
-  for (const entry of fs.readdirSync(reportsRoot)) {
-    if (!entry || entry.startsWith('.') || entry.startsWith('smoke-')) {
-      continue
-    }
-
-    const reportDir = path.join(reportsRoot, entry)
-    if (!fs.statSync(reportDir).isDirectory()) {
-      continue
-    }
-
-    const meta = safeReadJson(path.join(reportDir, 'meta.json'))
-    if (!meta || meta.status !== 'completed') {
-      continue
-    }
-    if (simulationId && meta.simulation_id !== simulationId) {
-      continue
-    }
-
-    const simulationRecord = readLiveSimulationRecord(meta.simulation_id)
-    if (!simulationRecord) {
-      continue
-    }
-
-    const probabilisticContext = (
-      meta.probabilistic_context
-      && typeof meta.probabilistic_context === 'object'
-    )
-      ? meta.probabilistic_context
-      : null
-    if (!probabilisticContext) {
-      continue
-    }
-    if (!hasSavedReportInferenceEvidence(probabilisticContext)) {
-      continue
-    }
-    const ensembleId = meta.ensemble_id || probabilisticContext?.ensemble_id || null
-    if (!ensembleId) {
-      continue
-    }
-
-    reportScopes.push({
-      source: 'saved-report',
-      simulationId: meta.simulation_id,
-      reportId: entry,
-      ensembleId,
-      clusterId: meta.cluster_id || probabilisticContext?.cluster_id || null,
-      runId: meta.run_id || probabilisticContext?.run_id || null,
-      createdAt: meta.completed_at || meta.created_at || null
-    })
-  }
-
-  reportScopes.sort((left, right) => {
-    const leftRunScoped = left.runId ? 1 : 0
-    const rightRunScoped = right.runId ? 1 : 0
-    if (rightRunScoped !== leftRunScoped) {
-      return rightRunScoped - leftRunScoped
-    }
-    const leftKey = left.createdAt || ''
-    const rightKey = right.createdAt || ''
-    return rightKey.localeCompare(leftKey) || right.reportId.localeCompare(left.reportId)
-  })
-
-  return reportScopes
-}
-
-const listCompletedRunScopeCandidates = (simulationId) => {
-  if (!simulationId) {
-    return []
-  }
-
-  const simulationDir = path.join(simulationsRoot, simulationId)
-  const ensembleRoot = path.join(simulationDir, 'ensemble')
-  if (!fs.existsSync(ensembleRoot)) {
-    return []
-  }
-
-  const runScopes = []
-  for (const ensembleEntry of fs.readdirSync(ensembleRoot)) {
-    if (!ensembleEntry.startsWith('ensemble_')) {
-      continue
-    }
-
-    const ensembleDir = path.join(ensembleRoot, ensembleEntry)
-    if (!fs.statSync(ensembleDir).isDirectory()) {
-      continue
-    }
-
-    const ensembleId = ensembleEntry.replace(/^ensemble_/, '')
-    const runsDir = path.join(ensembleDir, 'runs')
-    if (!fs.existsSync(runsDir)) {
-      continue
-    }
-
-    for (const runEntry of fs.readdirSync(runsDir)) {
-      if (!runEntry.startsWith('run_')) {
-        continue
-      }
-
-      const runDir = path.join(runsDir, runEntry)
-      if (!fs.statSync(runDir).isDirectory()) {
-        continue
-      }
-
-      const runState = safeReadJson(path.join(runDir, 'run_state.json'))
-      const runManifest = safeReadJson(path.join(runDir, 'run_manifest.json'))
-      if (runState?.runner_status !== 'completed' || runManifest?.status !== 'completed') {
-        continue
-      }
-      const marketManifest = safeReadJson(path.join(runDir, 'simulation_market_manifest.json'))
-      if (
-        !marketManifest
-        || marketManifest.extraction_status !== 'ready'
-        || marketManifest.forecast_workspace_linked !== true
-        || marketManifest.scope_linked_to_run !== true
-      ) {
-        continue
-      }
-
-      const graphId = (
-        runManifest?.base_graph_id
-        || runManifest?.graph_id
-        || runState?.base_graph_id
-        || runState?.graph_id
-      )
-      if (!graphId) {
-        continue
-      }
-
-      const hasRunMetrics = fs.existsSync(path.join(runDir, 'metrics.json'))
-      const hasEnsembleAnalytics = (
-        fs.existsSync(path.join(ensembleDir, 'aggregate_summary.json'))
-        || fs.existsSync(path.join(ensembleDir, 'scenario_clusters.json'))
-      )
-      if (!hasRunMetrics && !hasEnsembleAnalytics) {
-        continue
-      }
-
-      runScopes.push({
-        source: 'completed-run',
-        simulationId,
-        reportId: null,
-        ensembleId,
-        clusterId: null,
-        runId: runEntry.replace(/^run_/, ''),
-        scopeLinkedToRun: marketManifest.scope_linked_to_run === true,
-        createdAt: (
-          runState?.completed_at
-          || runManifest?.completed_at
-          || runManifest?.updated_at
-          || runManifest?.generated_at
-          || null
-        )
-      })
-    }
-  }
-
-  runScopes.sort((left, right) => {
-    const leftRunLinked = left.scopeLinkedToRun ? 1 : 0
-    const rightRunLinked = right.scopeLinkedToRun ? 1 : 0
-    if (rightRunLinked !== leftRunLinked) {
-      return rightRunLinked - leftRunLinked
-    }
-    const leftKey = left.createdAt || ''
-    const rightKey = right.createdAt || ''
-    return rightKey.localeCompare(leftKey) || right.runId.localeCompare(left.runId)
-  })
-
-  return runScopes
-}
-
-const resolveLiveProbabilisticReportScope = (simulationId) => {
-  if (!simulationId) {
-    return {
-      source: 'auto',
-      reportId: null,
-      reason: 'No live simulation was selected for report verification.'
-    }
-  }
-
-  const savedReportScopes = listCompletedProbabilisticReportScopes({ simulationId })
-  if (savedReportScopes.length > 0) {
-    return savedReportScopes[0]
-  }
-
-  const completedRunScopes = listCompletedRunScopeCandidates(simulationId)
-  if (completedRunScopes.length > 0) {
-    return completedRunScopes[0]
-  }
-
-  return {
-    source: 'auto',
-    reportId: null,
-    reason: (
-      `No completed live probabilistic report scope or report-generatable completed `
-      + `run scope was found for ${simulationId}.`
-    )
-  }
-}
-
-const resolveLiveStep45Selection = () => {
-  const preferFreshGeneration = process.env.PLAYWRIGHT_LIVE_ALLOW_MUTATION === 'true'
-
-  if (process.env.PLAYWRIGHT_LIVE_SIMULATION_ID) {
-    const envSimulationId = process.env.PLAYWRIGHT_LIVE_SIMULATION_ID
-    const reportScopeSelection = resolveLiveProbabilisticReportScope(envSimulationId)
-    return {
-      simulationId: reportScopeSelection.simulationId || envSimulationId,
-      simulationSelection: {
-        simulationId: envSimulationId,
-        source: 'env'
-      },
-      reportScopeSelection
-    }
-  }
-
-  if (resolvedSimulationSelection.simulationId) {
-    const preferredSelection = resolveLiveProbabilisticReportScope(
-      resolvedSimulationSelection.simulationId
-    )
-    if (preferredSelection.ensembleId) {
-      return {
-        simulationId: preferredSelection.simulationId || resolvedSimulationSelection.simulationId,
-        simulationSelection: resolvedSimulationSelection,
-        reportScopeSelection: preferredSelection
-      }
-    }
-  }
-
-  const simulationCandidates = listLiveSimulationCandidates()
-  if (!preferFreshGeneration) {
-    const savedReportScopes = listCompletedProbabilisticReportScopes()
-    if (savedReportScopes.length > 0) {
-      return {
-        simulationId: savedReportScopes[0].simulationId,
-        simulationSelection: {
-          simulationId: savedReportScopes[0].simulationId,
-          source: 'saved-report-catalog'
-        },
-        reportScopeSelection: savedReportScopes[0]
-      }
-    }
-  }
-
-  if (simulationCandidates.length === 0) {
-    return {
-      simulationId: null,
-      simulationSelection: resolvedSimulationSelection,
-      reportScopeSelection: {
-        source: 'auto',
-        reportId: null,
-        reason: resolvedSimulationSelection.reason
-          || 'No active prepared-and-grounded simulation was available for Step 4/5 verification.'
-      }
-    }
-  }
-
-  const reasons = []
-  for (const candidate of simulationCandidates) {
-    if (candidate.simulationId === resolvedSimulationSelection.simulationId) {
-      continue
-    }
-    const reportScopeSelection = resolveLiveProbabilisticReportScope(candidate.simulationId)
-    if (reportScopeSelection.ensembleId) {
-      return {
-        simulationId: candidate.simulationId,
-        simulationSelection: candidate,
-        reportScopeSelection
-      }
-    }
-    reasons.push(`${candidate.simulationId}: ${reportScopeSelection.reason}`)
-  }
-
-  return {
-    simulationId: resolvedSimulationSelection.simulationId || simulationCandidates[0].simulationId,
-    simulationSelection: resolvedSimulationSelection.simulationId
-      ? resolvedSimulationSelection
-      : simulationCandidates[0],
-    reportScopeSelection: {
-      source: 'auto',
-      reportId: null,
-      reason: reasons.join(' | ')
-    }
-  }
-}
-
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
-
-const readLiveRunScopeEvidence = ({ simulationId, ensembleId, runId }) => {
-  if (!simulationId || !ensembleId || !runId) {
-    return null
-  }
-
-  const runDir = path.join(
-    simulationsRoot,
-    simulationId,
-    'ensemble',
-    `ensemble_${ensembleId}`,
-    'runs',
-    `run_${runId}`
-  )
-  if (!fs.existsSync(runDir) || !fs.statSync(runDir).isDirectory()) {
-    return null
-  }
-
-  const runState = safeReadJson(path.join(runDir, 'run_state.json'))
-  const runManifest = safeReadJson(path.join(runDir, 'run_manifest.json'))
-  const marketManifest = safeReadJson(path.join(runDir, 'simulation_market_manifest.json'))
-  const marketSnapshot = safeReadJson(path.join(runDir, 'market_snapshot.json'))
-  const metrics = safeReadJson(path.join(runDir, 'metrics.json'))
-  const actionLogPaths = ['twitter', 'reddit']
-    .map((platform) => ({
-      platform,
-      relativePath: `${platform}/actions.jsonl`,
-      absolutePath: path.join(runDir, platform, 'actions.jsonl')
-    }))
-    .filter((entry) => fs.existsSync(entry.absolutePath) && fs.statSync(entry.absolutePath).size > 0)
-    .map((entry) => entry.relativePath)
-  const signalCounts = marketManifest?.signal_counts || {}
-  const hasExtractedSignals = (
-    (signalCounts.agent_beliefs || 0) > 0
-    || (signalCounts.belief_updates || 0) > 0
-  )
-
-  return {
-    simulationId,
-    ensembleId,
-    runId,
-    runDir,
-    runState,
-    runManifest,
-    marketManifest,
-    marketSnapshot,
-    metrics,
-    actionLogPaths,
-    ready: Boolean(
-      runState?.runner_status === 'completed'
-      && runManifest?.status === 'completed'
-      && marketManifest?.extraction_status === 'ready'
-      && marketManifest?.forecast_workspace_linked === true
-      && marketManifest?.scope_linked_to_run === true
-      && actionLogPaths.length > 0
-      && hasExtractedSignals
-      && marketSnapshot
-      && metrics
-    )
-  }
-}
 
 const waitForLiveRunScopeEvidence = async (
   { simulationId, ensembleId, runId },
@@ -535,29 +40,29 @@ const waitForLiveRunScopeEvidence = async (
   } = {}
 ) => {
   const deadline = Date.now() + timeoutMs
-  let lastEvidence = readLiveRunScopeEvidence({ simulationId, ensembleId, runId })
+  let lastEvidence = liveArtifactReader.readLiveRunScopeEvidence({ simulationId, ensembleId, runId })
 
   while (Date.now() < deadline) {
-    lastEvidence = readLiveRunScopeEvidence({ simulationId, ensembleId, runId }) || lastEvidence
-    if (lastEvidence?.ready) {
+    lastEvidence = (
+      liveArtifactReader.readLiveRunScopeEvidence({ simulationId, ensembleId, runId })
+      || lastEvidence
+    )
+    if (liveArtifactReader.isLiveRunScopeReady(lastEvidence)) {
       return lastEvidence
+    }
+    const terminalIssue = liveArtifactReader.getLiveRunScopeTerminalIssue(lastEvidence)
+    if (terminalIssue) {
+      throw new Error(
+        `Live run-scoped report evidence reached a terminal non-ready state `
+        + `${simulationId}/${ensembleId}/${runId}: ${terminalIssue}; ${
+          JSON.stringify(liveArtifactReader.summarizeLiveRunScopeEvidence(lastEvidence))
+        }`
+      )
     }
     await delay(pollIntervalMs)
   }
 
-  const timeoutSummary = lastEvidence
-    ? {
-      runnerStatus: lastEvidence.runState?.runner_status || null,
-      runStatus: lastEvidence.runManifest?.status || null,
-      extractionStatus: lastEvidence.marketManifest?.extraction_status || null,
-      forecastWorkspaceLinked: lastEvidence.marketManifest?.forecast_workspace_linked === true,
-      scopeLinkedToRun: lastEvidence.marketManifest?.scope_linked_to_run === true,
-      actionLogs: lastEvidence.actionLogPaths,
-      signalCounts: lastEvidence.marketManifest?.signal_counts || null,
-      hasMarketSnapshot: Boolean(lastEvidence.marketSnapshot),
-      hasMetrics: Boolean(lastEvidence.metrics)
-    }
-    : null
+  const timeoutSummary = liveArtifactReader.summarizeLiveRunScopeEvidence(lastEvidence)
 
   throw new Error(
     `Timed out waiting for live run-scoped report evidence ${simulationId}/${ensembleId}/${runId}: ${
@@ -967,7 +472,7 @@ test.describe('local-only probabilistic operator pass', () => {
   test('Step 4 report and Step 5 report-agent work on a live probabilistic report', async ({ page }) => {
     test.setTimeout(liveStep45Timeout)
 
-    const resolvedStep45Selection = resolveLiveStep45Selection()
+    const resolvedStep45Selection = liveArtifactReader.resolveLiveStep45Selection()
     const step45SimulationId = resolvedStep45Selection.simulationId
     const step45SimulationSelection = resolvedStep45Selection.simulationSelection
     const step45ReportScopeSelection = resolvedStep45Selection.reportScopeSelection

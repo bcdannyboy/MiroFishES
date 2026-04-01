@@ -9,7 +9,7 @@ That newer path is only as strong as the artifacts and verification behind it. W
 - Step 2 can prepare forecast-oriented artifacts instead of only transient setup state.
 - Step 2 handoff can create or reopen stored Step 3 run shells instead of launching a run immediately.
 - Step 4 and the Report Agent lane in Step 5 can consume explicit `ensemble`, `cluster`, or `run` scope.
-- The repo can persist aggregate summaries, scenario clusters, observational sensitivity, backtests, and calibration artifacts.
+- The repo can persist source-unit grounding, prepared world and agent state, structured runtime state, simulation-market artifacts, scenario clusters, designed-comparison sensitivity, backtests, and calibration artifacts.
 - History can reopen saved probabilistic Step 3, Step 4, and Step 5 state when the required scope metadata exists.
 
 ## What It Still Does Not Truthfully Add
@@ -25,9 +25,9 @@ That newer path is only as strong as the artifacts and verification behind it. W
 - Upstream grounding is limited to uploaded project artifacts, graph-build outputs, and repo-local code-analysis only when that evidence was actually attached to `grounding_bundle.json`.
 - Step 2 proves artifact preparation and workflow handoff eligibility. It does not prove report quality, forecast certainty, or calibrated confidence.
 - Step 3 shows one stored shell and its recovery actions. A prepared shell stays passive until the operator launches it.
-- Step 4 adds empirical and observational context around the legacy report body.
-- Step 5 makes only the Report Agent lane scope-aware. Interviews and surveys remain legacy-scoped.
-- `confidence_status` can be `absent`, `not_ready`, or `ready`. `ready` requires valid calibration and backtest artifacts plus provenance that links calibration back to the saved backtest artifact.
+- Step 4 adds empirical, regime-aware, and designed-comparison-aware context around the legacy report body.
+- Step 5 makes only the Report Agent lane scope-aware and answer-confidence-aware. Interviews and surveys remain legacy-scoped.
+- `answer_confidence_status.status` can be `absent`, `not_ready`, or `ready`. `ready` requires valid calibration and backtest artifacts plus provenance that links calibration back to the saved backtest artifact.
 
 ## Workflow And Evidence Terms
 
@@ -156,7 +156,7 @@ Use this when the change touches the active typed forecast path for `binary`, `c
 npm run verify:confidence
 ```
 
-Use this when the change touches confidence, backtests, calibration, report context, or Step 2 through Step 5 copy that depends on those states. This is the narrow contract for `confidence_status`, provenance, and artifact-gated wording.
+Use this when the change touches confidence, backtests, calibration, report context, or Step 2 through Step 5 copy that depends on those states. This is the narrow contract for `answer_confidence_status`, provenance, and artifact-gated wording.
 
 ### 4. Forecasting verify
 
@@ -209,7 +209,7 @@ It exercises:
 - Step 4 compare handoff into Step 5
 - one real Step 5 Report Agent message against a saved live report context
 
-If `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset, the harness auto-selects the newest non-archived prepared-and-grounded local simulation and skips archived records plus smoke fixtures.
+If `PLAYWRIGHT_LIVE_SIMULATION_ID` is unset, Step 2/3 uses the newest non-archived prepared-and-grounded local simulation, while the live Step 4/5 path prefers the newest prepared-and-grounded simulation family that already has completed ready run-scoped evidence. Archived records and smoke fixtures are skipped automatically.
 
 ## Historical Artifact Policy
 
@@ -228,7 +228,7 @@ Active forecasting evidence and historical evidence are intentionally separated.
 4. Launching a shell in Step 3 produces runtime state, timelines, action logs, and run metrics such as `metrics.json`.
 5. Ensemble analytics persist `aggregate_summary.json`, `scenario_clusters.json`, and `sensitivity.json`.
 6. Backtesting and calibration persist `backtest_summary.json` and `calibration_summary.json` when those artifacts exist.
-7. Step 4 and Step 5 consume `probabilistic_report_context.json`. It always includes `grounding_context` and `confidence_status`, and it only includes `calibrated_summary` or `calibration_provenance` when the confidence gate is actually ready.
+7. Step 4 and Step 5 consume `probabilistic_report_context.json`. It always includes `grounding_context` and `answer_confidence_status`, and it only includes `calibrated_summary` or `calibration_provenance` when the confidence gate is actually ready.
 
 ## Docker Compose
 

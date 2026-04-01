@@ -47,6 +47,8 @@ The forecasting layer adds persisted analytics artifacts such as:
 - `aggregate_summary.json`
 - `scenario_clusters.json`
 - `sensitivity.json`
+- `simulation_market_manifest.json`
+- `runtime_graph_state.json`
 - `probabilistic_report_context.json`
 
 Those artifacts let the UI surface support counts, representative runs, selected family context, compare choices, and explicit evidence boundaries.
@@ -55,7 +57,7 @@ The boundary still matters:
 
 - aggregate and cluster summaries are empirical
 - selected runs are observed
-- sensitivity is observational, not causal
+- sensitivity is descriptive or designed-comparison evidence, not causal proof
 
 ### 6. There is a narrow confidence lane
 
@@ -64,7 +66,7 @@ The repo can persist:
 - `backtest_summary.json`
 - `calibration_summary.json`
 
-and expose `confidence_status` in saved report context.
+and expose `answer_confidence_status` in saved report context.
 
 That does not make the whole system calibrated. It only means a supported binary, categorical, or numeric answer lane can pass the confidence gate when the type-correct calibration artifact, backtest artifact, and provenance checks all pass.
 
