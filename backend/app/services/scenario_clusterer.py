@@ -531,8 +531,11 @@ class ScenarioClusterer:
         template_support_counts: Counter[str] = Counter()
         coverage_tags: set[str] = set()
         exogenous_event_ids: set[str] = set()
+        structural_uncertainty_ids: set[str] = set()
+        structural_option_counts: Dict[str, Counter[str]] = {}
         run_templates: Dict[str, List[str]] = {}
         run_coverage_tags: Dict[str, List[str]] = {}
+        run_structural_assignments: Dict[str, List[str]] = {}
 
         for payload in run_payloads:
             run_id = str(payload.get("run_id") or "").strip()
@@ -572,6 +575,22 @@ class ScenarioClusterer:
                 run_templates[run_id] = normalized_templates
                 run_coverage_tags[run_id] = normalized_tags
 
+            structural_items = assumption_ledger.get("structural_uncertainties", [])
+            normalized_assignments: List[str] = []
+            if isinstance(structural_items, list):
+                for item in structural_items:
+                    if not isinstance(item, dict):
+                        continue
+                    uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+                    option_id = str(item.get("option_id") or "").strip()
+                    if not uncertainty_id or not option_id:
+                        continue
+                    structural_uncertainty_ids.add(uncertainty_id)
+                    structural_option_counts.setdefault(uncertainty_id, Counter())[option_id] += 1
+                    normalized_assignments.append(f"{uncertainty_id}:{option_id}")
+            if run_id:
+                run_structural_assignments[run_id] = sorted(normalized_assignments)
+
         return {
             "template_support_counts": {
                 template_id: template_support_counts[template_id]
@@ -579,8 +598,17 @@ class ScenarioClusterer:
             },
             "coverage_tags": sorted(coverage_tags),
             "exogenous_event_ids": sorted(exogenous_event_ids),
+            "structural_uncertainty_ids": sorted(structural_uncertainty_ids),
+            "structural_option_counts": {
+                uncertainty_id: {
+                    option_id: counts[option_id]
+                    for option_id in sorted(counts)
+                }
+                for uncertainty_id, counts in sorted(structural_option_counts.items())
+            },
             "run_templates": run_templates,
             "run_coverage_tags": run_coverage_tags,
+            "run_structural_assignments": run_structural_assignments,
         }
 
     def _build_coverage_metrics(
@@ -594,9 +622,14 @@ class ScenarioClusterer:
         observed_template_ids = list(observed_template_counts.keys())
         observed_coverage_tags = observed["coverage_tags"]
         observed_event_ids = observed["exogenous_event_ids"]
+        observed_structural_uncertainty_ids = observed.get("structural_uncertainty_ids", [])
+        observed_structural_option_counts = observed.get("structural_option_counts", {})
 
         planned_template_ids = self._collect_planned_template_ids(experiment_design)
         planned_coverage_tag_count = self._collect_planned_coverage_tag_count(experiment_design)
+        planned_structural_catalog = self._collect_planned_structural_catalog(
+            experiment_design
+        )
 
         if planned_template_ids:
             metrics: Dict[str, Any] = {
@@ -624,6 +657,40 @@ class ScenarioClusterer:
                 )
             if observed_event_ids:
                 metrics["observed_exogenous_event_count"] = len(observed_event_ids)
+            if planned_structural_catalog:
+                planned_structural_ids = sorted(planned_structural_catalog)
+                metrics["planned_structural_uncertainty_count"] = len(planned_structural_ids)
+                metrics["observed_structural_uncertainty_count"] = len(
+                    observed_structural_uncertainty_ids
+                )
+                metrics["structural_uncertainty_coverage_ratio"] = (
+                    len(
+                        [
+                            uncertainty_id
+                            for uncertainty_id in planned_structural_ids
+                            if uncertainty_id in observed_structural_uncertainty_ids
+                        ]
+                    )
+                    / len(planned_structural_ids)
+                ) if planned_structural_ids else 0.0
+                metrics["structural_option_coverage_ratios"] = {
+                    uncertainty_id: (
+                        len(
+                            [
+                                option_id
+                                for option_id in planned_structural_catalog.get(
+                                    uncertainty_id, []
+                                )
+                                if option_id
+                                in (observed_structural_option_counts.get(uncertainty_id) or {})
+                            ]
+                        )
+                        / len(planned_structural_catalog.get(uncertainty_id, []))
+                    )
+                    if planned_structural_catalog.get(uncertainty_id)
+                    else 0.0
+                    for uncertainty_id in planned_structural_ids
+                }
             return _AliasLookupDict(
                 metrics,
                 aliases={
@@ -648,6 +715,45 @@ class ScenarioClusterer:
             metrics["observed_template_count"] = len(observed_template_ids)
             metrics["observed_coverage_tag_count"] = len(observed_coverage_tags)
             metrics["observed_exogenous_event_count"] = len(observed_event_ids)
+        if planned_structural_catalog:
+            planned_structural_ids = sorted(planned_structural_catalog)
+            metrics["planned_structural_uncertainty_count"] = len(planned_structural_ids)
+            metrics["observed_structural_uncertainty_count"] = len(
+                observed_structural_uncertainty_ids
+            )
+            metrics["structural_uncertainty_coverage_ratio"] = (
+                len(
+                    [
+                        uncertainty_id
+                        for uncertainty_id in planned_structural_ids
+                        if uncertainty_id in observed_structural_uncertainty_ids
+                    ]
+                )
+                / len(planned_structural_ids)
+            ) if planned_structural_ids else 0.0
+            metrics["structural_option_coverage_ratios"] = {
+                uncertainty_id: (
+                    len(
+                        [
+                            option_id
+                            for option_id in planned_structural_catalog.get(
+                                uncertainty_id, []
+                            )
+                            if option_id
+                            in (observed_structural_option_counts.get(uncertainty_id) or {})
+                        ]
+                    )
+                    / len(planned_structural_catalog.get(uncertainty_id, []))
+                )
+                if planned_structural_catalog.get(uncertainty_id)
+                else 0.0
+                for uncertainty_id in planned_structural_ids
+            }
+        if observed_structural_uncertainty_ids:
+            metrics["observed_structural_uncertainty_count"] = len(
+                observed_structural_uncertainty_ids
+            )
+            metrics["structural_option_support_counts"] = observed_structural_option_counts
         return _AliasLookupDict(
             metrics,
             aliases={
@@ -687,6 +793,47 @@ class ScenarioClusterer:
                 if normalized:
                     coverage_tags.add(normalized)
         return len(coverage_tags)
+
+    def _collect_planned_structural_catalog(
+        self,
+        experiment_design: Dict[str, Any],
+    ) -> Dict[str, List[str]]:
+        catalog: Dict[str, List[str]] = {}
+        for item in experiment_design.get("structural_uncertainty_catalog", []):
+            if not isinstance(item, dict):
+                continue
+            uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+            if not uncertainty_id:
+                continue
+            option_ids = sorted(
+                {
+                    str(option_id).strip()
+                    for option_id in item.get("option_ids", [])
+                    if str(option_id or "").strip()
+                }
+            )
+            if option_ids:
+                catalog[uncertainty_id] = option_ids
+        if catalog:
+            return catalog
+
+        for row in experiment_design.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            for item in row.get("structural_assignments", []):
+                if not isinstance(item, dict):
+                    continue
+                uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+                option_id = str(item.get("option_id") or "").strip()
+                if not uncertainty_id or not option_id:
+                    continue
+                options = catalog.setdefault(uncertainty_id, [])
+                if option_id not in options:
+                    options.append(option_id)
+        return {
+            uncertainty_id: sorted(option_ids)
+            for uncertainty_id, option_ids in sorted(catalog.items())
+        }
 
     def _build_scenario_distance_metrics(
         self,
@@ -815,6 +962,12 @@ class ScenarioClusterer:
         planned_coverage_tag_count = self._collect_planned_coverage_tag_count(experiment_design)
         if planned_coverage_tag_count and len(observed["coverage_tags"]) < planned_coverage_tag_count:
             warnings.append("limited_coverage_tag_span")
+
+        planned_structural_catalog = self._collect_planned_structural_catalog(experiment_design)
+        if planned_structural_catalog:
+            observed_structural_ids = set(observed.get("structural_uncertainty_ids", []))
+            if len(observed_structural_ids) < len(planned_structural_catalog):
+                warnings.append("limited_structural_coverage")
 
         if len(observed_template_ids) < 2:
             warnings.append("narrow_template_coverage")
@@ -999,6 +1152,9 @@ class ScenarioClusterer:
             )
 
             assumption_template_counts = self._count_assumption_templates(members)
+            structural_option_counts = self._count_structural_options(members)
+            regime_markers = self._collect_regime_markers(members)
+            narrative_markers = self._collect_narrative_markers(members)
             representative_run_ids = self._select_representative_run_ids(
                 members,
                 member_distances,
@@ -1007,6 +1163,9 @@ class ScenarioClusterer:
                 distinguishing_metrics=distinguishing_metrics,
                 assumption_template_counts=assumption_template_counts,
                 prototype_top_topics=prototype["metrics"].get("top_topics", []),
+                regime_markers=regime_markers,
+                narrative_markers=narrative_markers,
+                structural_option_counts=structural_option_counts,
             )
             family_label = self._build_family_label(
                 cluster_id=f"cluster_{index:04d}",
@@ -1036,6 +1195,11 @@ class ScenarioClusterer:
                     "representative_run_ids": representative_run_ids,
                     "member_run_ids": [member["run_id"] for member in members],
                     "assumption_template_counts": assumption_template_counts,
+                    "structural_option_counts": structural_option_counts,
+                    "regime_profile": regime_markers,
+                    "narrative_family": " + ".join(narrative_markers[:2]).replace(" + ", "+")
+                    if narrative_markers
+                    else None,
                     "family_signature": family_signature,
                     "feature_signature": {
                         metric_id: round(
@@ -1092,6 +1256,73 @@ class ScenarioClusterer:
             for template_id in sorted(counts)
         }
 
+    def _count_structural_options(
+        self,
+        members: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, int]]:
+        counts: Dict[str, Counter[str]] = {}
+        for member in members:
+            assumption_ledger = member.get("manifest", {}).get("assumption_ledger", {})
+            for item in assumption_ledger.get("structural_uncertainties", []):
+                if not isinstance(item, dict):
+                    continue
+                uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+                option_id = str(item.get("option_id") or "").strip()
+                if not uncertainty_id or not option_id:
+                    continue
+                counts.setdefault(uncertainty_id, Counter())[option_id] += 1
+        return {
+            uncertainty_id: {
+                option_id: counter[option_id]
+                for option_id in sorted(counter)
+            }
+            for uncertainty_id, counter in sorted(counts.items())
+        }
+
+    def _collect_regime_markers(
+        self,
+        members: List[Dict[str, Any]],
+    ) -> Dict[str, int]:
+        counts: Counter[str] = Counter()
+        for member in members:
+            metrics = member.get("metrics", {})
+            regime_summary = metrics.get("regime_summary", {})
+            for key in ("primary_regime", "activity_regime", "belief_regime"):
+                value = str(regime_summary.get(key) or "").strip()
+                if value:
+                    counts[value] += 1
+            trajectory_regime = str(
+                (metrics.get("trajectory_summary", {}) or {}).get("trajectory_regime") or ""
+            ).strip()
+            if trajectory_regime:
+                counts[trajectory_regime] += 1
+        return {
+            regime: counts[regime]
+            for regime in sorted(counts)
+        }
+
+    def _collect_narrative_markers(
+        self,
+        members: List[Dict[str, Any]],
+    ) -> List[str]:
+        ordered: List[str] = []
+        for member in members:
+            metrics = member.get("metrics", {})
+            narrative_family = str(
+                (metrics.get("regime_summary", {}) or {}).get("narrative_family") or ""
+            ).strip()
+            for token in narrative_family.split("+"):
+                normalized = token.strip()
+                if normalized and normalized not in ordered:
+                    ordered.append(normalized)
+            for topic in (metrics.get("trajectory_summary", {}) or {}).get(
+                "dominant_topics", []
+            ):
+                normalized = str(topic or "").strip()
+                if normalized and normalized not in ordered:
+                    ordered.append(normalized)
+        return ordered[:3]
+
     def _select_representative_run_ids(
         self,
         members: List[Dict[str, Any]],
@@ -1111,6 +1342,9 @@ class ScenarioClusterer:
         distinguishing_metrics: List[Dict[str, Any]],
         assumption_template_counts: Dict[str, int],
         prototype_top_topics: List[Dict[str, Any]],
+        regime_markers: Dict[str, int],
+        narrative_markers: List[str],
+        structural_option_counts: Dict[str, Dict[str, int]],
     ) -> Dict[str, Any]:
         metric_deltas = [
             {
@@ -1131,6 +1365,9 @@ class ScenarioClusterer:
             "metric_deltas": metric_deltas,
             "template_markers": template_markers,
             "topic_markers": topic_markers,
+            "regime_markers": regime_markers,
+            "narrative_markers": narrative_markers,
+            "structural_option_markers": structural_option_counts,
         }
 
     def _build_family_label(

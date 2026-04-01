@@ -322,3 +322,175 @@ def test_persist_run_market_artifacts_marks_numeric_questions_unsupported(
     assert artifacts["manifest"]["supported_question_type"] is False
     assert artifacts["market_snapshot"]["support_status"] == "unsupported_question_type"
     assert artifacts["agent_belief_book"]["beliefs"] == []
+
+
+def test_persist_run_market_artifacts_uses_structured_runtime_updates_when_available(
+    simulation_data_dir, forecast_data_dir, monkeypatch
+):
+    extractor_module = _load_extractor_module()
+    simulation_id = "sim-market-structured"
+    forecast_id = "forecast-market-structured"
+    run_dir = _write_run_root(simulation_data_dir, simulation_id)
+    _write_simulation_state(simulation_data_dir, simulation_id, forecast_id=forecast_id)
+    _create_workspace(
+        forecast_data_dir,
+        monkeypatch,
+        forecast_id=forecast_id,
+        simulation_id=simulation_id,
+        question_type="binary",
+    )
+
+    _write_json(
+        run_dir / "runtime_graph_state.json",
+        {
+            "artifact_type": "runtime_graph_state",
+            "simulation_id": simulation_id,
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "project_id": "proj-1",
+            "base_graph_id": "graph-1",
+            "runtime_graph_id": "runtime-1",
+            "transition_count": 3,
+            "transition_counts": {
+                "event": 0,
+                "claim": 3,
+                "exposure": 0,
+                "belief_update": 0,
+                "topic_shift": 0,
+                "intervention": 0,
+                "round_state": 0,
+            },
+            "current_round": 2,
+            "active_topics": ["rates", "inflation"],
+        },
+    )
+    _write_jsonl(
+        run_dir / "runtime_graph_updates.jsonl",
+        [
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-1",
+                "transition_type": "claim",
+                "simulation_id": simulation_id,
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "twitter",
+                "round_num": 1,
+                "timestamp": "2026-03-30T10:00:00",
+                "recorded_at": "2026-03-30T10:00:00",
+                "agent": {"agent_id": 1, "agent_name": "Analyst A"},
+                "payload": {
+                    "action_type": "CREATE_POST",
+                    "action_args": {
+                        "content": "I put this near 70% after payrolls.",
+                        "forecast_probability": 0.7,
+                        "confidence": 0.62,
+                        "rationale_tags": ["labor"],
+                        "missing_information_requests": ["Need CPI print"],
+                    },
+                    "topics": ["rates"],
+                },
+                "provenance": {
+                    "citation_ids": ["cit-1"],
+                    "source_unit_ids": ["unit-1"],
+                    "graph_object_uuids": ["claim-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "Analyst A claim",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-2",
+                "transition_type": "claim",
+                "simulation_id": simulation_id,
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "twitter",
+                "round_num": 2,
+                "timestamp": "2026-03-30T10:05:00",
+                "recorded_at": "2026-03-30T10:05:00",
+                "agent": {"agent_id": 1, "agent_name": "Analyst A"},
+                "payload": {
+                    "action_type": "QUOTE_POST",
+                    "action_args": {
+                        "content": "Revising to 60% after the pushback.",
+                        "forecast_probability": 0.6,
+                        "confidence": 0.58,
+                        "rationale_tags": ["counterargument", "labor"],
+                    },
+                    "topics": ["rates"],
+                },
+                "provenance": {
+                    "citation_ids": ["cit-1"],
+                    "source_unit_ids": ["unit-1"],
+                    "graph_object_uuids": ["claim-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "Analyst A revision",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-3",
+                "transition_type": "claim",
+                "simulation_id": simulation_id,
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "reddit",
+                "round_num": 2,
+                "timestamp": "2026-03-30T10:06:00",
+                "recorded_at": "2026-03-30T10:06:00",
+                "agent": {"agent_id": 2, "agent_name": "Analyst B"},
+                "payload": {
+                    "action_type": "CREATE_POST",
+                    "action_args": {
+                        "content": "Closer to 40% with sticky services inflation.",
+                        "forecast_probability": "40%",
+                        "confidence": "low",
+                        "rationale_tags": ["inflation", "services"],
+                        "missing_information": ["Need wage-growth revision"],
+                    },
+                    "topics": ["inflation"],
+                },
+                "provenance": {
+                    "citation_ids": ["cit-2"],
+                    "source_unit_ids": ["unit-2"],
+                    "graph_object_uuids": ["claim-2"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "Analyst B claim",
+            },
+        ],
+    )
+
+    extractor = extractor_module.SimulationMarketExtractor(
+        simulation_data_dir=str(simulation_data_dir),
+        forecast_data_dir=str(forecast_data_dir),
+    )
+    artifacts = extractor.persist_run_market_artifacts(
+        simulation_id,
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    assert artifacts["manifest"]["extraction_status"] == "ready"
+    assert artifacts["manifest"]["source_artifacts"]["action_logs"] == [
+        "runtime_graph_updates.jsonl"
+    ]
+    assert artifacts["manifest"]["structured_runtime_used"] is True
+    assert artifacts["market_snapshot"]["structured_runtime_used"] is True
+    assert artifacts["market_snapshot"]["synthetic_consensus_probability"] == 0.5
+    assert artifacts["belief_update_trace"]["updates"][0]["reference"]["source_artifact"] == (
+        "runtime_graph_updates.jsonl"
+    )
+    assert artifacts["belief_update_trace"]["updates"][0]["provenance"]["citation_ids"] == [
+        "cit-1"
+    ]

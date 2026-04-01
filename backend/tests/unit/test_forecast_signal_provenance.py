@@ -202,8 +202,9 @@ def _seed_binary_market_run(run_dir: Path) -> None:
 def _build_summary(simulation_data_dir, forecast_data_dir, monkeypatch):
     extractor_module = _load_extractor_module()
     aggregator_module = _load_aggregator_module()
-    simulation_id = "sim-market-provenance"
-    forecast_id = "forecast-market-provenance"
+    test_suffix = forecast_data_dir.parent.name
+    simulation_id = f"sim-market-provenance-{test_suffix}"
+    forecast_id = f"forecast-market-provenance-{test_suffix}"
     run_dir = _write_run_root(simulation_data_dir, simulation_id)
     _write_simulation_state(simulation_data_dir, simulation_id, forecast_id=forecast_id)
     _create_workspace(

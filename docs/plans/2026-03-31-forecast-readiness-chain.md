@@ -925,3 +925,177 @@ Prompt 8 must treat the structural uncertainty and runtime-state artifacts as on
   - `runtime_graph_updates.jsonl`
   - `runtime_graph_base_snapshot.json`
 - P08 should compare planned structural assumptions against observed runtime transitions by `simulation_id`, `ensemble_id`, and `run_id`; it must not infer experiment design coverage from runtime behavior alone when explicit plan artifacts already exist.
+
+## P08
+
+### Scope
+
+- `backend/app/services/outcome_extractor.py`
+- `backend/app/services/scenario_clusterer.py`
+- `backend/app/services/sensitivity_analyzer.py`
+- `backend/app/services/simulation_market_extractor.py`
+- `backend/app/services/simulation_market_aggregator.py`
+- `backend/tests/unit/test_outcome_extractor.py`
+- `backend/tests/unit/test_scenario_clusterer.py`
+- `backend/tests/unit/test_sensitivity_analyzer.py`
+- `backend/tests/unit/test_simulation_market_extractor.py`
+- `backend/tests/unit/test_simulation_market_aggregator.py`
+- `backend/tests/integration/test_structured_analytics_flow.py`
+- `backend/tests/unit/test_forecast_signal_provenance.py`
+- `backend/tests/unit/test_probabilistic_ensemble_api.py`
+- `backend/tests/unit/test_probabilistic_report_context.py`
+- `package.json`
+- `docs/plans/2026-03-31-forecast-readiness-chain.md`
+- `docs/plans/2026-03-31-forecast-readiness-status.json`
+
+### TDD Record
+
+1. Wrote failing tests first for structured-runtime metrics, regime and narrative-family clustering, designed-comparison sensitivity, structured-runtime market extraction, and richer simulation-market aggregation.
+2. Verified the RED failures were the intended missing contracts:
+   - no `belief_summary` / `trajectory_summary` / `regime_summary` / `assumption_alignment` in `metrics.json`
+   - no structural coverage or narrative-family fields in `scenario_clusters.json`
+   - sensitivity still reported `observational_resolved_values`
+   - run-market extraction ignored `runtime_graph_updates.jsonl`
+   - market aggregation lacked `belief_trajectory`, `regime_context`, and `assumption_alignment`
+3. Hit one compatibility regression after the first GREEN pass: the downstream forecast provenance test reused a fixed workspace id and collided with the forecast manager’s multi-root lookup.
+4. Fixed that test-isolation root cause with deterministic per-test workspace ids, reran the compatibility subset, then completed the live smoke and repo-wide gates.
+5. Hit two final gate regressions after the main implementation:
+   - stale test expectations still assumed observational-only sensitivity semantics
+   - `npm run verify:nonbinary` still used the system `python3` instead of the project venv
+6. Fixed those compatibility issues without backing out the P08 behavior, then reran the failing slices, `npm run verify:nonbinary`, and `npm run verify`.
+
+### Verification
+
+- Targeted analytics suite:
+  - command: `cd backend && .venv/bin/python -m pytest tests/unit/test_outcome_extractor.py tests/unit/test_scenario_clusterer.py tests/unit/test_sensitivity_analyzer.py tests/unit/test_simulation_market_extractor.py tests/unit/test_simulation_market_aggregator.py tests/integration/test_structured_analytics_flow.py tests/unit/test_simulation_market_schema.py tests/unit/test_forecast_signal_provenance.py tests/unit/test_analytics_policy.py -q`
+  - result: `41 passed, 1 warning in 0.35s`
+- Live `.env` ensemble run-and-extract smoke:
+  - command: `PYTHONPATH=backend backend/.venv/bin/python live P08 smoke using ForecastManager + RuntimeGraphManager + SimulationRunner + ScenarioClusterer + SensitivityAnalyzer on simulation_id=sim_2de8f94e6f08 ensemble_id=0001 run_ids=[0001,0002]`
+  - result:
+    - `forecast_id: live-forecast-sim_2de8f94e6f08-0001-p08`
+    - `run_0001.runner_status: completed`
+    - `run_0001.runtime_graph_id: mirofish_4b3f309b1fee4873`
+    - `run_0001.metrics_status: complete`
+    - `run_0002.runner_status: completed`
+    - `run_0002.runtime_graph_id: mirofish_fb315844421d4157`
+    - `run_0002.metrics_status: complete`
+    - `scenario_clusters.cluster_count: 1`
+    - `scenario_clusters.diversity_diagnostics.coverage_metrics.structural_uncertainty_coverage_ratio: 1.0`
+    - `scenario_clusters.clusters[0].narrative_family: labor market softening+labor market conditions`
+    - `sensitivity.analysis_mode: hybrid_designed_observational`
+    - `sensitivity.designed_comparison_count: 4`
+    - `artifacts: metrics.json, runtime_graph_state.json, runtime_graph_updates.jsonl, scenario_clusters.json, sensitivity.json`
+- Live `.env` structured market-provenance smoke:
+  - command: `PYTHONPATH=backend backend/.venv/bin/python live P08 market extraction smoke using SimulationMarketExtractor + SimulationMarketAggregator on simulation_id=sim_d2446f5f5438 ensemble_id=0002 run_id=0001`
+  - result:
+    - `forecast_id: live-forecast-sim_d2446f5f5438-0002-0001-p08-market`
+    - `simulation_market_manifest.extraction_status: no_signals`
+    - `simulation_market_manifest.structured_runtime_used: true`
+    - `market_summary.signal_count: 10`
+    - `market_summary.signal_provenance keys: ["argument_cluster_distribution", "assumption_alignment", "belief_momentum", "belief_trajectory", "disagreement_index", "minority_warning_signal", "missing_information_signal", "regime_context", "scenario_split_distribution", "synthetic_consensus_probability"]`
+    - `market_summary.regime_context.status: ready`
+    - `market_summary.assumption_alignment.status: partial`
+  - note: the real smoke run stayed in a quiet regime and did not emit belief-bearing market signals, so the market extractor remained truthful with `no_signals` while the aggregator still emitted provenance-backed trajectory and regime signals from structured runtime state
+- Typed forecast analytics gate:
+  - command: `npm run verify:nonbinary`
+  - result: `verify:nonbinary:backend -> 102 passed, 1 warning in 2.29s; verify:nonbinary:frontend -> 81 passed`
+- Full repo gate:
+  - command: `npm run verify`
+  - result: `frontend verify passed, vite build passed, backend pytest passed`
+  - exact backend summary: `370 passed, 1 warning in 6.97s`
+
+### Delivered Foundation
+
+- `OutcomeExtractor.extract_run_metrics(...)` now joins `metrics.json` to P06/P07 artifacts and emits:
+  - `belief_summary`
+  - `trajectory_summary`
+  - `regime_summary`
+  - `assumption_alignment`
+  - `quality_checks.structured_runtime_available`
+  - `quality_checks.assumption_ledger_available`
+  - source-artifact links for `runtime_graph_*`, `experiment_design_row.json`, and `assumption_ledger.json`
+- `ScenarioClusterer.get_scenario_clusters(...)` now uses structural uncertainty and runtime-state evidence to emit:
+  - `clusters[].structural_option_counts`
+  - `clusters[].regime_profile`
+  - `clusters[].narrative_family`
+  - `clusters[].family_signature.regime_markers`
+  - `clusters[].family_signature.narrative_markers`
+  - `diversity_diagnostics.coverage_metrics.structural_uncertainty_coverage_ratio`
+  - `diversity_diagnostics.coverage_metrics.structural_option_coverage_ratios`
+- `SensitivityAnalyzer.get_sensitivity_analysis(...)` now upgrades the artifact contract with:
+  - `analysis_mode: hybrid_designed_observational` when explicit run-design rows support pairwise comparisons
+  - `designed_comparison_count`
+  - `designed_comparisons[]`
+  - `methodology.designed_comparison_source`
+  - run-level loading of `experiment_design_row.json`, `assumption_ledger.json`, and `structural_resolutions`
+- `SimulationMarketExtractor.persist_run_market_artifacts(...)` now prefers `runtime_graph_updates.jsonl` over shallow log scraping when structured claim or belief-update transitions exist and carries:
+  - `manifest.structured_runtime_used`
+  - `source_artifacts.runtime_graph_state`
+  - `source_artifacts.runtime_graph_updates`
+  - per-belief provenance, signal source, and transition-type metadata when present
+- `SimulationMarketAggregator.summarize_run_market_artifacts(...)` now exposes worker-facing simulation signals with explicit provenance:
+  - `signals.belief_trajectory`
+  - `signals.regime_context`
+  - `signals.assumption_alignment`
+  - `signal_provenance.*` entries for those signals
+  - additive semantics only: no calibrated or causal claims are inferred from thin-sample simulation analytics
+
+### Compatibility Fixes
+
+- Kept `metrics.json`, `scenario_clusters.json`, `sensitivity.json`, and the simulation-market artifacts additive by extending existing payloads instead of replacing legacy fields.
+- Preserved truthful semantics in thin-sample or quiet-run cases by surfacing `no_signals`, `partial`, and support warnings instead of manufacturing forecast-style confidence.
+- Fixed `backend/tests/unit/test_forecast_signal_provenance.py` to use deterministic per-test workspace ids so the multi-root forecast workspace lookup stays isolated in the compatibility suite.
+- Updated the downstream forecast/report tests to accept the new hybrid designed sensitivity semantics when explicit experiment-design rows support the comparison.
+- Updated `package.json` so `npm run verify:nonbinary` uses `backend/.venv/bin/python` when available, matching the repo’s existing backend verification path and avoiding system-Python version drift.
+
+### Commit Gate
+
+- All required P08 gates passed.
+- Commit is allowed for this phase.
+
+## Handoff To P09
+
+Prompt 9 should treat the P08 analytics layer as the worker-facing empirical input surface for forecast synthesis:
+
+- consume persisted run-level analytics first:
+  - `metrics.json`
+  - `simulation_market_manifest.json`
+  - `agent_belief_book.json`
+  - `belief_update_trace.json`
+  - `disagreement_summary.json`
+  - `argument_map.json`
+  - `missing_information_signals.json`
+- when building worker context, rely on these `metrics.json` sections directly:
+  - `belief_summary`
+  - `trajectory_summary`
+  - `regime_summary`
+  - `assumption_alignment`
+  - `quality_checks.structured_runtime_available`
+  - `quality_checks.assumption_ledger_available`
+- consume ensemble-level analytics next:
+  - `scenario_clusters.json`
+  - `sensitivity.json`
+- P09 should read these scenario-cluster fields instead of reconstructing narrative families from raw logs:
+  - `cluster_count`
+  - `clusters[].narrative_family`
+  - `clusters[].regime_profile`
+  - `clusters[].structural_option_counts`
+  - `clusters[].family_signature.regime_markers`
+  - `diversity_diagnostics.coverage_metrics.structural_uncertainty_coverage_ratio`
+  - `diversity_diagnostics.coverage_metrics.structural_option_coverage_ratios`
+- P09 should read these sensitivity fields as designed-comparison guidance, not calibrated causal proof:
+  - `analysis_mode`
+  - `designed_comparison_count`
+  - `designed_comparisons[]`
+  - `driver_rankings[]`
+  - `quality_summary.support_assessment`
+- for worker-facing market signals, call `SimulationMarketAggregator.summarize_run_market_artifacts(...)` and consume:
+  - `signals`
+  - `signal_provenance`
+  - `signals.belief_trajectory`
+  - `signals.regime_context`
+  - `signals.assumption_alignment`
+- preserve these semantics when Prompt 9 turns analytics into forecast-worker context:
+  - scenario-family shares are `observed_run_share`, not calibrated real-world probabilities
+  - sensitivity rankings are descriptive or designed-comparison evidence, not earned causal certainty
+  - simulation-market signals are heuristic simulation evidence bounded by the available runtime transitions and attached provenance

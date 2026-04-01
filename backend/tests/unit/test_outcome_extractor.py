@@ -1117,3 +1117,308 @@ def test_monitor_completion_persists_simulation_market_artifacts_for_run_scope(
     assert manifest["forecast_id"] == "forecast-market-persist"
     assert run_manifest["artifact_paths"]["simulation_market_manifest"] == "simulation_market_manifest.json"
     assert run_manifest["artifact_paths"]["market_snapshot"] == "market_snapshot.json"
+
+
+def test_extract_run_metrics_adds_structured_runtime_and_assumption_summaries(
+    simulation_data_dir, monkeypatch
+):
+    _configure_runtime_roots(monkeypatch, simulation_data_dir)
+    extractor_module = _load_outcome_extractor_module()
+    run_dir = _write_probabilistic_run_root(
+        simulation_data_dir,
+        "sim-metrics-structured",
+        hot_topics=["rates", "inflation"],
+    )
+
+    _write_jsonl(
+        run_dir / "twitter" / "actions.jsonl",
+        [
+            {
+                "round": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "platform": "twitter",
+                "agent_id": 1,
+                "agent_name": "alpha",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "Rates likely fall, around 70%.",
+                    "topics": ["rates"],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:15:00",
+                "platform": "twitter",
+                "total_rounds": 2,
+                "total_actions": 1,
+            },
+        ],
+    )
+    _write_jsonl(
+        run_dir / "reddit" / "actions.jsonl",
+        [
+            {
+                "round": 2,
+                "timestamp": "2026-03-08T12:10:00",
+                "platform": "reddit",
+                "agent_id": 2,
+                "agent_name": "beta",
+                "action_type": "CREATE_POST",
+                "action_args": {
+                    "content": "Inflation still complicates the case.",
+                    "topics": ["inflation"],
+                },
+                "success": True,
+            },
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:16:00",
+                "platform": "reddit",
+                "total_rounds": 2,
+                "total_actions": 1,
+            },
+        ],
+    )
+
+    _write_json(
+        run_dir / "experiment_design_row.json",
+        {
+            "artifact_type": "run_experiment_design",
+            "simulation_id": "sim-metrics-structured",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "row_index": 0,
+            "structural_assignments": [
+                {
+                    "uncertainty_id": "moderation_policy_change",
+                    "option_id": "tightened_enforcement",
+                    "option_label": "Tightened enforcement",
+                }
+            ],
+        },
+    )
+    _write_json(
+        run_dir / "assumption_ledger.json",
+        {
+            "artifact_type": "assumption_ledger",
+            "simulation_id": "sim-metrics-structured",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "assumption_ledger": {
+                "structural_uncertainties": [
+                    {
+                        "uncertainty_id": "moderation_policy_change",
+                        "kind": "moderation_policy_change",
+                        "option_id": "tightened_enforcement",
+                        "option_label": "Tightened enforcement",
+                    }
+                ],
+                "structural_runtime_transition_types": [
+                    "belief_update",
+                    "intervention",
+                    "topic_shift",
+                ],
+                "assumption_statements": [
+                    "Expect moderation tightening to alter visibility."
+                ],
+            },
+        },
+    )
+    _write_json(
+        run_dir / "runtime_graph_state.json",
+        {
+            "artifact_type": "runtime_graph_state",
+            "simulation_id": "sim-metrics-structured",
+            "ensemble_id": "0001",
+            "run_id": "0001",
+            "project_id": "proj-1",
+            "base_graph_id": "graph-1",
+            "runtime_graph_id": "runtime-1",
+            "transition_count": 6,
+            "transition_counts": {
+                "event": 0,
+                "claim": 1,
+                "exposure": 0,
+                "belief_update": 2,
+                "topic_shift": 1,
+                "intervention": 1,
+                "round_state": 1,
+            },
+            "current_round": 2,
+            "active_topics": ["rates", "inflation"],
+        },
+    )
+    _write_jsonl(
+        run_dir / "runtime_graph_updates.jsonl",
+        [
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-1",
+                "transition_type": "round_state",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "twitter",
+                "round_num": 1,
+                "timestamp": "2026-03-08T12:00:00",
+                "recorded_at": "2026-03-08T12:00:00",
+                "agent": {"agent_id": None, "agent_name": None},
+                "payload": {"phase": "round_start", "simulated_hour": 1},
+                "provenance": {
+                    "citation_ids": [],
+                    "source_unit_ids": [],
+                    "graph_object_uuids": [],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "twitter round start",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-2",
+                "transition_type": "claim",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "twitter",
+                "round_num": 1,
+                "timestamp": "2026-03-08T12:01:00",
+                "recorded_at": "2026-03-08T12:01:00",
+                "agent": {"agent_id": 1, "agent_name": "alpha"},
+                "payload": {
+                    "action_type": "CREATE_POST",
+                    "action_args": {"content": "Rates likely fall, around 70%."},
+                    "topics": ["rates"],
+                },
+                "provenance": {
+                    "citation_ids": ["cit-1"],
+                    "source_unit_ids": ["unit-1"],
+                    "graph_object_uuids": ["claim-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "alpha posts",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-3",
+                "transition_type": "belief_update",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "twitter",
+                "round_num": 1,
+                "timestamp": "2026-03-08T12:02:00",
+                "recorded_at": "2026-03-08T12:02:00",
+                "agent": {"agent_id": 1, "agent_name": "alpha"},
+                "payload": {"direction": "reinforce", "topics": ["rates"]},
+                "provenance": {
+                    "citation_ids": ["cit-1"],
+                    "source_unit_ids": ["unit-1"],
+                    "graph_object_uuids": ["claim-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "alpha reinforces rates case",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-4",
+                "transition_type": "topic_shift",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "reddit",
+                "round_num": 2,
+                "timestamp": "2026-03-08T12:10:00",
+                "recorded_at": "2026-03-08T12:10:00",
+                "agent": {"agent_id": 2, "agent_name": "beta"},
+                "payload": {"topic_names": ["inflation"]},
+                "provenance": {
+                    "citation_ids": ["cit-2"],
+                    "source_unit_ids": ["unit-2"],
+                    "graph_object_uuids": ["topic-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "beta shifts to inflation",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-5",
+                "transition_type": "intervention",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "reddit",
+                "round_num": 2,
+                "timestamp": "2026-03-08T12:11:00",
+                "recorded_at": "2026-03-08T12:11:00",
+                "agent": {"agent_id": None, "agent_name": None},
+                "payload": {"intervention_name": "tightened_enforcement"},
+                "provenance": {
+                    "citation_ids": [],
+                    "source_unit_ids": [],
+                    "graph_object_uuids": ["policy-1"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "reddit intervention",
+            },
+            {
+                "artifact_type": "runtime_state_transition",
+                "transition_id": "rts-6",
+                "transition_type": "belief_update",
+                "simulation_id": "sim-metrics-structured",
+                "ensemble_id": "0001",
+                "run_id": "0001",
+                "project_id": "proj-1",
+                "base_graph_id": "graph-1",
+                "runtime_graph_id": "runtime-1",
+                "platform": "reddit",
+                "round_num": 2,
+                "timestamp": "2026-03-08T12:12:00",
+                "recorded_at": "2026-03-08T12:12:00",
+                "agent": {"agent_id": 2, "agent_name": "beta"},
+                "payload": {"direction": "challenge", "topics": ["inflation"]},
+                "provenance": {
+                    "citation_ids": ["cit-2"],
+                    "source_unit_ids": ["unit-2"],
+                    "graph_object_uuids": ["claim-2"],
+                },
+                "source_artifact": "runtime_graph_updates.jsonl",
+                "human_readable": "beta challenges rates case",
+            },
+        ],
+    )
+
+    extractor = extractor_module.OutcomeExtractor(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    payload = extractor.extract_run_metrics(
+        "sim-metrics-structured",
+        ensemble_id="0001",
+        run_id="0001",
+    )
+
+    assert payload["trajectory_summary"]["structured_runtime_used"] is True
+    assert payload["trajectory_summary"]["dominant_topics"] == ["rates", "inflation"]
+    assert payload["belief_summary"]["update_count"] == 2
+    assert payload["belief_summary"]["belief_regime"] == "contested"
+    assert payload["regime_summary"]["policy_regime"] == "tightened_enforcement"
+    assert payload["assumption_alignment"]["coverage_ratio"] == 1.0
+    assert payload["assumption_alignment"]["missing_transition_types"] == []
+    assert payload["source_artifacts"]["runtime_graph_state"] == "runtime_graph_state.json"
+    assert payload["source_artifacts"]["runtime_graph_updates"] == "runtime_graph_updates.jsonl"
+    assert payload["source_artifacts"]["assumption_ledger"] == "assumption_ledger.json"

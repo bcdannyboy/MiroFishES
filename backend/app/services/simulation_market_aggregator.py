@@ -145,6 +145,9 @@ class SimulationMarketAggregator:
         missing_information = self._read_json(
             os.path.join(run_dir, SIMULATION_MARKET_ARTIFACT_FILENAMES["missing_information_signals"])
         )
+        runtime_state = self._read_json(os.path.join(run_dir, "runtime_graph_state.json"))
+        assumption_payload = self._read_json(os.path.join(run_dir, "assumption_ledger.json"))
+        metrics_payload = self._read_json(os.path.join(run_dir, "metrics.json"))
 
         question_type = (
             snapshot.get("question_type")
@@ -191,11 +194,22 @@ class SimulationMarketAggregator:
         )
         argument_cluster_distribution = self._build_argument_cluster_distribution(argument_map)
         belief_momentum = self._build_belief_momentum(updates)
+        belief_trajectory = self._build_belief_trajectory_signal(updates)
         missing_information_signal = self._build_missing_information_signal(missing_information)
         minority_warning_signal = self._build_minority_warning_signal(
             question_type=question_type,
             scenario_split_distribution=scenario_split_distribution,
             disagreement_index=disagreement_index,
+        )
+        regime_context = self._build_regime_context_signal(
+            runtime_state=runtime_state,
+            metrics_payload=metrics_payload,
+            assumption_payload=assumption_payload,
+        )
+        assumption_alignment = self._build_assumption_alignment_signal(
+            runtime_state=runtime_state,
+            assumption_payload=assumption_payload,
+            metrics_payload=metrics_payload,
         )
 
         signal_provenance = self._build_signal_provenance(
@@ -221,6 +235,10 @@ class SimulationMarketAggregator:
                 "status": "ready" if belief_momentum.get("update_count", 0) else "partial",
                 "value": dict(belief_momentum),
             },
+            "belief_trajectory": {
+                "status": "ready" if belief_trajectory.get("update_count", 0) else "partial",
+                "value": dict(belief_trajectory),
+            },
             "minority_warning_signal": {
                 "status": "ready" if minority_warning_signal else "partial",
                 "value": dict(minority_warning_signal),
@@ -232,6 +250,14 @@ class SimulationMarketAggregator:
             "scenario_split_distribution": {
                 "status": "ready" if scenario_split_distribution else "invalid",
                 "value": dict(scenario_split_distribution),
+            },
+            "regime_context": {
+                "status": "ready" if regime_context else "partial",
+                "value": dict(regime_context),
+            },
+            "assumption_alignment": {
+                "status": "ready" if assumption_alignment.get("coverage_ratio") is not None else "partial",
+                "value": dict(assumption_alignment),
             },
         }
 
@@ -315,6 +341,40 @@ class SimulationMarketAggregator:
             "mean_absolute_probability_delta": round(_mean(deltas) or 0.0, 6),
         }
 
+    def _build_belief_trajectory_signal(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        updates_payload = list(updates.get("updates") or [])
+        probabilities: list[float] = []
+        for item in updates_payload:
+            probability = item.get("probability")
+            try:
+                probabilities.append(float(probability))
+            except (TypeError, ValueError):
+                continue
+        if not probabilities:
+            return {
+                "update_count": len(updates_payload),
+                "opening_probability": None,
+                "closing_probability": None,
+                "max_swing": 0.0,
+                "trend": "unknown",
+            }
+        opening_probability = round(probabilities[0], 6)
+        closing_probability = round(probabilities[-1], 6)
+        delta = closing_probability - opening_probability
+        if delta <= -0.05:
+            trend = "downward"
+        elif delta >= 0.05:
+            trend = "upward"
+        else:
+            trend = "flat"
+        return {
+            "update_count": len(updates_payload),
+            "opening_probability": opening_probability,
+            "closing_probability": closing_probability,
+            "max_swing": round(max(probabilities) - min(probabilities), 6),
+            "trend": trend,
+        }
+
     def _build_missing_information_signal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         requests = [item.get("request") for item in payload.get("signals") or []]
         normalized_requests = _dedupe_requests(requests)
@@ -370,6 +430,83 @@ class SimulationMarketAggregator:
             "question_type": question_type,
         }
 
+    def _build_regime_context_signal(
+        self,
+        *,
+        runtime_state: Dict[str, Any],
+        metrics_payload: Dict[str, Any],
+        assumption_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        assumption_ledger = assumption_payload.get("assumption_ledger", {})
+        if not isinstance(assumption_ledger, dict):
+            assumption_ledger = {}
+        regime_summary = metrics_payload.get("regime_summary", {})
+        if not isinstance(regime_summary, dict):
+            regime_summary = {}
+        active_topics = [
+            str(topic).strip()
+            for topic in runtime_state.get("active_topics", [])
+            if str(topic or "").strip()
+        ]
+        policy_regime = regime_summary.get("policy_regime")
+        if not policy_regime:
+            for item in assumption_ledger.get("structural_uncertainties", []):
+                if str(item.get("kind") or "").strip() == "moderation_policy_change":
+                    policy_regime = str(item.get("option_id") or item.get("option_label") or "").strip()
+                    break
+        narrative_family = regime_summary.get("narrative_family")
+        if not narrative_family and active_topics:
+            narrative_family = "+".join(active_topics[:2])
+        return {
+            "policy_regime": policy_regime,
+            "narrative_family": narrative_family,
+            "primary_regime": regime_summary.get("primary_regime"),
+            "active_topics": active_topics,
+        }
+
+    def _build_assumption_alignment_signal(
+        self,
+        *,
+        runtime_state: Dict[str, Any],
+        assumption_payload: Dict[str, Any],
+        metrics_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        alignment = metrics_payload.get("assumption_alignment", {})
+        if isinstance(alignment, dict) and alignment:
+            return dict(alignment)
+        assumption_ledger = assumption_payload.get("assumption_ledger", {})
+        if not isinstance(assumption_ledger, dict):
+            assumption_ledger = {}
+        planned_transition_types = sorted(
+            {
+                str(item).strip()
+                for item in assumption_ledger.get("structural_runtime_transition_types", [])
+                if str(item or "").strip()
+            }
+        )
+        observed_transition_types = sorted(
+            {
+                str(transition_type).strip()
+                for transition_type, count in (runtime_state.get("transition_counts") or {}).items()
+                if str(transition_type or "").strip()
+                and str(transition_type or "").strip() != "round_state"
+                and int(count or 0) > 0
+            }
+        )
+        matched = sorted(set(planned_transition_types) & set(observed_transition_types))
+        coverage_ratio = None
+        if planned_transition_types:
+            coverage_ratio = round(len(matched) / len(planned_transition_types), 6)
+        return {
+            "planned_transition_types": planned_transition_types,
+            "observed_transition_types": observed_transition_types,
+            "matched_transition_types": matched,
+            "missing_transition_types": sorted(
+                set(planned_transition_types) - set(observed_transition_types)
+            ),
+            "coverage_ratio": coverage_ratio,
+        }
+
     def _build_signal_provenance(
         self,
         *,
@@ -415,9 +552,12 @@ class SimulationMarketAggregator:
             "disagreement_index": all_belief_refs,
             "argument_cluster_distribution": rationale_refs or all_belief_refs,
             "belief_momentum": changed_update_refs,
+            "belief_trajectory": all_belief_refs,
             "minority_warning_signal": minority_refs or all_belief_refs,
             "missing_information_signal": missing_refs,
             "scenario_split_distribution": all_belief_refs,
+            "regime_context": all_belief_refs,
+            "assumption_alignment": all_belief_refs,
         }
 
     def _belief_supports_label(self, belief: Dict[str, Any], label: str) -> bool:

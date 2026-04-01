@@ -885,7 +885,8 @@ def test_ensemble_sensitivity_endpoint_returns_sensitivity_artifact(
     assert data["simulation_id"] == state.simulation_id
     assert data["ensemble_id"] == ensemble_id
     assert data["artifact_type"] == "sensitivity"
-    assert data["methodology"]["analysis_mode"] == "observational_resolved_values"
+    assert data["methodology"]["analysis_mode"] == "hybrid_designed_observational"
+    assert data["designed_comparisons"]
     assert data["driver_rankings"][0]["driver_id"] == "twitter_config.echo_chamber_strength"
 
 

@@ -119,7 +119,7 @@ class SimulationMarketExtractor:
             run_id=run_id,
             forecast_id=forecast_id,
         )
-        actions, action_log_paths = self._load_action_records(run_dir)
+        actions, action_log_paths, structured_runtime_used = self._load_action_records(run_dir)
 
         question_type = forecast_context["question_type"]
         supported_question_type = question_type in SUPPORTED_SIMULATION_MARKET_QUESTION_TYPES
@@ -156,7 +156,10 @@ class SimulationMarketExtractor:
                 reference = extracted["reference"]
                 belief = extracted["belief"]
                 prior = previous_by_agent.get(belief.agent_id)
-                update_payload = belief.to_dict()
+                update_payload = self._augment_belief_payload(
+                    belief.to_dict(),
+                    extracted=extracted,
+                )
                 update_payload["previous_probability"] = (
                     prior.get("probability") if prior is not None else None
                 )
@@ -172,8 +175,11 @@ class SimulationMarketExtractor:
                     )
                 )
                 belief_updates.append(update_payload)
-                beliefs_by_agent[belief.agent_id] = belief.to_dict()
-                previous_by_agent[belief.agent_id] = belief.to_dict()
+                beliefs_by_agent[belief.agent_id] = self._augment_belief_payload(
+                    belief.to_dict(),
+                    extracted=extracted,
+                )
+                previous_by_agent[belief.agent_id] = dict(beliefs_by_agent[belief.agent_id])
 
                 for tag in belief.rationale_tags:
                     argument_tags[tag] += 1
@@ -219,6 +225,7 @@ class SimulationMarketExtractor:
             belief_updates=belief_updates,
             disagreement=disagreement,
             missing_information_signals=missing_information_signals,
+            structured_runtime_used=structured_runtime_used,
         )
 
         belief_book = {
@@ -302,10 +309,21 @@ class SimulationMarketExtractor:
                 "run_manifest": "run_manifest.json",
                 "run_state": "run_state.json" if os.path.exists(os.path.join(run_dir, "run_state.json")) else None,
                 "action_logs": action_log_paths,
+                "runtime_graph_state": (
+                    "runtime_graph_state.json"
+                    if os.path.exists(os.path.join(run_dir, "runtime_graph_state.json"))
+                    else None
+                ),
+                "runtime_graph_updates": (
+                    "runtime_graph_updates.jsonl"
+                    if os.path.exists(os.path.join(run_dir, "runtime_graph_updates.jsonl"))
+                    else None
+                ),
             },
             boundary_notes=[_BINARY_BOUNDARY_NOTE],
             extracted_at=extracted_at,
         ).to_dict()
+        manifest["structured_runtime_used"] = structured_runtime_used
 
         return {
             "simulation_market_manifest": manifest,
@@ -421,9 +439,51 @@ class SimulationMarketExtractor:
             return workspace
         return None
 
-    def _load_action_records(self, run_dir: str) -> tuple[List[Dict[str, Any]], List[str]]:
+    def _load_action_records(self, run_dir: str) -> tuple[List[Dict[str, Any]], List[str], bool]:
         actions: List[Dict[str, Any]] = []
         action_log_paths: List[str] = []
+        structured_path = os.path.join(run_dir, "runtime_graph_updates.jsonl")
+        if os.path.exists(structured_path):
+            action_log_paths.append(os.path.relpath(structured_path, run_dir))
+            with open(structured_path, "r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("transition_type") not in {"claim", "belief_update"}:
+                        continue
+                    transition_payload = payload.get("payload") or {}
+                    action_args = transition_payload.get("action_args") or {}
+                    if not isinstance(action_args, dict):
+                        action_args = {}
+                    agent_payload = payload.get("agent") or {}
+                    actions.append(
+                        {
+                            "platform": payload.get("platform") or "runtime",
+                            "round_num": int(payload.get("round_num", 0) or 0),
+                            "line_number": line_number,
+                            "timestamp": payload.get("timestamp") or datetime.now().isoformat(),
+                            "agent_id": int(agent_payload.get("agent_id", 0) or 0),
+                            "agent_name": agent_payload.get("agent_name")
+                            or f"agent-{agent_payload.get('agent_id', 0)}",
+                            "action_type": transition_payload.get("action_type")
+                            or str(payload.get("transition_type") or "UNKNOWN").upper(),
+                            "action_args": action_args,
+                            "result": payload.get("human_readable"),
+                            "source_artifact": os.path.relpath(structured_path, run_dir),
+                            "provenance": payload.get("provenance") or {},
+                            "signal_source": "structured_runtime",
+                            "runtime_transition_type": payload.get("transition_type"),
+                        }
+                    )
+            actions.sort(key=lambda item: (item["timestamp"], item["platform"], item["line_number"]))
+            if actions:
+                return actions, action_log_paths, True
+
         for platform in self.SUPPORTED_PLATFORMS:
             path = os.path.join(run_dir, platform, "actions.jsonl")
             if not os.path.exists(path):
@@ -451,10 +511,14 @@ class SimulationMarketExtractor:
                             "action_type": payload.get("action_type") or "UNKNOWN",
                             "action_args": payload.get("action_args", {}),
                             "result": payload.get("result"),
+                            "source_artifact": os.path.relpath(path, run_dir),
+                            "provenance": {},
+                            "signal_source": "action_logs",
+                            "runtime_transition_type": None,
                         }
                     )
         actions.sort(key=lambda item: (item["timestamp"], item["platform"], item["line_number"]))
-        return actions, action_log_paths
+        return actions, action_log_paths, False
 
     def _extract_belief_from_record(
         self,
@@ -479,7 +543,7 @@ class SimulationMarketExtractor:
             agent_name=record["agent_name"],
             timestamp=record["timestamp"],
             action_type=record["action_type"],
-            source_artifact=f"{record['platform']}/actions.jsonl",
+            source_artifact=record.get("source_artifact") or f"{record['platform']}/actions.jsonl",
         )
         rationale_tags = self._extract_rationale_tags(action_args)
         missing_information_requests = self._extract_missing_information_requests(action_args)
@@ -504,7 +568,13 @@ class SimulationMarketExtractor:
                 parse_mode=parse_mode,
                 source_excerpt=text,
             )
-            return {"belief": belief, "reference": reference}
+            return {
+                "belief": belief,
+                "reference": reference,
+                "provenance": dict(record.get("provenance") or {}),
+                "signal_source": record.get("signal_source"),
+                "runtime_transition_type": record.get("runtime_transition_type"),
+            }
 
         if question_type == "categorical":
             distribution, dominant_outcome, parse_mode = self._extract_categorical_distribution(
@@ -530,7 +600,13 @@ class SimulationMarketExtractor:
                 parse_mode=parse_mode,
                 source_excerpt=text,
             )
-            return {"belief": belief, "reference": reference}
+            return {
+                "belief": belief,
+                "reference": reference,
+                "provenance": dict(record.get("provenance") or {}),
+                "signal_source": record.get("signal_source"),
+                "runtime_transition_type": record.get("runtime_transition_type"),
+            }
 
         return None
 
@@ -759,6 +835,7 @@ class SimulationMarketExtractor:
         belief_updates: List[Dict[str, Any]],
         disagreement: Dict[str, Any],
         missing_information_signals: List[Dict[str, Any]],
+        structured_runtime_used: bool,
     ) -> Dict[str, Any]:
         summary = SimulationMarketSnapshot(
             simulation_id=simulation_id,
@@ -777,7 +854,21 @@ class SimulationMarketExtractor:
             support_status=extraction_status,
             boundary_notes=[_BINARY_BOUNDARY_NOTE],
         )
-        return summary.to_dict()
+        payload = summary.to_dict()
+        payload["structured_runtime_used"] = structured_runtime_used
+        return payload
+
+    def _augment_belief_payload(
+        self,
+        payload: Dict[str, Any],
+        *,
+        extracted: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enriched = dict(payload)
+        enriched["provenance"] = dict(extracted.get("provenance") or {})
+        enriched["signal_source"] = extracted.get("signal_source")
+        enriched["runtime_transition_type"] = extracted.get("runtime_transition_type")
+        return enriched
 
     def _resolve_extracted_at(self, run_dir: str) -> str:
         run_state_path = os.path.join(run_dir, "run_state.json")

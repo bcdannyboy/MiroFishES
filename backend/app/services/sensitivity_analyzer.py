@@ -112,6 +112,11 @@ class SensitivityAnalyzer:
                 simulation_id,
                 normalized_ensemble_id,
             )
+            designed_comparisons = self._build_designed_comparisons(
+                eligible_run_payloads,
+                metric_ids,
+                metric_stats,
+            )
             driver_rankings = self._build_driver_rankings(
                 eligible_run_payloads,
                 metric_ids,
@@ -132,6 +137,7 @@ class SensitivityAnalyzer:
                 missing_resolved_value_runs=missing_resolved_value_runs,
                 has_numeric_metrics=bool(metric_ids),
                 has_ranked_drivers=bool(driver_rankings),
+                has_designed_comparisons=bool(designed_comparisons),
                 scenario_diversity_context=scenario_diversity_context,
             )
             driver_rankings = self._annotate_driver_rankings(
@@ -154,9 +160,15 @@ class SensitivityAnalyzer:
                 "ensemble_id": normalized_ensemble_id,
                 "driver_count": len(driver_rankings),
                 "driver_rankings": driver_rankings,
+                "designed_comparison_count": len(designed_comparisons),
+                "designed_comparisons": designed_comparisons,
                 "scenario_diversity_context": scenario_diversity_context,
                 "methodology": {
-                    "analysis_mode": "observational_resolved_values",
+                    "analysis_mode": (
+                        "hybrid_designed_observational"
+                        if designed_comparisons
+                        else "observational_resolved_values"
+                    ),
                     "driver_source": (
                         "run_manifest.resolved_values with resolved_config.sampled_values "
                         "fallback when available"
@@ -167,6 +179,11 @@ class SensitivityAnalyzer:
                     "effect_size_definition": "max_group_mean_minus_min_group_mean",
                     "minimum_support_count": self.analytics_policy.MINIMUM_SUPPORT_COUNT,
                     "causal_interpretation": "not_supported",
+                    "designed_comparison_source": (
+                        "run_manifest.experiment_design_row + run_manifest.structural_resolutions"
+                        if designed_comparisons
+                        else None
+                    ),
                 },
                 "sample_policy": self.analytics_policy.build_sample_policy(
                     mode="sensitivity",
@@ -329,6 +346,27 @@ class SensitivityAnalyzer:
                 ):
                     degraded_metrics_runs.append(run_id)
 
+            experiment_design_row_payload = manifest_payload.get("experiment_design_row", {})
+            if not isinstance(experiment_design_row_payload, dict) or not experiment_design_row_payload:
+                experiment_design_row_payload = self._read_json_if_exists(
+                    os.path.join(run_dir, "experiment_design_row.json")
+                ) or {}
+
+            assumption_ledger_payload = manifest_payload.get("assumption_ledger", {})
+            if not isinstance(assumption_ledger_payload, dict) or not assumption_ledger_payload:
+                raw_assumption_ledger = self._read_json_if_exists(
+                    os.path.join(run_dir, "assumption_ledger.json")
+                ) or {}
+                assumption_ledger_payload = raw_assumption_ledger.get("assumption_ledger", {})
+                if not isinstance(assumption_ledger_payload, dict):
+                    assumption_ledger_payload = {}
+
+            structural_resolutions = manifest_payload.get("structural_resolutions", [])
+            if not isinstance(structural_resolutions, list) or not structural_resolutions:
+                structural_resolutions = resolved_config_payload.get("structural_resolutions", [])
+            if not isinstance(structural_resolutions, list):
+                structural_resolutions = []
+
             resolved_values: Dict[str, Any] = {}
             if manifest_valid:
                 raw_resolved_values = manifest_payload.get("resolved_values", {})
@@ -348,6 +386,9 @@ class SensitivityAnalyzer:
                     "manifest_valid": manifest_valid,
                     "resolved_config": resolved_config_payload,
                     "resolved_values": resolved_values,
+                    "experiment_design_row": experiment_design_row_payload,
+                    "assumption_ledger": assumption_ledger_payload,
+                    "structural_resolutions": structural_resolutions,
                     "available_numeric_metric_ids": (
                         self.analytics_policy.extract_available_numeric_metric_ids(
                             metrics_payload
@@ -854,6 +895,137 @@ class SensitivityAnalyzer:
 
         return hints
 
+    def _build_designed_comparisons(
+        self,
+        run_payloads: List[Dict[str, Any]],
+        metric_ids: List[str],
+        metric_stats: Dict[str, Dict[str, float]],
+    ) -> List[Dict[str, Any]]:
+        if not run_payloads or not metric_ids:
+            return []
+
+        assignments: Dict[str, Dict[str, Any]] = {}
+        for payload in run_payloads:
+            structural_items = payload.get("structural_resolutions") or []
+            if not structural_items:
+                structural_items = (payload.get("assumption_ledger") or {}).get(
+                    "structural_uncertainties", []
+                )
+            if not isinstance(structural_items, list):
+                continue
+            for item in structural_items:
+                if not isinstance(item, dict):
+                    continue
+                uncertainty_id = str(item.get("uncertainty_id") or "").strip()
+                option_id = str(item.get("option_id") or "").strip()
+                option_label = str(item.get("option_label") or option_id).strip()
+                if not uncertainty_id or not option_id:
+                    continue
+                bucket = assignments.setdefault(
+                    uncertainty_id,
+                    {
+                        "label": str(item.get("label") or uncertainty_id).strip() or uncertainty_id,
+                        "groups": {},
+                    },
+                )
+                bucket["groups"].setdefault(
+                    option_id,
+                    {
+                        "option_id": option_id,
+                        "option_label": option_label,
+                        "members": [],
+                    },
+                )["members"].append(payload)
+
+        comparisons: List[Dict[str, Any]] = []
+        for uncertainty_id, bucket in sorted(assignments.items()):
+            groups = bucket["groups"]
+            if len(groups) < 2:
+                continue
+            total_members = sum(len(group["members"]) for group in groups.values())
+            group_payloads = []
+            for option_id, group in sorted(groups.items()):
+                support = self.analytics_policy.build_support_metadata(
+                    support_count=len(group["members"]),
+                    total_count=total_members,
+                    include_thin_sample=False,
+                )
+                group_payloads.append(
+                    {
+                        "group_kind": "structural_option",
+                        "value_label": group["option_label"],
+                        "option_id": option_id,
+                        "option_label": group["option_label"],
+                        "members": list(group["members"]),
+                        "support_count": support["support_count"],
+                        "support_fraction": support["support_fraction"],
+                        "minimum_support_count": support["minimum_support_count"],
+                        "minimum_support_met": support["minimum_support_met"],
+                        "warnings": support["warnings"],
+                    }
+                )
+            metric_impacts = self._build_metric_impacts(
+                group_payloads,
+                metric_ids,
+                metric_stats,
+            )
+            if not metric_impacts:
+                continue
+            warnings = []
+            if any(not group["minimum_support_met"] for group in group_payloads):
+                warnings.append("minimum_support_not_met")
+            overall_effect_score = round(
+                sum(
+                    (
+                        impact.get("standardized_effect")
+                        if impact.get("standardized_effect") is not None
+                        else impact["effect_size"]
+                    )
+                    * impact.get("support_weight", 1.0)
+                    for impact in metric_impacts
+                ),
+                4,
+            )
+            comparison = {
+                "comparison_id": f"structural_uncertainty:{uncertainty_id}",
+                "comparison_kind": "structural_uncertainty",
+                "uncertainty_id": uncertainty_id,
+                "comparison_label": bucket["label"],
+                "sample_count": total_members,
+                "group_count": len(group_payloads),
+                "overall_effect_score": overall_effect_score,
+                "group_summaries": [
+                    {
+                        "option_id": group["option_id"],
+                        "option_label": group["option_label"],
+                        "support_count": group["support_count"],
+                        "support_fraction": group["support_fraction"],
+                        "minimum_support_count": group["minimum_support_count"],
+                        "minimum_support_met": group["minimum_support_met"],
+                        "warnings": list(group.get("warnings", [])),
+                    }
+                    for group in group_payloads
+                ],
+                "metric_impacts": metric_impacts,
+                "comparison_summary": {
+                    "semantics": "designed_comparison",
+                    "design_source": "structural_assignment",
+                    "top_metric_id": metric_impacts[0].get("metric_id"),
+                    "top_metric_effect_size": metric_impacts[0].get("effect_size"),
+                    "top_metric_standardized_effect": metric_impacts[0].get(
+                        "standardized_effect"
+                    ),
+                },
+                "warnings": warnings,
+                "support_assessment": self._build_support_assessment(warnings=warnings),
+            }
+            comparisons.append(comparison)
+
+        comparisons.sort(
+            key=lambda item: (-item["overall_effect_score"], item["uncertainty_id"])
+        )
+        return comparisons
+
     def _build_quality_warnings(
         self,
         *,
@@ -865,9 +1037,10 @@ class SensitivityAnalyzer:
         missing_resolved_value_runs: List[str],
         has_numeric_metrics: bool,
         has_ranked_drivers: bool,
+        has_designed_comparisons: bool,
         scenario_diversity_context: Dict[str, Any],
     ) -> List[str]:
-        warnings = ["observational_only"]
+        warnings = [] if has_designed_comparisons else ["observational_only"]
         if analyzed_runs < self.THIN_SAMPLE_WARNING_THRESHOLD:
             warnings.append("thin_sample")
         if missing_metrics_runs:
@@ -979,6 +1152,15 @@ class SensitivityAnalyzer:
     def _read_json(self, path: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as handle:
             return json.load(handle)
+
+    def _read_json_if_exists(self, path: str) -> Optional[Dict[str, Any]]:
+        if not os.path.exists(path):
+            return None
+        try:
+            payload = self._read_json(path)
+        except (json.JSONDecodeError, OSError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def _write_json(self, path: str, payload: Dict[str, Any]) -> None:
         os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -666,7 +666,8 @@ def test_build_context_assembles_prepare_run_and_empirical_analytics(
     assert artifact["confidence_status"]["boundary_note"].startswith(
         "Ensemble calibration artifacts apply only to named simulation metrics"
     )
-    assert "observational_only" in artifact["sensitivity"]["quality_summary"]["warnings"]
+    assert "observational_only" not in artifact["sensitivity"]["quality_summary"]["warnings"]
+    assert artifact["sensitivity"]["methodology"]["analysis_mode"] == "hybrid_designed_observational"
 
 
 def test_build_context_allows_ensemble_scope_without_selected_run(

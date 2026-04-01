@@ -99,6 +99,7 @@ class OutcomeExtractor:
             config_payload=config_payload,
             actions=log_summary["actions"],
         )
+        structured_runtime = self._load_structured_runtime_artifacts(run_dir)
         top_topics = self._rank_topics(
             config_payload=config_payload,
             mentions=topic_analysis["mentions"],
@@ -174,7 +175,17 @@ class OutcomeExtractor:
             "legacy_layout_fallback_used": log_summary["legacy_layout_fallback_used"],
             "has_any_actions_log": bool(log_summary["action_log_paths"]),
             "timeline_matches_total_actions": timeline_matches_total_actions,
+            "structured_runtime_available": structured_runtime["structured_runtime_used"],
+            "assumption_ledger_available": structured_runtime["assumption_ledger_available"],
         }
+        belief_summary = self._build_belief_summary(structured_runtime)
+        trajectory_summary = self._build_trajectory_summary(structured_runtime)
+        regime_summary = self._build_regime_summary(
+            structured_runtime=structured_runtime,
+            belief_summary=belief_summary,
+            trajectory_summary=trajectory_summary,
+        )
+        assumption_alignment = self._build_assumption_alignment(structured_runtime)
 
         artifact = {
             "artifact_type": "run_metrics",
@@ -202,6 +213,10 @@ class OutcomeExtractor:
             "timeline_summaries": timeline_summaries,
             "top_agents": top_agents,
             "top_topics": top_topics,
+            "belief_summary": belief_summary,
+            "trajectory_summary": trajectory_summary,
+            "regime_summary": regime_summary,
+            "assumption_alignment": assumption_alignment,
             "quality_checks": quality_checks,
             "source_artifacts": {
                 "config": os.path.basename(context["config_path"]),
@@ -211,6 +226,21 @@ class OutcomeExtractor:
                 if os.path.exists(os.path.join(sim_dir, self.OUTCOME_SPEC_FILENAME))
                 else None,
                 "action_logs": log_summary["action_log_paths"],
+                "runtime_graph_base_snapshot": structured_runtime["source_artifacts"].get(
+                    "runtime_graph_base_snapshot"
+                ),
+                "runtime_graph_state": structured_runtime["source_artifacts"].get(
+                    "runtime_graph_state"
+                ),
+                "runtime_graph_updates": structured_runtime["source_artifacts"].get(
+                    "runtime_graph_updates"
+                ),
+                "experiment_design_row": structured_runtime["source_artifacts"].get(
+                    "experiment_design_row"
+                ),
+                "assumption_ledger": structured_runtime["source_artifacts"].get(
+                    "assumption_ledger"
+                ),
             },
             "extracted_at": (
                 (run_state or {}).get("completed_at")
@@ -1085,6 +1115,286 @@ class OutcomeExtractor:
             if lag is not None:
                 lags.append(lag)
         return sorted(lags)
+
+    def _load_structured_runtime_artifacts(
+        self,
+        run_dir: str,
+    ) -> Dict[str, Any]:
+        runtime_base_snapshot = self._read_json_if_exists(
+            os.path.join(run_dir, "runtime_graph_base_snapshot.json")
+        ) or {}
+        runtime_state = self._read_json_if_exists(
+            os.path.join(run_dir, "runtime_graph_state.json")
+        ) or {}
+        runtime_updates_path = os.path.join(run_dir, "runtime_graph_updates.jsonl")
+        runtime_updates = (
+            self._read_jsonl(runtime_updates_path)
+            if os.path.exists(runtime_updates_path)
+            else []
+        )
+        experiment_design_row = self._read_json_if_exists(
+            os.path.join(run_dir, "experiment_design_row.json")
+        ) or {}
+        raw_assumption_ledger = self._read_json_if_exists(
+            os.path.join(run_dir, "assumption_ledger.json")
+        ) or {}
+        assumption_ledger = raw_assumption_ledger.get("assumption_ledger", {})
+        if not isinstance(assumption_ledger, dict):
+            assumption_ledger = {}
+
+        return {
+            "runtime_graph_base_snapshot": runtime_base_snapshot,
+            "runtime_graph_state": runtime_state,
+            "runtime_graph_updates": runtime_updates,
+            "experiment_design_row": experiment_design_row,
+            "assumption_ledger": assumption_ledger,
+            "structured_runtime_used": bool(runtime_state or runtime_updates),
+            "assumption_ledger_available": bool(assumption_ledger),
+            "source_artifacts": {
+                "runtime_graph_base_snapshot": (
+                    "runtime_graph_base_snapshot.json"
+                    if runtime_base_snapshot
+                    else None
+                ),
+                "runtime_graph_state": "runtime_graph_state.json" if runtime_state else None,
+                "runtime_graph_updates": (
+                    "runtime_graph_updates.jsonl" if runtime_updates else None
+                ),
+                "experiment_design_row": (
+                    "experiment_design_row.json" if experiment_design_row else None
+                ),
+                "assumption_ledger": (
+                    "assumption_ledger.json" if assumption_ledger else None
+                ),
+            },
+        }
+
+    def _build_belief_summary(
+        self,
+        structured_runtime: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        updates = [
+            transition
+            for transition in structured_runtime["runtime_graph_updates"]
+            if transition.get("transition_type") == "belief_update"
+        ]
+        directions = Counter(
+            str((transition.get("payload") or {}).get("direction") or "").strip()
+            for transition in updates
+            if str((transition.get("payload") or {}).get("direction") or "").strip()
+        )
+        updated_agents = {
+            str(((transition.get("agent") or {}).get("agent_name") or "")).strip()
+            for transition in updates
+            if str(((transition.get("agent") or {}).get("agent_name") or "")).strip()
+        }
+        citation_ids = {
+            citation_id
+            for transition in updates
+            for citation_id in (transition.get("provenance") or {}).get("citation_ids", [])
+            if str(citation_id or "").strip()
+        }
+        reinforce_count = int(directions.get("reinforce", 0))
+        challenge_count = int(directions.get("challenge", 0))
+        if not updates:
+            belief_regime = "quiet"
+        elif reinforce_count and challenge_count:
+            belief_regime = "contested"
+        elif reinforce_count > 0:
+            belief_regime = "reinforcing"
+        elif challenge_count > 0:
+            belief_regime = "challenging"
+        else:
+            belief_regime = "mixed"
+        return {
+            "structured_runtime_used": structured_runtime["structured_runtime_used"],
+            "update_count": len(updates),
+            "reinforce_count": reinforce_count,
+            "challenge_count": challenge_count,
+            "updated_agent_count": len(updated_agents),
+            "citation_count": len(citation_ids),
+            "belief_regime": belief_regime,
+        }
+
+    def _build_trajectory_summary(
+        self,
+        structured_runtime: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtime_state = structured_runtime["runtime_graph_state"]
+        transitions = list(structured_runtime["runtime_graph_updates"])
+        transition_counts = Counter(
+            str(transition.get("transition_type") or "").strip()
+            for transition in transitions
+            if str(transition.get("transition_type") or "").strip()
+        )
+        rounds = [
+            int(transition.get("round_num") or 0)
+            for transition in transitions
+            if isinstance(transition.get("round_num"), int) and int(transition.get("round_num") or 0) > 0
+        ]
+        round_counter = Counter(rounds)
+        non_round_transitions = [
+            transition
+            for transition in transitions
+            if transition.get("transition_type") != "round_state"
+        ]
+        first_half_count = 0
+        last_half_count = 0
+        if rounds:
+            round_min = min(rounds)
+            round_max = max(rounds)
+            midpoint = (round_min + round_max) / 2
+            for transition in non_round_transitions:
+                round_num = int(transition.get("round_num") or 0)
+                if round_num <= midpoint:
+                    first_half_count += 1
+                else:
+                    last_half_count += 1
+        total_signal_transitions = max(len(non_round_transitions), 1)
+        if not non_round_transitions:
+            trajectory_regime = "quiet"
+        elif first_half_count / total_signal_transitions >= 0.65:
+            trajectory_regime = "front_loaded"
+        elif last_half_count / total_signal_transitions >= 0.65:
+            trajectory_regime = "late_break"
+        elif len(set(rounds)) > 1 and max(round_counter.values(), default=0) <= 2:
+            trajectory_regime = "steady"
+        else:
+            trajectory_regime = "bursty"
+
+        topic_counter = Counter(
+            topic
+            for transition in transitions
+            for topic in (
+                (transition.get("payload") or {}).get("topics")
+                or (transition.get("payload") or {}).get("topic_names")
+                or []
+            )
+            if isinstance(topic, str) and topic.strip()
+        )
+        dominant_topics = [
+            topic
+            for topic, _ in topic_counter.most_common(3)
+        ]
+        if not dominant_topics:
+            dominant_topics = [
+                topic
+                for topic in runtime_state.get("active_topics", [])
+                if isinstance(topic, str) and topic.strip()
+            ][:3]
+
+        dominant_transition_type = None
+        if transition_counts:
+            dominant_transition_type = sorted(
+                transition_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0][0]
+
+        peak_round_num = None
+        if round_counter:
+            peak_round_num = sorted(
+                round_counter.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[0][0]
+
+        return {
+            "structured_runtime_used": structured_runtime["structured_runtime_used"],
+            "transition_count": len(transitions),
+            "transition_counts": {
+                transition_type: transition_counts[transition_type]
+                for transition_type in sorted(transition_counts)
+            },
+            "round_count": len(set(rounds)),
+            "peak_round_num": peak_round_num,
+            "dominant_transition_type": dominant_transition_type,
+            "dominant_topics": dominant_topics,
+            "trajectory_regime": trajectory_regime,
+        }
+
+    def _build_regime_summary(
+        self,
+        *,
+        structured_runtime: Dict[str, Any],
+        belief_summary: Dict[str, Any],
+        trajectory_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        assumption_ledger = structured_runtime["assumption_ledger"]
+        policy_regime = "unspecified"
+        for item in assumption_ledger.get("structural_uncertainties", []):
+            if str(item.get("kind") or "").strip() == "moderation_policy_change":
+                policy_regime = str(item.get("option_id") or item.get("option_label") or "").strip() or "unspecified"
+                break
+        if policy_regime == "unspecified":
+            for transition in structured_runtime["runtime_graph_updates"]:
+                if transition.get("transition_type") == "intervention":
+                    policy_regime = str(
+                        ((transition.get("payload") or {}).get("intervention_name") or "")
+                    ).strip() or "unspecified"
+                    break
+
+        dominant_topics = trajectory_summary.get("dominant_topics", [])
+        narrative_family = "+".join(dominant_topics[:2]) if dominant_topics else "none"
+        primary_regime = (
+            belief_summary.get("belief_regime")
+            if belief_summary.get("belief_regime") not in {None, "", "quiet"}
+            else trajectory_summary.get("trajectory_regime")
+        )
+        return {
+            "structured_runtime_used": structured_runtime["structured_runtime_used"],
+            "activity_regime": trajectory_summary.get("trajectory_regime"),
+            "belief_regime": belief_summary.get("belief_regime"),
+            "policy_regime": policy_regime,
+            "narrative_family": narrative_family,
+            "primary_regime": primary_regime,
+        }
+
+    def _build_assumption_alignment(
+        self,
+        structured_runtime: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        assumption_ledger = structured_runtime["assumption_ledger"]
+        planned_transition_types = sorted(
+            {
+                str(item).strip()
+                for item in assumption_ledger.get("structural_runtime_transition_types", [])
+                if str(item or "").strip()
+            }
+        )
+        observed_transition_types = sorted(
+            {
+                str(transition.get("transition_type") or "").strip()
+                for transition in structured_runtime["runtime_graph_updates"]
+                if str(transition.get("transition_type") or "").strip()
+                and str(transition.get("transition_type") or "").strip() != "round_state"
+            }
+        )
+        matched_transition_types = sorted(
+            set(planned_transition_types) & set(observed_transition_types)
+        )
+        missing_transition_types = sorted(
+            set(planned_transition_types) - set(observed_transition_types)
+        )
+        unexpected_transition_types = sorted(
+            set(observed_transition_types) - set(planned_transition_types)
+        )
+        coverage_ratio = None
+        if planned_transition_types:
+            coverage_ratio = round(
+                len(matched_transition_types) / len(planned_transition_types),
+                6,
+            )
+        return {
+            "structured_runtime_used": structured_runtime["structured_runtime_used"],
+            "planned_transition_types": planned_transition_types,
+            "observed_transition_types": observed_transition_types,
+            "matched_transition_types": matched_transition_types,
+            "missing_transition_types": missing_transition_types,
+            "unexpected_transition_types": unexpected_transition_types,
+            "coverage_ratio": coverage_ratio,
+            "assumption_statement_count": len(
+                assumption_ledger.get("assumption_statements", [])
+            ),
+        }
 
     def _has_cross_platform_topic_transfer_evidence(
         self,

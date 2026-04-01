@@ -717,3 +717,124 @@ def test_get_sensitivity_analysis_marks_minimum_support_rankings_as_insufficient
         "reason": "Minimum support was not met, so this observational ranking cannot support strong driver language.",
         "warnings": ["minimum_support_not_met"],
     }
+
+
+def test_get_sensitivity_analysis_adds_structural_designed_comparisons(
+    simulation_data_dir, monkeypatch
+):
+    sensitivity_module = _load_sensitivity_module()
+    monkeypatch.setattr(
+        sensitivity_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-sensitivity-designed"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 3),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 1),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 5),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 2),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.8},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 11),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 8),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.85},
+                "metrics_payload": {
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry("simulation.total_actions", 13),
+                        "platform.twitter.total_actions": _metric_entry("platform.twitter.total_actions", 10),
+                    },
+                },
+            },
+        ],
+    )
+
+    for run_id, option_id, option_label in (
+        ("0001", "status_quo", "Status quo"),
+        ("0002", "status_quo", "Status quo"),
+        ("0003", "tightened_enforcement", "Tightened enforcement"),
+        ("0004", "tightened_enforcement", "Tightened enforcement"),
+    ):
+        run_dir = ensemble_dir / "runs" / f"run_{run_id}"
+        manifest_path = run_dir / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        resolution = {
+            "uncertainty_id": "moderation_policy_change",
+            "kind": "moderation_policy_change",
+            "option_id": option_id,
+            "option_label": option_label,
+            "runtime_transition_hints": ["intervention"],
+        }
+        manifest["experiment_design_row"] = {
+            "run_id": run_id,
+            "structural_assignments": [
+                {
+                    "uncertainty_id": "moderation_policy_change",
+                    "option_id": option_id,
+                    "option_label": option_label,
+                }
+            ],
+        }
+        manifest["structural_resolutions"] = [resolution]
+        manifest["assumption_ledger"] = {
+            "structural_uncertainties": [resolution],
+            "structural_runtime_transition_types": ["intervention"],
+        }
+        _write_json(manifest_path, manifest)
+
+    analyzer = sensitivity_module.SensitivityAnalyzer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = analyzer.get_sensitivity_analysis(simulation_id, ensemble_id)
+
+    assert artifact["methodology"]["analysis_mode"] == "hybrid_designed_observational"
+    assert artifact["designed_comparison_count"] == 1
+    comparison = artifact["designed_comparisons"][0]
+    impact = next(
+        item
+        for item in comparison["metric_impacts"]
+        if item["metric_id"] == "simulation.total_actions"
+    )
+    assert comparison["comparison_kind"] == "structural_uncertainty"
+    assert comparison["uncertainty_id"] == "moderation_policy_change"
+    assert comparison["comparison_summary"]["semantics"] == "designed_comparison"
+    assert [group["option_id"] for group in comparison["group_summaries"]] == [
+        "status_quo",
+        "tightened_enforcement",
+    ]
+    assert impact["effect_size"] == 8.0

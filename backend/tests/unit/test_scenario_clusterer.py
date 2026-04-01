@@ -1327,3 +1327,234 @@ def test_get_scenario_clusters_warns_when_feature_space_shrinks(
         "simulation.total_actions"
     ]
     assert "partial_feature_space" in artifact["quality_summary"]["warnings"]
+
+
+def test_get_scenario_clusters_surfaces_regime_narrative_and_structural_markers(
+    simulation_data_dir, monkeypatch
+):
+    cluster_module = _load_cluster_module()
+    monkeypatch.setattr(
+        cluster_module.Config,
+        "OASIS_SIMULATION_DATA_DIR",
+        str(simulation_data_dir),
+        raising=False,
+    )
+
+    simulation_id = "sim-clusters-regime"
+    ensemble_id = "0001"
+    ensemble_dir = _write_ensemble_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_payloads=[
+            {
+                "run_id": "0001",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.2},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                    "structural_uncertainties": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "status_quo",
+                            "option_label": "Status quo",
+                        }
+                    ],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T17:00:01",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "trajectory_summary": {
+                        "dominant_topics": ["rates", "labor"],
+                        "trajectory_regime": "front_loaded",
+                    },
+                    "belief_summary": {"belief_regime": "reinforcing"},
+                    "regime_summary": {
+                        "primary_regime": "front_loaded",
+                        "narrative_family": "rates+l abor".replace(" ", ""),
+                    },
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 3
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 1
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0002",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.25},
+                "assumption_ledger": {
+                    "applied_templates": ["baseline-watch"],
+                    "structural_uncertainties": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "status_quo",
+                            "option_label": "Status quo",
+                        }
+                    ],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T17:00:02",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "trajectory_summary": {
+                        "dominant_topics": ["rates", "labor"],
+                        "trajectory_regime": "front_loaded",
+                    },
+                    "belief_summary": {"belief_regime": "reinforcing"},
+                    "regime_summary": {
+                        "primary_regime": "front_loaded",
+                        "narrative_family": "rates+labor",
+                    },
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 4
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 2
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0003",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.8},
+                "assumption_ledger": {
+                    "applied_templates": ["viral-spike"],
+                    "structural_uncertainties": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "tightened_enforcement",
+                            "option_label": "Tightened enforcement",
+                        }
+                    ],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T17:00:03",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "trajectory_summary": {
+                        "dominant_topics": ["inflation", "credibility"],
+                        "trajectory_regime": "bursty",
+                    },
+                    "belief_summary": {"belief_regime": "contested"},
+                    "regime_summary": {
+                        "primary_regime": "bursty",
+                        "narrative_family": "inflation+credibility",
+                    },
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 18
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 10
+                        ),
+                    },
+                },
+            },
+            {
+                "run_id": "0004",
+                "resolved_values": {"twitter_config.echo_chamber_strength": 0.85},
+                "assumption_ledger": {
+                    "applied_templates": ["viral-spike"],
+                    "structural_uncertainties": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "tightened_enforcement",
+                            "option_label": "Tightened enforcement",
+                        }
+                    ],
+                },
+                "metrics_payload": {
+                    "extracted_at": "2026-03-08T17:00:04",
+                    "quality_checks": {"status": "complete", "run_status": "completed"},
+                    "trajectory_summary": {
+                        "dominant_topics": ["inflation", "credibility"],
+                        "trajectory_regime": "bursty",
+                    },
+                    "belief_summary": {"belief_regime": "contested"},
+                    "regime_summary": {
+                        "primary_regime": "bursty",
+                        "narrative_family": "inflation+credibility",
+                    },
+                    "metric_values": {
+                        "simulation.total_actions": _metric_entry(
+                            "simulation.total_actions", 20
+                        ),
+                        "platform.twitter.total_actions": _metric_entry(
+                            "platform.twitter.total_actions", 12
+                        ),
+                    },
+                },
+            },
+        ],
+    )
+
+    _write_json(
+        ensemble_dir / "experiment_design.json",
+        {
+            "artifact_type": "experiment_design",
+            "simulation_id": simulation_id,
+            "ensemble_id": ensemble_id,
+            "structural_uncertainty_catalog": [
+                {
+                    "uncertainty_id": "moderation_policy_change",
+                    "kind": "moderation_policy_change",
+                    "option_ids": ["status_quo", "tightened_enforcement"],
+                }
+            ],
+            "rows": [
+                {
+                    "run_id": "0001",
+                    "structural_assignments": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "status_quo",
+                        }
+                    ],
+                },
+                {
+                    "run_id": "0002",
+                    "structural_assignments": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "status_quo",
+                        }
+                    ],
+                },
+                {
+                    "run_id": "0003",
+                    "structural_assignments": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "tightened_enforcement",
+                        }
+                    ],
+                },
+                {
+                    "run_id": "0004",
+                    "structural_assignments": [
+                        {
+                            "uncertainty_id": "moderation_policy_change",
+                            "option_id": "tightened_enforcement",
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    clusterer = cluster_module.ScenarioClusterer(
+        simulation_data_dir=str(simulation_data_dir)
+    )
+    artifact = clusterer.get_scenario_clusters(simulation_id, ensemble_id)
+
+    assert artifact["diversity_diagnostics"]["coverage_metrics"][
+        "structural_uncertainty_coverage_ratio"
+    ] == 1.0
+    assert artifact["diversity_diagnostics"]["coverage_metrics"][
+        "structural_option_coverage_ratios"
+    ] == {"moderation_policy_change": 1.0}
+    assert artifact["clusters"][0]["family_signature"]["regime_markers"]
+    assert artifact["clusters"][0]["family_signature"]["narrative_markers"]
+    assert artifact["clusters"][0]["structural_option_counts"]
