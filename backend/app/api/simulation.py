@@ -3854,7 +3854,7 @@ def start_simulation():
             "simulation_id": "sim_xxxx",         // required: simulation ID
             "platform": "parallel",              // optional: twitter / reddit / parallel (default)
             "max_rounds": 100,                   // optional: maximum simulation rounds for truncating long runs
-            "enable_graph_memory_update": false, // optional: whether to write agent activity back into Zep graph memory
+            "enable_graph_memory_update": false, // optional: whether to write agent activity back into the runtime graph namespace
             "force": false,                      // optional: force a restart by stopping a running simulation and cleaning logs
             "close_environment_on_complete": false // optional: exit after completion instead of entering command-wait mode
         }
@@ -3868,8 +3868,8 @@ def start_simulation():
 
     About `enable_graph_memory_update`:
         - If enabled, all agent activity in the simulation (posts, comments, likes, and so on)
-          is written back to the Zep graph in real time
-        - This allows the graph to retain memory of the simulation for later analysis or AI chat
+          is written back to the runtime graph namespace in real time
+        - This allows the local graph backend to retain simulation memory for later analysis or AI chat
         - The simulation's project must have a valid `graph_id`
         - Updates are batched to reduce API call volume
 

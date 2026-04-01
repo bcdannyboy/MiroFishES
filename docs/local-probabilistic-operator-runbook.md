@@ -59,7 +59,13 @@ npm run verify:graphiti:live
 npm run verify:graphiti:all
 ```
 
-These wrappers are harness checks, not end-to-end backend proof. Prompt 2 rewires the Step 1 base graph build seam through Graphiti + Neo4j, and these commands confirm the rewritten backend surface can report truthful config and dependency status.
+These wrappers are harness checks, not end-to-end backend proof. They now cover the rewritten base and runtime graph unit/integration suites plus the truthful readiness surface.
+
+For an explicit runtime live probe against the real repo `.env` plus the local Neo4j port binding, run:
+
+```bash
+backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py
+```
 
 ### Forecasting verify
 
@@ -96,7 +102,7 @@ npm run verify:smoke
 
 This suite uses deterministic fixture data and Playwright-owned local env overrides from [playwright.config.mjs](../playwright.config.mjs). It checks the bounded browser path through Step 2, Step 3, Step 4, Step 5, and history replay.
 
-It proves routing and surfaced state. It does not prove live LLM or Zep access, live Step 2 prepare, or live Report Agent chat responses.
+It proves routing and surfaced state. It does not prove live LLM access, authenticated live Graphiti ingestion, live Step 2 prepare, or live Report Agent chat responses.
 
 ### Live mutating operator verify
 
@@ -173,7 +179,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompt 2 routes the live Step 1 base graph build and artifact export path through that backend seam. The broader read/query/runtime update lanes still depend on legacy Zep services until later cutover prompts replace them, so keep `ZEP_API_KEY` configured for the remaining legacy surfaces.
+Prompts 2-4 route the live Step 1 base graph build, read/query, and runtime update lanes through the Graphiti + Neo4j backend seam. Some compatibility module names still use the historical `zep_*` prefix, but the touched graph paths no longer depend on live Zep services.
 
 ### Capability check
 
@@ -336,7 +342,7 @@ Use `Create child rerun`. That preserves the existing stored run as evidence and
 
 ## Known Limits
 
-- Live Step 2 prepare still depends on real LLM and Zep configuration.
+- Live Step 2 prepare still depends on real LLM configuration and authenticated local graph backend access.
 - The smoke suite is good routing evidence, but it is not proof that live prepare or live chat works in a fresh environment.
 - Confidence language must stay bounded to supported ready binary, categorical, or numeric answer lanes with valid provenance.
 - The repo has local bounded operator evidence, not release-grade rollout evidence.

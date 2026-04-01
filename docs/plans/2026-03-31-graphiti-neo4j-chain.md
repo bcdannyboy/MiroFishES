@@ -60,6 +60,28 @@
   - `backend/tests/unit/test_report_agent_hybrid_retrieval.py`
   - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
   - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+- Prompt 4 may extend runtime graph provisioning, runtime namespace lifecycle, runtime event ingestion, runtime/state verification wrappers, and prompt-chain docs while preserving earlier chain state files
+- Prompt 4 chain-owned paths:
+  - `README.md`
+  - `docs/local-probabilistic-operator-runbook.md`
+  - `package.json`
+  - `backend/app/api/simulation.py`
+  - `backend/app/services/__init__.py`
+  - `backend/app/services/graph_backend/__init__.py`
+  - `backend/app/services/graph_backend/backend.py`
+  - `backend/app/services/graph_backend/runtime_event_ingestor.py`
+  - `backend/app/services/runtime_graph_manager.py`
+  - `backend/app/services/runtime_graph_state_store.py`
+  - `backend/app/services/runtime_graph_updater.py`
+  - `backend/app/services/simulation_runner.py`
+  - `backend/scripts/verify_graphiti_scaffold.py`
+  - `backend/scripts/verify_runtime_graph_live.py`
+  - `backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py`
+  - `backend/tests/unit/test_runtime_graph_state.py`
+  - `backend/tests/unit/test_runtime_graph_updater.py`
+  - `backend/tests/unit/test_simulation_runner_runtime_scope.py`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
 
 ## Commit Policy
 
@@ -238,6 +260,67 @@
   - failing Prompt 3 tests were written first and observed red before implementation
   - merged base/runtime reads, deterministic scans, report quick search, and entity-context enrichment now run through the new backend-neutral read stack
 
+### Prompt 4
+
+- status: completed
+- scope: runtime graph provisioning, deterministic runtime namespace lifecycle, Graphiti-backed runtime event ingestion scaffolding, runtime/state artifact namespace alignment, and a real `.env`/defaults live probe against local Neo4j reachability
+- startup grounding completed against:
+  - `docs/plans/2026-03-31-graphiti-neo4j-overhaul.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-cutover-prompt-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+  - `docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt`
+- startup branch/status snapshot:
+  - active branch confirmed: `codex/graphiti-neo4j-overhaul-chain`
+  - dirty state re-grounded before work; only baseline dirty files were present outside chain-owned edits
+- Ruflo orchestration records:
+  - workspace verifier result: `swarm-task-only`
+  - workspace launcher swarm id: `swarm-1775021064414-rurbbx`
+  - runtime-namespace task id: `task-1775021064417-94rfhq`
+  - runtime-event task id: `task-1775021064418-yesjo1`
+  - docs/status task id: `task-1775021064419-iznkk2`
+- Prompt 1-3 repo-truth verification completed before new scope:
+  - `git log` confirmed all three prompt commits on the active branch
+  - `npm run verify:ruflo` still passed in `swarm-task-only` mode
+  - live Neo4j reachability was re-verified outside the sandbox: `http://127.0.0.1:7474` returned `HTTP/1.1 200 OK`, `127.0.0.1:7687` accepted a TCP connect, and `docker ps` showed `infra-neo4j-1` healthy with both ports published
+  - repo truth still showed `graphiti-core` missing from `backend/.venv` and the real repo `.env` still lacking explicit graph-backend keys / `NEO4J_PASSWORD`
+- owned files actually changed:
+  - `README.md`
+  - `docs/local-probabilistic-operator-runbook.md`
+  - `package.json`
+  - `backend/app/api/simulation.py`
+  - `backend/app/services/__init__.py`
+  - `backend/app/services/graph_backend/__init__.py`
+  - `backend/app/services/graph_backend/backend.py`
+  - `backend/app/services/graph_backend/runtime_event_ingestor.py`
+  - `backend/app/services/runtime_graph_manager.py`
+  - `backend/app/services/runtime_graph_state_store.py`
+  - `backend/app/services/runtime_graph_updater.py`
+  - `backend/app/services/simulation_runner.py`
+  - `backend/scripts/verify_graphiti_scaffold.py`
+  - `backend/scripts/verify_runtime_graph_live.py`
+  - `backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py`
+  - `backend/tests/unit/test_runtime_graph_state.py`
+  - `backend/tests/unit/test_runtime_graph_updater.py`
+  - `backend/tests/unit/test_simulation_runner_runtime_scope.py`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain.md`
+  - `docs/plans/2026-03-31-graphiti-neo4j-chain-status.json`
+- architectural decisions implemented:
+  - extended `GraphitiGraphBackend` with deterministic runtime namespace creation plus batched runtime event ingestion through the new `GraphitiRuntimeEventIngestor`
+  - rewrote `RuntimeGraphManager` to provision runtime namespaces through the backend seam while keeping compatibility with injected legacy-style graph builders in tests
+  - aligned `run_manifest.json`, `resolved_config.json`, `runtime_graph_base_snapshot.json`, and `runtime_graph_state.json` around one explicit application-managed namespace model
+  - replaced the live `ZepGraphMemoryManager` runtime path with `RuntimeGraphUpdater` / `RuntimeGraphUpdateManager`, and rewired `SimulationRunner` to feed live runtime actions into the new backend-neutral updater
+  - added `backend/scripts/verify_runtime_graph_live.py` so later prompts can re-run one explicit runtime live probe that resolves the real `.env`/defaults, constructs a runtime namespace, serializes one runtime event, and proves local Neo4j reachability without overstating Graphiti auth readiness
+- deviations from the source plan that were intentional in Prompt 4:
+  - the live runtime probe is an honest partial runtime/backend proof because `graphiti-core` is still absent locally and the real repo `.env` still lacks `NEO4J_PASSWORD`; it proves env/default resolution, runtime namespace construction, runtime event serialization, and Neo4j reachability, not authenticated live Graphiti ingestion
+  - compatibility module names outside the touched runtime path still retain `zep_*` prefixes to keep the downstream blast radius bounded for later prompts
+- blockers fixed from prior prompts:
+  - removed the remaining runtime write-path dependency on the legacy Zep updater/manager
+  - corrected the earlier docs claim that runtime updates still depended on live Zep services
+- completion summary:
+  - failing Prompt 4 tests were written first and observed red before implementation
+  - runtime namespace provisioning, manifest/state artifact alignment, runner/updater wiring, and a reproducible live runtime probe now exist on the dedicated Graphiti + Neo4j seam
+
 ## Blockers And Resolutions
 
 - blocker: direct MCP Ruflo task tools in this session wrote to `/.claude-flow` instead of the repo workspace
@@ -254,6 +337,8 @@
   - resolution: align `backend/pyproject.toml` and `backend/requirements.txt` to `neo4j>=5.23.0,<6.0.0`, which satisfies the current repo dependency graph while keeping the Graphiti cutover path viable
 - blocker: Prompt 3 needed multigraph reads before live Graphiti query dependencies are locally runnable
   - resolution: implement artifact-backed deterministic scan/query services so the read path no longer depends on Zep while the live Graphiti runtime blockers remain open
+- blocker: Prompt 4 still inherited a live runtime write path through `ZepGraphMemoryManager` even after the base and read-side cutover prompts completed
+  - resolution: replace the runtime updater/manager path with `RuntimeGraphUpdater` / `RuntimeGraphUpdateManager` and route `SimulationRunner` through the new backend-neutral runtime ingestion seam
 
 ## Verification Command Ledger
 
@@ -306,6 +391,25 @@
   - result: `29 passed`
 - `backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py -q`
   - result: `31 passed`
+- `npm run verify:ruflo`
+  - result on Prompt 4 recheck: PASS in `swarm-task-only` mode; memory still blocked by external `sql.js`
+- `docker ps`
+  - result on Prompt 4 recheck: `infra-neo4j-1` healthy with `7474` and `7687` published to localhost
+- `curl -sS -I http://127.0.0.1:7474` outside sandbox
+  - result: `HTTP/1.1 200 OK`
+- `nc -z 127.0.0.1 7687` outside sandbox
+  - result: `Connection to 127.0.0.1 port 7687 [tcp/*] succeeded!`
+- `backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py backend/tests/unit/test_runtime_graph_updater.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q`
+  - result before implementation: `6 failed, 8 passed`
+  - result after implementation: `14 passed`
+- `npm run verify:graphiti:unit`
+  - result on Prompt 4 post-implementation run: `28 passed`
+- `npm run verify:graphiti:integration`
+  - result on Prompt 4 post-implementation run: PASS; readiness remained honest with `graphiti-core` unavailable and `NEO4J_PASSWORD` missing, and the runtime integration suite reported `1 passed`
+- `backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_action_logger.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q`
+  - result: `38 passed`
+- `backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py` outside sandbox
+  - result: PASS; runtime namespace probe, runtime event serialization, and live Neo4j reachability succeeded while truthfully reporting `NEO4J_PASSWORD` missing and no explicit graph-backend keys in the real `.env`
 
 ## Next-Prompt Entry Checklist
 
@@ -314,8 +418,11 @@
 - confirm baseline dirty paths remain unstaged unless explicitly adopted
 - verify Prompt 1 and Prompt 2 commits exist and review their scoped verification evidence
 - verify Prompt 3 commit exists and review its scoped verification evidence
+- verify Prompt 4 commit exists and review its scoped verification evidence
 - re-run Ruflo workspace readiness before new disjoint work
-- expect `graphiti-core` to still be absent and `NEO4J_PASSWORD` to still be missing unless Prompt 3 explicitly changes the environment/install state
+- expect `graphiti-core` to still be absent and `NEO4J_PASSWORD` to still be missing unless Prompt 4 explicitly changes the environment/install state
 - confirm the Step 1 base graph build path now runs through `backend/app/services/graph_backend/` and that `/api/graph/build` no longer gates on `ZEP_API_KEY`
 - confirm the read-side search/entity/report paths touched in Prompt 3 no longer require live Zep credentials
-- treat the remaining write-side graph memory updater/runtime mutation Zep paths as Prompt 4+ scope
+- confirm `backend/app/services/runtime_graph_manager.py`, `backend/app/services/runtime_graph_updater.py`, and `backend/app/services/simulation_runner.py` now route runtime provisioning and runtime event ingestion through the Graphiti + Neo4j seam
+- re-run `backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py` outside the sandbox if Prompt 5 depends on live runtime/backend reachability evidence
+- treat authenticated live Graphiti ingestion and any `.env` credential/install remediation as Prompt 5+ scope

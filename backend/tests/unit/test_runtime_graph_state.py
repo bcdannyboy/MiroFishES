@@ -244,17 +244,41 @@ def _seed_run_layout(simulations_dir: Path, *, simulation_id: str, project_id: s
     return run_dir
 
 
-class _FakeGraphBuilder:
+class _FakeGraphBackend:
     def __init__(self):
-        self.created_names = []
+        self.create_calls = []
         self.ontology_calls = []
         self.deleted_graph_ids = []
 
-    def create_graph(self, name: str) -> str:
-        self.created_names.append(name)
-        return "runtime-graph-1"
+    def create_runtime_graph(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        project_id: str | None = None,
+        project_name: str | None = None,
+    ) -> dict:
+        namespace_id = f"mirofish-runtime-{simulation_id}-{ensemble_id}-{run_id}"
+        descriptor = {
+            "namespace_id": namespace_id,
+            "group_id": namespace_id,
+            "graph_scope": "runtime",
+            "display_name": f"{project_name or project_id or simulation_id} runtime graph",
+        }
+        self.create_calls.append(
+            {
+                "simulation_id": simulation_id,
+                "ensemble_id": ensemble_id,
+                "run_id": run_id,
+                "project_id": project_id,
+                "project_name": project_name,
+                "descriptor": descriptor,
+            }
+        )
+        return descriptor
 
-    def set_ontology(self, graph_id: str, ontology: dict) -> None:
+    def register_ontology(self, graph_id: str, ontology: dict) -> None:
         self.ontology_calls.append((graph_id, ontology))
 
     def delete_graph(self, graph_id: str) -> None:
@@ -278,9 +302,9 @@ def test_runtime_graph_manager_provision_hydrates_base_snapshot_and_runtime_stat
     runtime_module = importlib.import_module("app.services.runtime_graph_manager")
     ensemble_module = importlib.import_module("app.services.ensemble_manager")
 
-    graph_builder = _FakeGraphBuilder()
+    graph_backend = _FakeGraphBackend()
     manager = runtime_module.RuntimeGraphManager(
-        graph_builder=graph_builder,
+        graph_backend=graph_backend,
         ensemble_manager=ensemble_module.EnsembleManager(
             simulation_data_dir=str(simulations_dir)
         ),
@@ -297,8 +321,10 @@ def test_runtime_graph_manager_provision_hydrates_base_snapshot_and_runtime_stat
         ),
     )
 
+    expected_runtime_graph_id = f"mirofish-runtime-{simulation_id}-0001-0001"
+
     assert context["base_graph_id"] == base_graph_id
-    assert context["runtime_graph_id"] == "runtime-graph-1"
+    assert context["runtime_graph_id"] == expected_runtime_graph_id
 
     snapshot = json.loads(
         (run_dir / "runtime_graph_base_snapshot.json").read_text(encoding="utf-8")
@@ -313,7 +339,7 @@ def test_runtime_graph_manager_provision_hydrates_base_snapshot_and_runtime_stat
     assert snapshot["artifact_type"] == "runtime_graph_base_snapshot"
     assert snapshot["simulation_id"] == simulation_id
     assert snapshot["base_graph_id"] == base_graph_id
-    assert snapshot["runtime_graph_id"] == "runtime-graph-1"
+    assert snapshot["runtime_graph_id"] == expected_runtime_graph_id
     assert snapshot["actor_count"] == 1
     assert snapshot["analytical_object_count"] == 2
     assert snapshot["source_artifacts"]["prepared_world_state"] == "prepared_world_state.json"
@@ -321,6 +347,15 @@ def test_runtime_graph_manager_provision_hydrates_base_snapshot_and_runtime_stat
     assert snapshot["source_artifacts"]["graph_entity_index"] == "graph_entity_index.json"
     assert snapshot["actors"][0]["entity_uuid"] == "actor-1"
     assert set(snapshot["actors"][0]["topic_names"]) == {"Labor slowdown"}
+    assert snapshot["namespace_model"] == "application-managed"
+    assert snapshot["graph_backend"] == "graphiti_neo4j"
+    assert snapshot["namespaces"]["base"] == {
+        "namespace_id": base_graph_id,
+        "group_id": base_graph_id,
+        "graph_scope": "base",
+        "display_name": base_graph_id,
+    }
+    assert snapshot["namespaces"]["runtime"] == graph_backend.create_calls[0]["descriptor"]
 
     assert runtime_state["artifact_type"] == "runtime_graph_state"
     assert runtime_state["base_snapshot_artifact"] == "runtime_graph_base_snapshot.json"
@@ -330,15 +365,22 @@ def test_runtime_graph_manager_provision_hydrates_base_snapshot_and_runtime_stat
     assert runtime_state["world_summary"]["headline"] == "Labor slowdown concerns rise"
     assert runtime_state["platform_status"]["twitter"] == "pending"
     assert runtime_state["platform_status"]["reddit"] == "pending"
+    assert runtime_state["namespace_model"] == "application-managed"
+    assert runtime_state["graph_backend"] == "graphiti_neo4j"
+    assert runtime_state["namespaces"]["runtime"] == graph_backend.create_calls[0]["descriptor"]
     assert updates_log.exists()
     assert updates_log.read_text(encoding="utf-8") == ""
 
-    assert manifest["runtime_graph_id"] == "runtime-graph-1"
+    assert manifest["runtime_graph_id"] == expected_runtime_graph_id
+    assert manifest["graph_namespace_model"] == "application-managed"
+    assert manifest["runtime_graph_namespace"] == graph_backend.create_calls[0]["descriptor"]
     assert manifest["artifact_paths"]["runtime_graph_base_snapshot"] == "runtime_graph_base_snapshot.json"
     assert manifest["artifact_paths"]["runtime_graph_state"] == "runtime_graph_state.json"
     assert manifest["artifact_paths"]["runtime_graph_updates"] == "runtime_graph_updates.jsonl"
+    assert resolved_config["graph_namespace_model"] == "application-managed"
+    assert resolved_config["runtime_graph_namespace"] == graph_backend.create_calls[0]["descriptor"]
     assert resolved_config["runtime_graph_state_artifact"] == "runtime_graph_state.json"
-    assert graph_builder.ontology_calls[0][0] == "runtime-graph-1"
+    assert graph_backend.ontology_calls[0][0] == expected_runtime_graph_id
 
 
 def test_runtime_graph_manager_cleanup_clears_runtime_artifacts_and_ids(tmp_path, monkeypatch):
@@ -358,9 +400,9 @@ def test_runtime_graph_manager_cleanup_clears_runtime_artifacts_and_ids(tmp_path
     runtime_module = importlib.import_module("app.services.runtime_graph_manager")
     ensemble_module = importlib.import_module("app.services.ensemble_manager")
 
-    graph_builder = _FakeGraphBuilder()
+    graph_backend = _FakeGraphBackend()
     manager = runtime_module.RuntimeGraphManager(
-        graph_builder=graph_builder,
+        graph_backend=graph_backend,
         ensemble_manager=ensemble_module.EnsembleManager(
             simulation_data_dir=str(simulations_dir)
         ),
@@ -383,9 +425,13 @@ def test_runtime_graph_manager_cleanup_clears_runtime_artifacts_and_ids(tmp_path
     )
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
 
-    assert cleanup["deleted_runtime_graph_id"] == "runtime-graph-1"
+    assert cleanup["deleted_runtime_graph_id"] == (
+        f"mirofish-runtime-{simulation_id}-0001-0001"
+    )
     assert cleanup["runtime_graph_id"] is None
-    assert graph_builder.deleted_graph_ids == ["runtime-graph-1"]
+    assert graph_backend.deleted_graph_ids == [
+        f"mirofish-runtime-{simulation_id}-0001-0001"
+    ]
     assert manifest["base_graph_id"] == base_graph_id
     assert manifest["runtime_graph_id"] is None
     assert "runtime_graph_base_snapshot" not in manifest["artifact_paths"]
@@ -394,3 +440,49 @@ def test_runtime_graph_manager_cleanup_clears_runtime_artifacts_and_ids(tmp_path
     assert (run_dir / "runtime_graph_base_snapshot.json").exists() is False
     assert (run_dir / "runtime_graph_state.json").exists() is False
     assert (run_dir / "runtime_graph_updates.jsonl").exists() is False
+
+
+def test_runtime_graph_manager_force_reset_deletes_existing_runtime_namespace_before_reprovision(
+    tmp_path, monkeypatch
+):
+    simulations_dir, project_module = _configure_roots(monkeypatch, tmp_path)
+    simulation_id = "sim-runtime-reset"
+    project_id = "proj-runtime"
+    base_graph_id = "graph-base-1"
+
+    _seed_project(project_module, project_id=project_id, graph_id=base_graph_id)
+    run_dir = _seed_run_layout(
+        simulations_dir,
+        simulation_id=simulation_id,
+        project_id=project_id,
+        graph_id=base_graph_id,
+    )
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    manifest["runtime_graph_id"] = "legacy-runtime-graph"
+    _write_json(run_dir / "run_manifest.json", manifest)
+
+    runtime_module = importlib.import_module("app.services.runtime_graph_manager")
+    ensemble_module = importlib.import_module("app.services.ensemble_manager")
+
+    graph_backend = _FakeGraphBackend()
+    manager = runtime_module.RuntimeGraphManager(
+        graph_backend=graph_backend,
+        ensemble_manager=ensemble_module.EnsembleManager(
+            simulation_data_dir=str(simulations_dir)
+        ),
+    )
+
+    context = manager.provision_runtime_graph(
+        simulation_id=simulation_id,
+        ensemble_id="0001",
+        run_id="0001",
+        state=SimpleNamespace(
+            project_id=project_id,
+            graph_id=base_graph_id,
+            base_graph_id=base_graph_id,
+        ),
+        force_reset=True,
+    )
+
+    assert graph_backend.deleted_graph_ids == ["legacy-runtime-graph"]
+    assert context["runtime_graph_id"] == "mirofish-runtime-sim-runtime-reset-0001-0001"

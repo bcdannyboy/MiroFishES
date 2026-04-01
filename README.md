@@ -106,7 +106,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompt 2 rewires the Step 1 base graph build and artifact export path through that backend seam. The wider read/query/runtime update lanes still use legacy Zep services until later cutover prompts replace them, so keep `ZEP_API_KEY` configured for the remaining legacy surfaces.
+Prompts 2-4 rewire the Step 1 base build, read/query, and runtime update lanes through the Graphiti + Neo4j backend seam. The repo still carries some historical `zep_*` module names for compatibility, but the touched graph build, read, and runtime update paths no longer depend on live Zep services.
 
 ### Start the stack
 
@@ -178,7 +178,13 @@ npm run verify:graphiti:live
 npm run verify:graphiti:all
 ```
 
-These wrappers prove the Graphiti + Neo4j backend seam exists, that the readiness surface executes, and that the repo can report honest dependency/config state for the rewritten base build path. They still do not prove end-to-end Graphiti query or runtime update behavior.
+These wrappers prove the Graphiti + Neo4j backend seam exists, that the readiness surface executes, and that the repo can run the rewritten base plus runtime unit/integration tests while reporting honest dependency/config state. They still do not prove authenticated live Graphiti ingestion by themselves.
+
+For an explicit runtime live probe against the real repo `.env` plus the local Neo4j port binding, run:
+
+```bash
+backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py
+```
 
 ### 3. Confidence verify
 
@@ -221,7 +227,7 @@ It covers:
 - Step 5 scoped evidence banner and compare handoff
 - history replay back into Step 3 and Step 5
 
-It does not prove live LLM or Zep access, live Step 2 prepare, or live Report Agent chat responses.
+It does not prove live LLM access, authenticated live Graphiti ingestion, live Step 2 prepare, or live Report Agent chat responses.
 
 ### 6. Live mutating operator verify
 

@@ -37,9 +37,9 @@ def main() -> int:
         "status": "backend-harness-ready",
         "readiness": readiness,
         "note": (
-            "Prompt 2 wrapper sanity is green when the readiness surface executes "
-            "and reports honest dependency/config status for the rewritten base graph "
-            "build seam."
+            "Graphiti verification is green when the readiness surface executes "
+            "and reports honest dependency/config status for the rewritten base "
+            "and runtime graph seams."
         ),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

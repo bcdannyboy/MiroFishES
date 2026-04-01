@@ -6,11 +6,12 @@
   ],
   "branch": "codex/graphiti-neo4j-overhaul-chain",
   "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
-  "current_prompt": 3,
+  "current_prompt": 4,
   "completed_prompts": [
     1,
     2,
-    3
+    3,
+    4
   ],
   "prompt_status": "completed",
   "chain_owned_paths": [
@@ -25,7 +26,13 @@
     "backend/requirements.txt",
     "backend/app/config.py",
     "backend/app/api/graph.py",
+    "backend/app/api/simulation.py",
+    "backend/app/services/__init__.py",
     "backend/app/services/graph_builder.py",
+    "backend/app/services/runtime_graph_manager.py",
+    "backend/app/services/runtime_graph_state_store.py",
+    "backend/app/services/runtime_graph_updater.py",
+    "backend/app/services/simulation_runner.py",
     "backend/app/services/graph_backend/",
     "backend/app/services/zep_entity_reader.py",
     "backend/app/services/zep_tools.py",
@@ -34,6 +41,9 @@
     "backend/tests/unit/services/graph_backend/",
     "backend/tests/unit/test_graph_backend_readiness_api.py",
     "backend/tests/unit/test_graph_builder_service.py",
+    "backend/tests/unit/test_runtime_graph_state.py",
+    "backend/tests/unit/test_runtime_graph_updater.py",
+    "backend/tests/unit/test_simulation_runner_runtime_scope.py",
     "backend/tests/unit/test_zep_entity_reader.py",
     "backend/tests/unit/test_zep_tools_multigraph.py",
     "backend/tests/unit/test_report_agent_hybrid_retrieval.py"
@@ -78,12 +88,18 @@
         "query_scan_task_id": "task-1775019134313-7u6tea",
         "entity_reader_task_id": "task-1775019134313-055lzi",
         "report_adapter_task_id": "task-1775019134313-zwp74t"
+      },
+      "prompt_4": {
+        "swarm_id": "swarm-1775021064414-rurbbx",
+        "runtime_namespace_task_id": "task-1775021064417-94rfhq",
+        "runtime_event_task_id": "task-1775021064418-yesjo1",
+        "docs_task_id": "task-1775021064419-iznkk2"
       }
     },
     "neo4j_probe": {
       "bolt_7687": "reachable",
       "http_7474": "reachable",
-      "probe_mode": "non-secret localhost socket probe"
+      "probe_mode": "non-secret localhost probe outside the sandbox when needed"
     },
     "prompt_1": {
       "scoped_tests_red": {
@@ -213,13 +229,88 @@
         "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py -q",
         "result": "31 passed"
       }
+    },
+    "prompt_4": {
+      "startup_repo_truth_check": {
+        "verify_ruflo": {
+          "command": "npm run verify:ruflo",
+          "result": "passed",
+          "notes": [
+            "Workspace-safe swarm/task orchestration still works.",
+            "Memory remains blocked by the external Ruflo sql.js dependency."
+          ]
+        },
+        "git_log": {
+          "command": "git log --oneline --decorate -4",
+          "result": "Prompt 1-3 commits confirmed on the active chain branch"
+        },
+        "env_key_check": {
+          "command": "awk graph-backend key presence check against .env",
+          "result": "graph_backend_keys=absent",
+          "notes": [
+            "The real repo .env exists.",
+            "No explicit GRAPH_BACKEND/NEO4J/GRAPHITI keys are currently set there."
+          ]
+        },
+        "dependency_check": {
+          "command": "backend/.venv/bin/python importlib.util.find_spec(graphiti_core/graphiti/neo4j)",
+          "result": "graphiti_core=missing, graphiti=missing, neo4j=present"
+        },
+        "neo4j_live_recheck": {
+          "commands": [
+            "docker ps",
+            "curl -sS -I http://127.0.0.1:7474",
+            "nc -z 127.0.0.1 7687"
+          ],
+          "result": "passed",
+          "notes": [
+            "infra-neo4j-1 reported healthy with both ports published.",
+            "HTTP 7474 returned 200 OK.",
+            "Bolt 7687 accepted a TCP connection."
+          ]
+        }
+      },
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py backend/tests/unit/test_runtime_graph_updater.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+        "result": "6 failed, 8 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py backend/tests/unit/test_runtime_graph_updater.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+        "result": "14 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "28 passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed",
+        "notes": [
+          "The readiness surface remained honest with graphiti-core unavailable and NEO4J_PASSWORD missing.",
+          "The runtime integration suite reported 1 passed."
+        ]
+      },
+      "broader_runtime_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_action_logger.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q",
+        "result": "38 passed"
+      },
+      "live_runtime_probe": {
+        "command": "backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py",
+        "result": "passed",
+        "notes": [
+          "The real repo .env/defaults resolved successfully.",
+          "The runtime namespace descriptor and sample runtime event payload were generated.",
+          "The live Neo4j probe connected to bolt://127.0.0.1:7687.",
+          "The probe truthfully reported NEO4J_PASSWORD missing and did not overstate authenticated Graphiti ingestion."
+        ]
+      }
     }
   },
   "blockers": [
     {
       "id": "ruflo-memory-sqljs",
       "status": "open",
-      "impact": "Ruflo memory APIs are blocked; chain may use swarm/task-only orchestration."
+      "impact": "Ruflo memory APIs are blocked; the chain may use swarm/task-only orchestration."
     },
     {
       "id": "ruflo-direct-mcp-root-state",
@@ -234,16 +325,22 @@
       "resolution": "Aligned backend dependency declarations to neo4j>=5.23.0,<6.0.0."
     },
     {
+      "id": "runtime-write-path-zep-dependency",
+      "status": "resolved",
+      "impact": "The runtime write path still depended on ZepGraphMemoryManager after the base and read-side cutover prompts completed.",
+      "resolution": "Prompt 4 replaced the runtime updater/manager path with RuntimeGraphUpdater / RuntimeGraphUpdateManager and rewired SimulationRunner to the new backend-neutral ingestion seam."
+    },
+    {
       "id": "graphiti-core-missing",
       "status": "open",
-      "impact": "Live Graphiti query/build execution remains unavailable until graphiti-core is installed in the backend environment."
+      "impact": "Authenticated live Graphiti query/build/runtime ingestion remains unavailable until graphiti-core is installed in the backend environment."
     },
     {
       "id": "neo4j-password-missing-in-env",
       "status": "open",
-      "impact": "Readiness remains configured=false because the current local .env does not expose NEO4J_PASSWORD."
+      "impact": "The readiness surface and live runtime probe still report NEO4J_PASSWORD missing from the real repo .env."
     }
   ],
-  "next_prompt": 4,
+  "next_prompt": 5,
   "merge_ready": false
 }

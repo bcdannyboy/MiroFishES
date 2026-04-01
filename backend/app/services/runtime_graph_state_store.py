@@ -120,6 +120,9 @@ class RuntimeGraphStateStore:
         project_id: Optional[str],
         base_graph_id: str,
         runtime_graph_id: str,
+        graph_backend: str = "graphiti_neo4j",
+        base_namespace_descriptor: Optional[Dict[str, Any]] = None,
+        runtime_namespace_descriptor: Optional[Dict[str, Any]] = None,
         prepared_world_state: Optional[Dict[str, Any]] = None,
         prepared_agent_states: Optional[Dict[str, Any]] = None,
         graph_index_payload: Optional[Dict[str, Any]] = None,
@@ -194,6 +197,24 @@ class RuntimeGraphStateStore:
 
         analytical_objects = [dict(item) for item in _as_list(graph_index.get("analytical_objects"))]
         now = _safe_iso_now()
+        base_namespace = dict(
+            base_namespace_descriptor
+            or {
+                "namespace_id": base_graph_id,
+                "group_id": base_graph_id,
+                "graph_scope": "base",
+                "display_name": base_graph_id,
+            }
+        )
+        runtime_namespace = dict(
+            runtime_namespace_descriptor
+            or {
+                "namespace_id": runtime_graph_id,
+                "group_id": runtime_graph_id,
+                "graph_scope": "runtime",
+                "display_name": runtime_graph_id,
+            }
+        )
         base_snapshot = {
             "artifact_type": "runtime_graph_base_snapshot",
             "schema_version": PROBABILISTIC_SCHEMA_VERSION,
@@ -204,6 +225,12 @@ class RuntimeGraphStateStore:
             "project_id": project_id,
             "base_graph_id": base_graph_id,
             "runtime_graph_id": runtime_graph_id,
+            "graph_backend": graph_backend,
+            "namespace_model": "application-managed",
+            "namespaces": {
+                "base": base_namespace,
+                "runtime": runtime_namespace,
+            },
             "hydrated_at": now,
             "source_artifacts": {
                 "prepared_world_state": "prepared_world_state.json",
@@ -239,6 +266,12 @@ class RuntimeGraphStateStore:
             "project_id": project_id,
             "base_graph_id": base_graph_id,
             "runtime_graph_id": runtime_graph_id,
+            "graph_backend": graph_backend,
+            "namespace_model": "application-managed",
+            "namespaces": {
+                "base": base_namespace,
+                "runtime": runtime_namespace,
+            },
             "initialized_at": now,
             "updated_at": now,
             "base_snapshot_artifact": _basename(self.base_snapshot_path),

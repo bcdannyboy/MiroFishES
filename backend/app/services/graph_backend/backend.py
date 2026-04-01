@@ -11,6 +11,7 @@ from .ingestion_service import GraphitiIngestionService
 from .namespace_manager import GraphNamespaceManager
 from .neo4j_factory import Neo4jFactoryScaffold, build_neo4j_factory
 from .ontology_compiler import GraphOntologyCompiler
+from .runtime_event_ingestor import GraphitiRuntimeEventIngestor
 from .settings import GraphBackendSettings
 from .types import CompiledOntology, GraphNamespaceDescriptor
 
@@ -34,6 +35,7 @@ class GraphitiGraphBackend:
         namespace_manager: GraphNamespaceManager | None = None,
         ontology_compiler: GraphOntologyCompiler | None = None,
         ingestion_service: GraphitiIngestionService | None = None,
+        runtime_event_ingestor: GraphitiRuntimeEventIngestor | None = None,
         export_service: Neo4jGraphExportService | None = None,
     ) -> None:
         self.settings = settings
@@ -42,6 +44,7 @@ class GraphitiGraphBackend:
         self.namespace_manager = namespace_manager or GraphNamespaceManager()
         self.ontology_compiler = ontology_compiler or GraphOntologyCompiler()
         self.ingestion_service = ingestion_service or GraphitiIngestionService()
+        self.runtime_event_ingestor = runtime_event_ingestor or GraphitiRuntimeEventIngestor()
         self.export_service = export_service or Neo4jGraphExportService()
         self._namespaces: dict[str, _NamespaceState] = {}
 
@@ -62,6 +65,45 @@ class GraphitiGraphBackend:
                 graph_scope="base",
             )
         )
+        return self._register_namespace(descriptor)
+
+    def create_runtime_graph(
+        self,
+        *,
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        project_id: str | None = None,
+        project_name: str | None = None,
+    ) -> GraphNamespaceDescriptor:
+        del project_id, project_name
+        descriptor = self.namespace_manager.build_runtime_namespace(
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        return self._register_namespace(descriptor)
+
+    def append_runtime_events(
+        self,
+        namespace_id: str,
+        events: list[dict[str, Any]],
+        batch_size: int | None = None,
+        progress_callback: Callable[[str, float], None] | None = None,
+    ) -> list[str]:
+        self._get_namespace_state(namespace_id)
+        return self.runtime_event_ingestor.ingest_runtime_events(
+            namespace_id=namespace_id,
+            events=list(events),
+            batch_size=batch_size or self.settings.runtime_batch_size,
+            graphiti_factory=self.graphiti_factory,
+            progress_callback=progress_callback,
+        )
+
+    def describe_namespace(self, namespace_id: str) -> GraphNamespaceDescriptor:
+        return self._get_namespace_state(namespace_id).descriptor
+
+    def _register_namespace(self, descriptor: GraphNamespaceDescriptor) -> GraphNamespaceDescriptor:
         self._namespaces[descriptor.namespace_id] = _NamespaceState(descriptor=descriptor)
         return descriptor
 

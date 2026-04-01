@@ -30,8 +30,8 @@ from ..utils.logger import get_logger
 from .outcome_extractor import OutcomeExtractor
 from .phase_timing import PhaseTimingRecorder
 from .simulation_market_extractor import SimulationMarketExtractor
-from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
+from .runtime_graph_updater import RuntimeGraphUpdateManager
 
 logger = get_logger('mirofish.simulation_runner')
 
@@ -1011,7 +1011,7 @@ class SimulationRunner:
         run_dir: Optional[str] = None,
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # Optional maximum round limit used to truncate long simulations.
-        enable_graph_memory_update: bool = False,  # Whether to push activity updates into the Zep graph.
+        enable_graph_memory_update: bool = False,  # Whether to push activity updates into the runtime graph backend.
         close_environment_on_complete: bool = False,  # Whether to exit after completion instead of entering command-wait mode.
         graph_id: str = None,  # Compatibility alias for the runtime write graph.
         base_graph_id: Optional[str] = None,
@@ -1024,7 +1024,7 @@ class SimulationRunner:
             simulation_id: Simulation ID.
             platform: Target platform (`twitter`, `reddit`, or `parallel`).
             max_rounds: Optional maximum number of rounds.
-            enable_graph_memory_update: Whether to dynamically update agent activity into the Zep graph.
+            enable_graph_memory_update: Whether to dynamically update agent activity into the runtime graph backend.
             close_environment_on_complete: Whether the launched runtime should
                 exit on completion instead of staying alive for follow-up
                 interview commands.
@@ -1142,13 +1142,18 @@ class SimulationRunner:
 
             cls._save_run_state(state)
 
-            # Create the graph-memory updater if enabled.
+            # Create the runtime-graph updater if enabled.
             if enable_graph_memory_update:
                 if not effective_runtime_graph_id:
-                    raise ValueError("graph_id is required when graph-memory updates are enabled")
+                    raise ValueError("runtime_graph_id is required when graph-memory updates are enabled")
 
                 try:
-                    ZepGraphMemoryManager.create_updater(run_key, effective_runtime_graph_id)
+                    RuntimeGraphUpdateManager.create_updater(
+                        run_key,
+                        effective_base_graph_id,
+                        effective_runtime_graph_id,
+                        sim_dir,
+                    )
                     cls._graph_memory_enabled[run_key] = True
                     logger.info(
                         "Enabled graph-memory updates: run_key=%s base_graph_id=%s runtime_graph_id=%s",
@@ -1423,10 +1428,10 @@ class SimulationRunner:
             cls._save_run_state(state)
         
         finally:
-            # Stop the graph-memory updater.
+            # Stop the runtime-graph updater.
             if cls._graph_memory_enabled.get(run_key, False):
                 try:
-                    ZepGraphMemoryManager.stop_updater(run_key)
+                    RuntimeGraphUpdateManager.stop_updater(run_key)
                     logger.info(f"Stopped graph-memory updates: run_key={run_key}")
                 except Exception as e:
                     logger.error(f"Failed to stop graph-memory updater: {e}")
@@ -1479,7 +1484,7 @@ class SimulationRunner:
         graph_memory_enabled = cls._graph_memory_enabled.get(run_key, False)
         graph_updater = None
         if graph_memory_enabled:
-            graph_updater = ZepGraphMemoryManager.get_updater(run_key)
+            graph_updater = RuntimeGraphUpdateManager.get_updater(run_key)
         
         try:
             with open(log_path, 'r', encoding='utf-8') as f:
@@ -1593,7 +1598,7 @@ class SimulationRunner:
                                     state.reddit_inflight_round = action.round_num
                                 state.reddit_last_progress_at = action.timestamp
                             
-                            # Forward activity to Zep when graph-memory updates are enabled.
+                            # Forward activity to the runtime graph backend when updates are enabled.
                             if graph_updater:
                                 graph_updater.add_activity_from_dict(action_data, platform)
                             
@@ -1764,10 +1769,10 @@ class SimulationRunner:
                 run_dir=context["run_dir"],
             )
         
-        # Stop the graph-memory updater.
+        # Stop the runtime-graph updater.
         if cls._graph_memory_enabled.get(run_key, False):
             try:
-                ZepGraphMemoryManager.stop_updater(run_key)
+                RuntimeGraphUpdateManager.stop_updater(run_key)
                 logger.info(f"Stopped graph-memory updates: run_key={run_key}")
             except Exception as e:
                 logger.error(f"Failed to stop graph-memory updater: {e}")
@@ -2280,9 +2285,9 @@ class SimulationRunner:
         
         logger.info("Cleaning up all simulation processes...")
         
-        # Stop all graph-memory updaters first.
+        # Stop all runtime-graph updaters first.
         try:
-            ZepGraphMemoryManager.stop_all()
+            RuntimeGraphUpdateManager.stop_all()
         except Exception as e:
             logger.error(f"Failed to stop graph-memory updaters: {e}")
         cls._graph_memory_enabled.clear()
