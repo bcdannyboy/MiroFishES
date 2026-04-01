@@ -21,6 +21,11 @@ class GraphBackendSettings:
     search_limit: int
     scan_limit: int
     runtime_batch_size: int
+    openai_api_key: str | None = None
+    openai_base_url: str = ""
+    embedding_api_key: str | None = None
+    embedding_base_url: str = ""
+    embedding_dimensions: int | None = None
 
     @classmethod
     def from_env(cls) -> "GraphBackendSettings":
@@ -35,6 +40,11 @@ class GraphBackendSettings:
             search_limit=Config.get_graph_backend_search_limit(),
             scan_limit=Config.get_graph_backend_scan_limit(),
             runtime_batch_size=Config.get_graph_backend_runtime_batch_size(),
+            openai_api_key=Config.get_openai_api_key(),
+            openai_base_url=Config.get_openai_base_url(),
+            embedding_api_key=Config.get_embedding_api_key(),
+            embedding_base_url=Config.get_embedding_base_url(),
+            embedding_dimensions=Config.get_embedding_dimensions(),
         )
 
     def validate(self) -> list[str]:

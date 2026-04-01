@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt 1 Graphiti scaffold verification helper."""
+"""Graphiti backend readiness verification helper."""
 
 from __future__ import annotations
 
@@ -34,12 +34,12 @@ def main() -> int:
     readiness = describe_graph_backend_readiness()
     payload = {
         "mode": args.mode,
-        "status": "scaffold-ready",
+        "status": "backend-harness-ready",
         "readiness": readiness,
         "note": (
-            "Prompt 1 wrapper sanity is green when the readiness surface executes "
-            "and reports honest dependency/config status. Later prompts replace this "
-            "with real Graphiti backend flows."
+            "Prompt 2 wrapper sanity is green when the readiness surface executes "
+            "and reports honest dependency/config status for the rewritten base graph "
+            "build seam."
         ),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

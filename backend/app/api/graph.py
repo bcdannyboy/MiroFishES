@@ -500,18 +500,7 @@ def build_graph():
     """
     try:
         logger.info("=== Starting graph build ===")
-        
-        # Check configuration
-        errors = []
-        if not Config.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY is not configured")
-        if errors:
-            logger.error(f"Configuration error: {errors}")
-            return jsonify({
-                "success": False,
-                "error": "Configuration error: " + "; ".join(errors)
-            }), 500
-        
+
         # Parse request
         data = request.get_json() or {}
         project_id = data.get('project_id')
@@ -605,11 +594,11 @@ def build_graph():
                 task_manager.update_task(
                     task_id, 
                     status=TaskStatus.PROCESSING,
-                    message="Initializing graph builder service..."
+                    message="Initializing graph backend..."
                 )
                 
                 # Create graph builder service
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+                builder = GraphBuilderService(project_id=project_id)
                 
                 # Split text
                 task_manager.update_task(
@@ -655,7 +644,7 @@ def build_graph():
                 # Create graph
                 task_manager.update_task(
                     task_id,
-                    message="Creating Zep graph...",
+                    message="Creating base graph namespace...",
                     progress=10
                 )
                 graph_id = builder.create_graph(name=graph_name)
@@ -699,10 +688,10 @@ def build_graph():
                     batch_metadata["episode_count"] = len(episode_uuids)
                 episode_chunk_map = build_episode_chunk_map(episode_uuids, chunk_records)
                 
-                # Wait for Zep processing to finish (check each episode's processed status)
+                # Wait for graph ingestion to settle.
                 task_manager.update_task(
                     task_id,
-                    message="Waiting for Zep to process data...",
+                    message="Waiting for graph ingestion to settle...",
                     progress=55
                 )
                 
@@ -925,17 +914,11 @@ def get_graph_data(graph_id: str):
     Get graph data (nodes and edges).
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-        
         mode = request.args.get('mode', 'full')
         max_nodes = request.args.get('max_nodes', type=int)
         max_edges = request.args.get('max_edges', type=int)
 
-        builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+        builder = GraphBuilderService()
         graph_data = builder.get_graph_data(
             graph_id,
             mode=mode,
@@ -959,16 +942,10 @@ def get_graph_data(graph_id: str):
 @graph_bp.route('/delete/<graph_id>', methods=['DELETE'])
 def delete_graph(graph_id: str):
     """
-    Delete a Zep graph.
+    Delete a graph namespace.
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-        
-        builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+        builder = GraphBuilderService()
         builder.delete_graph(graph_id)
         
         return jsonify({

@@ -59,7 +59,7 @@ npm run verify:graphiti:live
 npm run verify:graphiti:all
 ```
 
-These Prompt 1 wrappers are harness checks, not end-to-end backend proof. They confirm the Graphiti + Neo4j scaffold exists and that the readiness surface can report truthful config and dependency status for later prompts.
+These wrappers are harness checks, not end-to-end backend proof. Prompt 2 rewires the Step 1 base graph build seam through Graphiti + Neo4j, and these commands confirm the rewritten backend surface can report truthful config and dependency status.
 
 ### Forecasting verify
 
@@ -158,7 +158,7 @@ CALIBRATED_PROBABILITY_ENABLED=false
 
 `CALIBRATED_PROBABILITY_ENABLED` is only a surface flag. It does not make any metric pass the confidence gate by itself.
 
-For the Graphiti cutover scaffold introduced by the Prompt 1 chain harness, the repo also recognizes:
+For the Graphiti cutover backend, the repo also recognizes:
 
 ```env
 GRAPH_BACKEND=graphiti_neo4j
@@ -173,7 +173,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Those settings only drive the new readiness surface and verification wrappers right now. The live Step 1 graph flow still depends on the legacy Zep path until later cutover prompts replace it.
+Prompt 2 routes the live Step 1 base graph build and artifact export path through that backend seam. The broader read/query/runtime update lanes still depend on legacy Zep services until later cutover prompts replace them, so keep `ZEP_API_KEY` configured for the remaining legacy surfaces.
 
 ### Capability check
 

@@ -1,11 +1,14 @@
-"""Prompt 1 Graphiti + Neo4j backend scaffold."""
+"""Graphiti + Neo4j backend runtime and readiness helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .backend import GraphitiGraphBackend
 from .graphiti_factory import GraphitiFactoryScaffold, build_graphiti_factory
+from .namespace_manager import GraphNamespaceManager
 from .neo4j_factory import Neo4jFactoryScaffold, build_neo4j_factory, probe_neo4j_endpoint
+from .ontology_compiler import GraphOntologyCompiler
 from .settings import GraphBackendSettings
 from .types import GraphBackendReadiness
 
@@ -23,7 +26,7 @@ class GraphBackendRuntime:
 def build_graph_backend_runtime(
     settings: GraphBackendSettings | None = None,
 ) -> GraphBackendRuntime:
-    """Build the Prompt 1 runtime scaffold without instantiating vendor clients."""
+    """Build the Graphiti + Neo4j runtime metadata without instantiating vendor clients."""
     resolved_settings = settings or GraphBackendSettings.from_env()
     return GraphBackendRuntime(
         backend=resolved_settings.backend,
@@ -33,10 +36,24 @@ def build_graph_backend_runtime(
     )
 
 
+def build_graph_backend_service(
+    settings: GraphBackendSettings | None = None,
+) -> GraphitiGraphBackend:
+    """Build the concrete backend seam used by the base graph build path."""
+    resolved_settings = settings or GraphBackendSettings.from_env()
+    return GraphitiGraphBackend(
+        settings=resolved_settings,
+        graphiti_factory=build_graphiti_factory(resolved_settings),
+        neo4j_factory=build_neo4j_factory(resolved_settings),
+        namespace_manager=GraphNamespaceManager(),
+        ontology_compiler=GraphOntologyCompiler(),
+    )
+
+
 def describe_graph_backend_readiness(
     settings: GraphBackendSettings | None = None,
 ) -> dict[str, object]:
-    """Describe current Graphiti + Neo4j scaffold readiness."""
+    """Describe current Graphiti + Neo4j backend readiness."""
     runtime = build_graph_backend_runtime(settings)
     missing_configuration = tuple(runtime.settings.validate())
     dependency_status = {
@@ -49,9 +66,15 @@ def describe_graph_backend_readiness(
     ready = configured and dependencies_ready and bool(neo4j_probe.get("reachable"))
     notes: list[str] = []
     if not dependencies_ready:
-        notes.append("Prompt 1 exposes deferred factories until Graphiti + Neo4j dependencies are installed.")
+        notes.append(
+            "Prompt 2 wires the base graph build path through Graphiti + Neo4j, "
+            "but the runtime still needs installed backend dependencies."
+        )
     if not configured:
-        notes.append("Prompt 1 keeps the readiness surface honest when Graphiti + Neo4j env vars are incomplete.")
+        notes.append(
+            "The readiness surface reports configuration gaps before Graphiti-backed "
+            "build attempts run."
+        )
     readiness = GraphBackendReadiness(
         backend=runtime.backend,
         configured=configured,
@@ -65,8 +88,12 @@ def describe_graph_backend_readiness(
 
 
 __all__ = [
+    "GraphNamespaceManager",
+    "GraphOntologyCompiler",
+    "GraphitiGraphBackend",
     "GraphBackendRuntime",
     "GraphBackendSettings",
+    "build_graph_backend_service",
     "build_graph_backend_runtime",
     "describe_graph_backend_readiness",
 ]

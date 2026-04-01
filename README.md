@@ -91,7 +91,7 @@ CALIBRATED_PROBABILITY_ENABLED=false
 
 The backend reads the repo-root `.env` from `backend/app/config.py`. Those rollout flags default to `false`, so a fresh local environment does not expose the bounded forecast path unless you opt in.
 
-For the Graphiti + Neo4j cutover harness added in the Prompt 1 chain scaffold, the repo now also recognizes these variables:
+For the Graphiti + Neo4j cutover backend, the repo also recognizes these variables:
 
 ```env
 GRAPH_BACKEND=graphiti_neo4j
@@ -106,7 +106,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompt 1 only adds a readiness surface and verification harness for that backend. The live graph build and retrieval path still runs through the legacy Zep implementation until later cutover prompts replace it.
+Prompt 2 rewires the Step 1 base graph build and artifact export path through that backend seam. The wider read/query/runtime update lanes still use legacy Zep services until later cutover prompts replace them, so keep `ZEP_API_KEY` configured for the remaining legacy surfaces.
 
 ### Start the stack
 
@@ -178,7 +178,7 @@ npm run verify:graphiti:live
 npm run verify:graphiti:all
 ```
 
-These Prompt 1 wrappers prove the Graphiti + Neo4j scaffold exists, that the readiness surface executes, and that the repo can report honest dependency/config state for the future cutover. They do not yet prove end-to-end Graphiti graph build, search, or runtime writes.
+These wrappers prove the Graphiti + Neo4j backend seam exists, that the readiness surface executes, and that the repo can report honest dependency/config state for the rewritten base build path. They still do not prove end-to-end Graphiti query or runtime update behavior.
 
 ### 3. Confidence verify
 

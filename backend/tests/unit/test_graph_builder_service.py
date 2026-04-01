@@ -1,63 +1,60 @@
 import importlib
-import pytest
-
-from app.utils.zep_paging import PageFetchResult
 
 
-class _FakeNode:
-    def __init__(self, uuid_, name, labels, summary="", attributes=None, created_at=None):
-        self.uuid_ = uuid_
-        self.name = name
-        self.labels = labels
-        self.summary = summary
-        self.attributes = attributes or {}
-        self.created_at = created_at
+class _FakeBackend:
+    def __init__(self, snapshot=None):
+        self.snapshot = snapshot or {
+            "graph_id": "graph-1",
+            "node_count": 0,
+            "edge_count": 0,
+            "nodes": [],
+            "edges": [],
+        }
+        self.calls = []
 
+    def create_base_graph(self, *, graph_name, project_id=None):
+        self.calls.append(("create_base_graph", graph_name, project_id))
+        return {"namespace_id": "mirofish-base-proj-1"}
 
-class _FakeEdge:
-    def __init__(
+    def register_ontology(self, namespace_id, ontology):
+        self.calls.append(("register_ontology", namespace_id, ontology))
+
+    def add_text_batches(self, namespace_id, chunks, batch_size=None, progress_callback=None):
+        self.calls.append(("add_text_batches", namespace_id, list(chunks), batch_size))
+        if progress_callback:
+            progress_callback("sent", 1.0)
+        return ["ep-1", "ep-2"]
+
+    def wait_for_episode_processing(
         self,
-        uuid_,
-        name,
-        fact,
-        source_node_uuid,
-        target_node_uuid,
-        *,
-        attributes=None,
-        created_at=None,
-        valid_at=None,
-        invalid_at=None,
-        expired_at=None,
-        episodes=None,
+        namespace_id,
+        episode_ids,
+        progress_callback=None,
+        timeout=None,
     ):
-        self.uuid_ = uuid_
-        self.name = name
-        self.fact = fact
-        self.source_node_uuid = source_node_uuid
-        self.target_node_uuid = target_node_uuid
-        self.attributes = attributes or {}
-        self.created_at = created_at
-        self.valid_at = valid_at
-        self.invalid_at = invalid_at
-        self.expired_at = expired_at
-        self.episodes = episodes or []
+        self.calls.append(("wait", namespace_id, list(episode_ids), timeout))
+        if progress_callback:
+            progress_callback("done", 1.0)
+
+    def export_graph_snapshot(self, namespace_id):
+        self.calls.append(("export_graph_snapshot", namespace_id))
+        payload = dict(self.snapshot)
+        payload["graph_id"] = namespace_id
+        return payload
+
+    def delete_graph(self, namespace_id):
+        self.calls.append(("delete_graph", namespace_id))
 
 
-def _build_service(module):
-    service = module.GraphBuilderService.__new__(module.GraphBuilderService)
-    service.client = object()
-    return service
-
-
-class _FakeEpisode:
-    def __init__(self, uuid_, processed):
-        self.uuid_ = uuid_
-        self.processed = processed
+def _build_service(snapshot=None):
+    module = importlib.import_module("app.services.graph_builder")
+    backend = _FakeBackend(snapshot=snapshot)
+    service = module.GraphBuilderService(graph_backend=backend, project_id="proj-1")
+    return module, service, backend
 
 
 def test_resolve_batch_plan_scales_batch_size_and_caps_concurrency():
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
+    module, service, _backend = _build_service()
 
     small = service._resolve_batch_plan(total_chunks=3)
     medium = service._resolve_batch_plan(total_chunks=24)
@@ -71,153 +68,49 @@ def test_resolve_batch_plan_scales_batch_size_and_caps_concurrency():
     assert large["max_inflight_batches"] <= service.MAX_INFLIGHT_BATCHES
 
 
-def test_add_text_batches_does_not_use_fixed_post_batch_sleep(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-    add_batch_calls = []
-
-    class _FakeBatchEpisode:
-        def __init__(self, uuid_):
-            self.uuid_ = uuid_
-
-    class _FakeGraph:
-        def add_batch(self, graph_id, episodes):
-            add_batch_calls.append((graph_id, len(episodes)))
-            start = len(add_batch_calls)
-            return [_FakeBatchEpisode(f"ep-{start}-{idx}") for idx, _ in enumerate(episodes)]
-
-    service.client = type("Client", (), {"graph": _FakeGraph()})()
-    monkeypatch.setattr(
-        module.time,
-        "sleep",
-        lambda _seconds: (_ for _ in ()).throw(AssertionError("fixed sleep should not be used")),
-    )
-
-    episode_uuids = service.add_text_batches(
-        "graph-1",
-        ["a", "b", "c", "d", "e", "f"],
-        batch_size=3,
-    )
-
-    assert len(episode_uuids) == 6
-    assert add_batch_calls == [("graph-1", 3), ("graph-1", 3)]
-
-
-def test_wait_for_episodes_uses_graph_level_polling(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-    get_by_graph_id_calls = []
-
-    class _FakeEpisodeClient:
-        def get(self, uuid_=None):  # pragma: no cover - current implementation should not use this
-            raise AssertionError("episode.get(uuid_=...) should not be used for graph wait")
-
-        def get_by_graph_id(self, graph_id, lastn=None):
-            get_by_graph_id_calls.append((graph_id, lastn))
-            return type(
-                "EpisodeResponse",
-                (),
+def test_graph_builder_service_delegates_build_primitives_to_graph_backend():
+    _module, service, backend = _build_service(
+        snapshot={
+            "graph_id": "placeholder",
+            "node_count": 1,
+            "edge_count": 0,
+            "nodes": [
                 {
-                    "episodes": [
-                        _FakeEpisode("ep-1", True),
-                        _FakeEpisode("ep-2", True),
-                    ]
-                },
-            )()
-
-    service.client = type(
-        "Client",
-        (),
-        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
-    )()
-    monkeypatch.setattr(
-        module.time,
-        "sleep",
-        lambda _seconds: (_ for _ in ()).throw(AssertionError("graph-level wait should not sleep in this test")),
+                    "uuid": "node-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "Tracked participant",
+                    "attributes": {"role": "analyst"},
+                }
+            ],
+            "edges": [],
+        }
     )
 
-    service._wait_for_episodes(
-        "graph-1",
-        ["ep-1", "ep-2"],
+    graph_id = service.create_graph("Rates Graph")
+    service.set_ontology(graph_id, {"entity_types": [], "edge_types": []})
+    episode_ids = service.add_text_batches(graph_id, ["alpha", "beta"], batch_size=2)
+    service._wait_for_episodes(graph_id, episode_ids, timeout=600)
+    snapshot = service.get_graph_snapshot(graph_id)
+    service.delete_graph(graph_id)
+
+    assert graph_id == "mirofish-base-proj-1"
+    assert backend.calls[0] == ("create_base_graph", "Rates Graph", "proj-1")
+    assert backend.calls[1] == (
+        "register_ontology",
+        "mirofish-base-proj-1",
+        {"entity_types": [], "edge_types": []},
     )
-
-    assert get_by_graph_id_calls == [("graph-1", 2)]
-
-
-def test_wait_for_episodes_does_not_timeout_by_default(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-    get_by_graph_id_calls = []
-
-    class _FakeEpisodeClient:
-        def __init__(self):
-            self.call_count = 0
-
-        def get_by_graph_id(self, graph_id, lastn=None):
-            self.call_count += 1
-            get_by_graph_id_calls.append((graph_id, lastn))
-            if self.call_count == 1:
-                episodes = [
-                    _FakeEpisode("ep-1", True),
-                    _FakeEpisode("ep-2", False),
-                ]
-            else:
-                episodes = [
-                    _FakeEpisode("ep-1", True),
-                    _FakeEpisode("ep-2", True),
-                ]
-            return type("EpisodeResponse", (), {"episodes": episodes})()
-
-    service.client = type(
-        "Client",
-        (),
-        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
-    )()
-
-    time_values = iter([0, 601, 602])
-    monkeypatch.setattr(module.time, "time", lambda: next(time_values))
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
-
-    service._wait_for_episodes(
-        "graph-1",
-        ["ep-1", "ep-2"],
+    assert backend.calls[2] == (
+        "add_text_batches",
+        "mirofish-base-proj-1",
+        ["alpha", "beta"],
+        2,
     )
-
-    assert get_by_graph_id_calls == [("graph-1", 2), ("graph-1", 2)]
-
-
-def test_wait_for_episodes_raises_when_explicit_timeout_is_reached(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-
-    class _FakeEpisodeClient:
-        def get_by_graph_id(self, graph_id, lastn=None):
-            return type(
-                "EpisodeResponse",
-                (),
-                {"episodes": [_FakeEpisode("ep-1", False)]},
-            )()
-
-    service.client = type(
-        "Client",
-        (),
-        {"graph": type("Graph", (), {"episode": _FakeEpisodeClient()})()},
-    )()
-
-    time_values = iter([0, 601])
-    monkeypatch.setattr(module.time, "time", lambda: next(time_values))
-    monkeypatch.setattr(
-        module.time,
-        "sleep",
-        lambda _seconds: (_ for _ in ()).throw(AssertionError("timeout path should not sleep")),
-    )
-
-    with pytest.raises(TimeoutError, match="Timed out waiting for Zep to process episodes"):
-        service._wait_for_episodes(
-            "graph-1",
-            ["ep-1"],
-            timeout=600,
-        )
+    assert backend.calls[3] == ("wait", "mirofish-base-proj-1", ["ep-1", "ep-2"], 600)
+    assert backend.calls[4] == ("export_graph_snapshot", "mirofish-base-proj-1")
+    assert backend.calls[5] == ("delete_graph", "mirofish-base-proj-1")
+    assert snapshot["graph_id"] == "mirofish-base-proj-1"
 
 
 def test_build_chunk_records_uses_combined_source_unit_offsets():
@@ -275,32 +168,41 @@ def test_build_chunk_records_uses_combined_source_unit_offsets():
     assert records[1]["char_end"] == 21
 
 
-def test_get_graph_snapshot_returns_exact_counts_and_entity_types(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-
-    monkeypatch.setattr(
-        module,
-        "fetch_all_nodes",
-        lambda client, graph_id, max_items=None: [
-            _FakeNode("node-1", "Analyst", ["Entity", "Person"], summary="summary"),
-            _FakeNode("node-2", "Desk", ["Entity", "Organization"], summary="summary"),
-        ],
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module,
-        "fetch_all_edges",
-        lambda client, graph_id, max_items=None: [
-            _FakeEdge(
-                "edge-1",
-                "MENTIONS",
-                "Analyst mentions Desk",
-                "node-1",
-                "node-2",
-            )
-        ],
-        raising=False,
+def test_get_graph_snapshot_returns_exact_counts_and_entity_types():
+    _module, service, _backend = _build_service(
+        snapshot={
+            "graph_id": "placeholder",
+            "node_count": 2,
+            "edge_count": 1,
+            "nodes": [
+                {
+                    "uuid": "node-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "summary",
+                    "attributes": {},
+                },
+                {
+                    "uuid": "node-2",
+                    "name": "Desk",
+                    "labels": ["Entity", "Organization"],
+                    "summary": "summary",
+                    "attributes": {},
+                },
+            ],
+            "edges": [
+                {
+                    "uuid": "edge-1",
+                    "name": "MENTIONS",
+                    "fact": "Analyst mentions Desk",
+                    "source_node_uuid": "node-1",
+                    "target_node_uuid": "node-2",
+                    "attributes": {},
+                    "source_node_name": "Analyst",
+                    "target_node_name": "Desk",
+                }
+            ],
+        }
     )
 
     snapshot = service.get_graph_snapshot("graph-1")
@@ -315,38 +217,52 @@ def test_get_graph_snapshot_returns_exact_counts_and_entity_types(monkeypatch):
     assert snapshot["edges"][0]["target_node_uuid"] == "node-2"
 
 
-def test_get_graph_snapshot_returns_layered_counts_and_type_breakdown(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-
-    monkeypatch.setattr(
-        module,
-        "fetch_all_nodes",
-        lambda client, graph_id, max_items=None: [
-            _FakeNode("node-1", "Analyst", ["Entity", "Person"], summary="summary"),
-            _FakeNode("node-2", "June cut likely", ["Entity", "Claim"], summary="summary"),
-            _FakeNode("node-3", "Payroll report", ["Entity", "Evidence"], summary="summary"),
-        ],
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module,
-        "fetch_all_edges",
-        lambda client, graph_id, max_items=None: [
-            _FakeEdge(
-                "edge-1",
-                "SUPPORTED_BY",
-                "June cut likely is supported by payroll report",
-                "node-2",
-                "node-3",
-            )
-        ],
-        raising=False,
+def test_get_graph_snapshot_returns_layered_counts_and_type_breakdown():
+    _module, service, _backend = _build_service(
+        snapshot={
+            "graph_id": "placeholder",
+            "node_count": 3,
+            "edge_count": 1,
+            "nodes": [
+                {
+                    "uuid": "node-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "summary",
+                    "attributes": {},
+                },
+                {
+                    "uuid": "node-2",
+                    "name": "June cut likely",
+                    "labels": ["Entity", "Claim"],
+                    "summary": "summary",
+                    "attributes": {},
+                },
+                {
+                    "uuid": "node-3",
+                    "name": "Payroll report",
+                    "labels": ["Entity", "Evidence"],
+                    "summary": "summary",
+                    "attributes": {},
+                },
+            ],
+            "edges": [
+                {
+                    "uuid": "edge-1",
+                    "name": "SUPPORTED_BY",
+                    "fact": "June cut likely is supported by payroll report",
+                    "source_node_uuid": "node-2",
+                    "target_node_uuid": "node-3",
+                    "attributes": {},
+                    "source_node_name": "June cut likely",
+                    "target_node_name": "Payroll report",
+                }
+            ],
+        }
     )
 
     snapshot = service.get_graph_snapshot("graph-1")
 
-    assert snapshot["graph_id"] == "graph-1"
     assert snapshot["graph_counts"]["actor_count"] == 1
     assert snapshot["graph_counts"]["analytical_object_count"] == 2
     assert snapshot["graph_counts"]["node_type_counts"] == {
@@ -358,49 +274,59 @@ def test_get_graph_snapshot_returns_layered_counts_and_type_breakdown(monkeypatc
     assert snapshot["graph_counts"]["analytical_types"] == ["Claim", "Evidence"]
 
 
-def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-
-    monkeypatch.setattr(
-        module,
-        "fetch_node_window",
-        lambda client, graph_id, max_items=None: PageFetchResult(
-            items=[
-                _FakeNode(
-                    "node-1",
-                    "Analyst",
-                    ["Entity", "Person"],
-                    summary="Detailed summary",
-                    attributes={"role": "analyst"},
-                )
+def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation():
+    _module, service, _backend = _build_service(
+        snapshot={
+            "graph_id": "placeholder",
+            "node_count": 2,
+            "edge_count": 2,
+            "nodes": [
+                {
+                    "uuid": "node-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "Detailed summary",
+                    "attributes": {"role": "analyst"},
+                    "created_at": None,
+                },
+                {
+                    "uuid": "node-2",
+                    "name": "Desk",
+                    "labels": ["Entity", "Organization"],
+                    "summary": "Desk summary",
+                    "attributes": {"kind": "team"},
+                    "created_at": None,
+                },
             ],
-            page_count=2,
-            truncated=True,
-            has_more=True,
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module,
-        "fetch_edge_window",
-        lambda client, graph_id, max_items=None: PageFetchResult(
-            items=[
-                _FakeEdge(
-                    "edge-1",
-                    "MENTIONS",
-                    "Analyst mentions the plaza",
-                    "node-1",
-                    "node-2",
-                    attributes={"weight": 2},
-                    episodes=["ep-1"],
-                )
+            "edges": [
+                {
+                    "uuid": "edge-1",
+                    "name": "MENTIONS",
+                    "fact": "Analyst mentions the plaza",
+                    "fact_type": "MENTIONS",
+                    "source_node_uuid": "node-1",
+                    "target_node_uuid": "node-2",
+                    "source_node_name": "Analyst",
+                    "target_node_name": "Desk",
+                    "attributes": {"weight": 2},
+                    "created_at": None,
+                    "episodes": ["ep-1"],
+                },
+                {
+                    "uuid": "edge-2",
+                    "name": "MENTIONS",
+                    "fact": "Desk mentions the market",
+                    "fact_type": "MENTIONS",
+                    "source_node_uuid": "node-2",
+                    "target_node_uuid": "node-1",
+                    "source_node_name": "Desk",
+                    "target_node_name": "Analyst",
+                    "attributes": {"weight": 3},
+                    "created_at": None,
+                    "episodes": ["ep-2"],
+                },
             ],
-            page_count=3,
-            truncated=True,
-            has_more=True,
-        ),
-        raising=False,
+        }
     )
 
     payload = service.get_graph_data(
@@ -417,8 +343,8 @@ def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation(mon
     assert payload["returned_edges"] == 1
     assert payload["requested_max_nodes"] == 1
     assert payload["requested_max_edges"] == 1
-    assert payload["node_pages"] == 2
-    assert payload["edge_pages"] == 3
+    assert payload["node_pages"] == 1
+    assert payload["edge_pages"] == 1
     assert payload["nodes"][0] == {
         "uuid": "node-1",
         "name": "Analyst",
@@ -433,59 +359,46 @@ def test_get_graph_data_preview_mode_omits_heavy_fields_and_marks_truncation(mon
         "source_node_uuid": "node-1",
         "target_node_uuid": "node-2",
         "source_node_name": "Analyst",
-        "target_node_name": "",
+        "target_node_name": "Desk",
         "created_at": None,
     }
 
 
-def test_get_graph_data_full_mode_keeps_rich_fields(monkeypatch):
-    module = importlib.import_module("app.services.graph_builder")
-    service = _build_service(module)
-
-    monkeypatch.setattr(
-        module,
-        "fetch_node_window",
-        lambda client, graph_id, max_items=None: PageFetchResult(
-            items=[
-                _FakeNode(
-                    "node-1",
-                    "Analyst",
-                    ["Entity", "Person"],
-                    summary="Detailed summary",
-                    attributes={"role": "analyst"},
-                    created_at="2026-03-12T09:00:00",
-                )
+def test_get_graph_data_full_mode_keeps_rich_fields():
+    _module, service, _backend = _build_service(
+        snapshot={
+            "graph_id": "placeholder",
+            "node_count": 1,
+            "edge_count": 1,
+            "nodes": [
+                {
+                    "uuid": "node-1",
+                    "name": "Analyst",
+                    "labels": ["Entity", "Person"],
+                    "summary": "Detailed summary",
+                    "attributes": {"role": "analyst"},
+                    "created_at": "2026-03-12T09:00:00",
+                }
             ],
-            page_count=1,
-            truncated=False,
-            has_more=False,
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        module,
-        "fetch_edge_window",
-        lambda client, graph_id, max_items=None: PageFetchResult(
-            items=[
-                _FakeEdge(
-                    "edge-1",
-                    "MENTIONS",
-                    "Analyst mentions the plaza",
-                    "node-1",
-                    "node-2",
-                    attributes={"weight": 2},
-                    created_at="2026-03-12T09:01:00",
-                    valid_at="2026-03-12T09:01:00",
-                    invalid_at=None,
-                    expired_at=None,
-                    episodes=["ep-1"],
-                )
+            "edges": [
+                {
+                    "uuid": "edge-1",
+                    "name": "MENTIONS",
+                    "fact": "Analyst mentions the plaza",
+                    "fact_type": "MENTIONS",
+                    "source_node_uuid": "node-1",
+                    "target_node_uuid": "node-2",
+                    "source_node_name": "Analyst",
+                    "target_node_name": "",
+                    "attributes": {"weight": 2},
+                    "created_at": "2026-03-12T09:01:00",
+                    "valid_at": "2026-03-12T09:01:00",
+                    "invalid_at": None,
+                    "expired_at": None,
+                    "episodes": ["ep-1"],
+                }
             ],
-            page_count=1,
-            truncated=False,
-            has_more=False,
-        ),
-        raising=False,
+        }
     )
 
     payload = service.get_graph_data("graph-1", mode="full")
