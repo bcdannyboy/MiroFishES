@@ -16,6 +16,10 @@ dependencies = [
     # LLM integration
     "openai>=1.0.0",
     
+    # Graphiti + Neo4j scaffold
+    "graphiti-core>=0.3.0",
+    "neo4j>=5.28.0,<6.0.0",
+    
     # Zep Cloud
     "zep-cloud==3.13.0",
     

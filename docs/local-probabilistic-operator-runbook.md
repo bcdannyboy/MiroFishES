@@ -49,6 +49,18 @@ npm run verify:nonbinary
 
 Use this when the change touches the active typed forecast path for `binary`, `categorical`, or `numeric` questions and you want the tightest backend plus runtime signal before running the broader wrappers.
 
+### Graphiti scaffold verify
+
+```bash
+npm run verify:graphiti:unit
+npm run verify:graphiti:integration
+npm run verify:graphiti:smoke
+npm run verify:graphiti:live
+npm run verify:graphiti:all
+```
+
+These Prompt 1 wrappers are harness checks, not end-to-end backend proof. They confirm the Graphiti + Neo4j scaffold exists and that the readiness surface can report truthful config and dependency status for later prompts.
+
 ### Forecasting verify
 
 ```bash
@@ -145,6 +157,23 @@ CALIBRATED_PROBABILITY_ENABLED=false
 ```
 
 `CALIBRATED_PROBABILITY_ENABLED` is only a surface flag. It does not make any metric pass the confidence gate by itself.
+
+For the Graphiti cutover scaffold introduced by the Prompt 1 chain harness, the repo also recognizes:
+
+```env
+GRAPH_BACKEND=graphiti_neo4j
+NEO4J_URI=bolt://127.0.0.1:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_local_neo4j_password_here
+GRAPHITI_EXTRACTION_MODEL=gpt-4.1-mini
+GRAPHITI_EMBEDDING_MODEL=text-embedding-3-small
+GRAPH_BACKEND_BATCH_SIZE=3
+GRAPH_BACKEND_SEARCH_LIMIT=12
+GRAPH_BACKEND_SCAN_LIMIT=250
+GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
+```
+
+Those settings only drive the new readiness surface and verification wrappers right now. The live Step 1 graph flow still depends on the legacy Zep path until later cutover prompts replace it.
 
 ### Capability check
 

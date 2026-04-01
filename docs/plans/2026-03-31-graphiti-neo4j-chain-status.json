@@ -1,0 +1,112 @@
+{
+  "chain_name": "graphiti-neo4j-overhaul-chain",
+  "source_plan": [
+    "docs/plans/2026-03-31-graphiti-neo4j-overhaul.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-cutover-prompt-chain.md"
+  ],
+  "branch": "codex/graphiti-neo4j-overhaul-chain",
+  "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
+  "current_prompt": 1,
+  "completed_prompts": [
+    1
+  ],
+  "prompt_status": "completed",
+  "chain_owned_paths": [
+    "docs/plans/2026-03-31-graphiti-neo4j-chain.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain-status.json",
+    "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
+    "package.json",
+    ".env.example",
+    "README.md",
+    "docs/local-probabilistic-operator-runbook.md",
+    "backend/pyproject.toml",
+    "backend/requirements.txt",
+    "backend/app/config.py",
+    "backend/app/api/graph.py",
+    "backend/app/services/graph_backend/",
+    "backend/scripts/",
+    "backend/tests/unit/services/graph_backend/",
+    "backend/tests/unit/test_graph_backend_readiness_api.py"
+  ],
+  "docs_updated": [
+    ".env.example",
+    "README.md",
+    "docs/local-probabilistic-operator-runbook.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain-status.json"
+  ],
+  "verification": {
+    "initial_branch": "main",
+    "git_remote": [
+      "origin https://github.com/bcdannyboy/MiroFishES (fetch)",
+      "origin https://github.com/bcdannyboy/MiroFishES (push)"
+    ],
+    "env_file_present": true,
+    "ruflo_workspace": {
+      "status": "swarm-task-only",
+      "memory_ready": false,
+      "notes": [
+        "Repo-owned Ruflo launcher is workspace-safe for swarm/task orchestration.",
+        "Memory remains blocked by the external Ruflo sql.js dependency."
+      ]
+    },
+    "ruflo_tasks": {
+      "swarm_id": "swarm-1775016400679-6itc00",
+      "docs_task_id": "task-1775016400681-a68yxm",
+      "backend_task_id": "task-1775016400681-qtb8ld"
+    },
+    "neo4j_probe": {
+      "bolt_7687": "reachable",
+      "http_7474": "reachable",
+      "probe_mode": "non-secret localhost socket probe"
+    },
+    "prompt_1": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_backend_readiness_api.py -q",
+        "result": "4 failed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_backend_readiness_api.py -q",
+        "result": "4 passed"
+      },
+      "wrapper_sanity": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed",
+        "notes": [
+          "The readiness surface executed for unit, integration, smoke, and live wrappers.",
+          "Integration/smoke/live wrappers remained green while reporting configured=false and ready=false."
+        ]
+      },
+      "broader_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_model_routing.py backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_graph_builder_service.py -q",
+        "result": "13 passed"
+      }
+    }
+  },
+  "blockers": [
+    {
+      "id": "ruflo-memory-sqljs",
+      "status": "open",
+      "impact": "Ruflo memory APIs are blocked; chain may use swarm/task-only orchestration."
+    },
+    {
+      "id": "ruflo-direct-mcp-root-state",
+      "status": "resolved",
+      "impact": "Direct MCP task calls targeted root state directories.",
+      "resolution": "Use scripts/ruflo-mcp-workspace.sh for workspace-safe Ruflo orchestration."
+    },
+    {
+      "id": "graphiti-core-missing",
+      "status": "open",
+      "impact": "Prompt 1 readiness reports ready=false until graphiti-core is installed in the backend environment."
+    },
+    {
+      "id": "neo4j-password-missing-in-env",
+      "status": "open",
+      "impact": "Prompt 1 readiness reports configured=false because the current local .env does not expose NEO4J_PASSWORD."
+    }
+  ],
+  "next_prompt": 2,
+  "merge_ready": false
+}

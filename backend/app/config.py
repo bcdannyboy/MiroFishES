@@ -74,8 +74,28 @@ class Config:
     )
     LOCAL_EMBEDDING_DIMENSIONS = os.environ.get('LOCAL_EMBEDDING_DIMENSIONS')
     
-    # Zep settings.
+    # Legacy Zep settings.
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
+    
+    # Graph backend scaffold settings for the Graphiti + Neo4j cutover.
+    GRAPH_BACKEND = os.environ.get('GRAPH_BACKEND', 'graphiti_neo4j')
+    NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://127.0.0.1:7687')
+    NEO4J_USER = os.environ.get('NEO4J_USER', 'neo4j')
+    NEO4J_PASSWORD = os.environ.get('NEO4J_PASSWORD')
+    GRAPHITI_EXTRACTION_MODEL = os.environ.get(
+        'GRAPHITI_EXTRACTION_MODEL',
+        OPENAI_REASONING_MODEL,
+    )
+    GRAPHITI_EMBEDDING_MODEL = os.environ.get(
+        'GRAPHITI_EMBEDDING_MODEL',
+        OPENAI_EMBEDDING_MODEL,
+    )
+    GRAPH_BACKEND_BATCH_SIZE = int(os.environ.get('GRAPH_BACKEND_BATCH_SIZE', '3'))
+    GRAPH_BACKEND_SEARCH_LIMIT = int(os.environ.get('GRAPH_BACKEND_SEARCH_LIMIT', '12'))
+    GRAPH_BACKEND_SCAN_LIMIT = int(os.environ.get('GRAPH_BACKEND_SCAN_LIMIT', '250'))
+    GRAPH_BACKEND_RUNTIME_BATCH_SIZE = int(
+        os.environ.get('GRAPH_BACKEND_RUNTIME_BATCH_SIZE', '25')
+    )
     
     # File upload settings.
     MAX_UPLOAD_SIZE_MB = int(os.environ.get('MAX_UPLOAD_SIZE_MB', '100'))
@@ -210,6 +230,98 @@ class Config:
         if raw_value in (None, ''):
             return None
         return int(raw_value)
+
+    @classmethod
+    def get_graph_backend_name(cls) -> str:
+        """Resolve the configured graph backend name."""
+        return os.environ.get('GRAPH_BACKEND', cls.GRAPH_BACKEND)
+
+    @classmethod
+    def get_neo4j_uri(cls) -> str:
+        """Resolve the configured Neo4j URI."""
+        return os.environ.get('NEO4J_URI', cls.NEO4J_URI)
+
+    @classmethod
+    def get_neo4j_user(cls) -> str:
+        """Resolve the configured Neo4j username."""
+        return os.environ.get('NEO4J_USER', cls.NEO4J_USER)
+
+    @classmethod
+    def get_neo4j_password(cls) -> str | None:
+        """Resolve the configured Neo4j password."""
+        return os.environ.get('NEO4J_PASSWORD', cls.NEO4J_PASSWORD)
+
+    @classmethod
+    def get_graphiti_extraction_model(cls) -> str:
+        """Resolve the Graphiti extraction model name."""
+        return os.environ.get(
+            'GRAPHITI_EXTRACTION_MODEL',
+            os.environ.get(
+                'OPENAI_REASONING_MODEL',
+                cls.GRAPHITI_EXTRACTION_MODEL,
+            ),
+        )
+
+    @classmethod
+    def get_graphiti_embedding_model(cls) -> str:
+        """Resolve the Graphiti embedding model name."""
+        return os.environ.get(
+            'GRAPHITI_EMBEDDING_MODEL',
+            os.environ.get(
+                'LOCAL_EMBEDDING_MODEL',
+                cls.GRAPHITI_EMBEDDING_MODEL,
+            ),
+        )
+
+    @classmethod
+    def get_graph_backend_batch_size(cls) -> int:
+        """Resolve the graph backend build batch size."""
+        return int(os.environ.get('GRAPH_BACKEND_BATCH_SIZE', str(cls.GRAPH_BACKEND_BATCH_SIZE)))
+
+    @classmethod
+    def get_graph_backend_search_limit(cls) -> int:
+        """Resolve the graph backend search limit."""
+        return int(os.environ.get('GRAPH_BACKEND_SEARCH_LIMIT', str(cls.GRAPH_BACKEND_SEARCH_LIMIT)))
+
+    @classmethod
+    def get_graph_backend_scan_limit(cls) -> int:
+        """Resolve the graph backend scan limit."""
+        return int(os.environ.get('GRAPH_BACKEND_SCAN_LIMIT', str(cls.GRAPH_BACKEND_SCAN_LIMIT)))
+
+    @classmethod
+    def get_graph_backend_runtime_batch_size(cls) -> int:
+        """Resolve the graph backend runtime batch size."""
+        return int(
+            os.environ.get(
+                'GRAPH_BACKEND_RUNTIME_BATCH_SIZE',
+                str(cls.GRAPH_BACKEND_RUNTIME_BATCH_SIZE),
+            )
+        )
+
+    @classmethod
+    def validate_graph_backend(cls) -> list[str]:
+        """Validate only the Graphiti + Neo4j scaffold settings."""
+        errors: list[str] = []
+        if cls.get_graph_backend_name() != 'graphiti_neo4j':
+            return errors
+        if not cls.get_neo4j_uri():
+            errors.append("NEO4J_URI is not configured")
+        if not cls.get_neo4j_user():
+            errors.append("NEO4J_USER is not configured")
+        if not cls.get_neo4j_password():
+            errors.append("NEO4J_PASSWORD is not configured")
+        if not cls.get_graphiti_extraction_model():
+            errors.append("GRAPHITI_EXTRACTION_MODEL is not configured")
+        if not cls.get_graphiti_embedding_model():
+            errors.append("GRAPHITI_EMBEDDING_MODEL is not configured")
+        return errors
+
+    @classmethod
+    def get_graph_backend_settings(cls):
+        """Resolve the Graphiti + Neo4j scaffold settings object lazily."""
+        from .services.graph_backend.settings import GraphBackendSettings
+
+        return GraphBackendSettings.from_env()
 
     @classmethod
     def get_forecast_data_dir(cls) -> str:

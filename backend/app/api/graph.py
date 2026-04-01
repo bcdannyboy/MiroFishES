@@ -22,6 +22,7 @@ from ..services.forecast_graph import (
     build_layered_graph_index,
     summarize_graph_snapshot,
 )
+from ..services.graph_backend import describe_graph_backend_readiness
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
@@ -104,6 +105,15 @@ def _upload_too_large_response():
         ),
         "max_upload_bytes": max_bytes,
     }), 413
+
+
+@graph_bp.route('/backend/readiness', methods=['GET'])
+def get_graph_backend_readiness():
+    """Expose Prompt 1 Graphiti + Neo4j readiness without mutating graph state."""
+    return jsonify({
+        "success": True,
+        "data": describe_graph_backend_readiness(),
+    })
 
 
 # ============== Project management endpoints ==============
