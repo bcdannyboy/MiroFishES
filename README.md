@@ -79,7 +79,7 @@ For real local Step 2 through Step 5 use, the backend needs real keys plus the p
 
 ```env
 LLM_API_KEY=your_api_key_here
-ZEP_API_KEY=your_zep_api_key_here
+ZEP_API_KEY=your_zep_api_key_here  # legacy-only until the final cleanup prompt
 
 PROBABILISTIC_PREPARE_ENABLED=true
 PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
@@ -106,7 +106,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompts 2-4 rewire the Step 1 base build, read/query, and runtime update lanes through the Graphiti + Neo4j backend seam. The repo still carries some historical `zep_*` module names for compatibility, but the touched graph build, read, and runtime update paths no longer depend on live Zep services.
+Prompts 2-5 rewire the Step 1 base build, read/query, runtime update, and the touched graph/report/simulation consumer lanes through the Graphiti + Neo4j backend seam. The repo still carries some historical `zep_*` module names for compatibility, but the touched graph/report/simulation paths no longer depend on live Zep services.
 
 ### Start the stack
 
@@ -179,6 +179,8 @@ npm run verify:graphiti:all
 ```
 
 These wrappers prove the Graphiti + Neo4j backend seam exists, that the readiness surface executes, and that the repo can run the rewritten base plus runtime unit/integration tests while reporting honest dependency/config state. They still do not prove authenticated live Graphiti ingestion by themselves.
+
+The Prompt 5 unit wrapper now also covers the graph API multigraph read contract, report graph-query tools, simulation entity endpoints, and graph-backed consumer scaffolding.
 
 For an explicit runtime live probe against the real repo `.env` plus the local Neo4j port binding, run:
 

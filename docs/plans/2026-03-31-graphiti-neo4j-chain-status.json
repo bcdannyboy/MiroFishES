@@ -6,12 +6,13 @@
   ],
   "branch": "codex/graphiti-neo4j-overhaul-chain",
   "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
-  "current_prompt": 4,
+  "current_prompt": 5,
   "completed_prompts": [
     1,
     2,
     3,
-    4
+    4,
+    5
   ],
   "prompt_status": "completed",
   "chain_owned_paths": [
@@ -27,12 +28,21 @@
     "backend/app/config.py",
     "backend/app/api/graph.py",
     "backend/app/api/simulation.py",
+    "backend/app/api/report.py",
     "backend/app/services/__init__.py",
     "backend/app/services/graph_builder.py",
     "backend/app/services/runtime_graph_manager.py",
     "backend/app/services/runtime_graph_state_store.py",
     "backend/app/services/runtime_graph_updater.py",
     "backend/app/services/simulation_runner.py",
+    "backend/app/services/graph_entity_reader.py",
+    "backend/app/services/graph_query_tools.py",
+    "backend/app/services/oasis_profile_generator.py",
+    "backend/app/services/probabilistic_smoke_fixture.py",
+    "backend/app/services/report_agent.py",
+    "backend/app/services/simulation_config_generator.py",
+    "backend/app/services/simulation_manager.py",
+    "backend/app/services/world_state_compiler.py",
     "backend/app/services/graph_backend/",
     "backend/app/services/zep_entity_reader.py",
     "backend/app/services/zep_tools.py",
@@ -44,9 +54,19 @@
     "backend/tests/unit/test_runtime_graph_state.py",
     "backend/tests/unit/test_runtime_graph_updater.py",
     "backend/tests/unit/test_simulation_runner_runtime_scope.py",
+    "backend/tests/unit/test_report_api_graph_tools.py",
+    "backend/tests/unit/test_simulation_entity_api.py",
+    "backend/tests/unit/test_evidence_grounded_initialization.py",
+    "backend/tests/unit/test_probabilistic_prepare.py",
+    "backend/tests/unit/test_probabilistic_report_api.py",
+    "backend/tests/unit/test_probabilistic_ensemble_api.py",
+    "backend/tests/unit/test_probabilistic_report_context.py",
+    "backend/tests/unit/test_ensemble_storage.py",
     "backend/tests/unit/test_zep_entity_reader.py",
     "backend/tests/unit/test_zep_tools_multigraph.py",
-    "backend/tests/unit/test_report_agent_hybrid_retrieval.py"
+    "backend/tests/unit/test_report_agent_hybrid_retrieval.py",
+    "backend/tests/integration/test_structural_uncertainty_handoff.py",
+    "backend/tests/integration/test_probabilistic_operator_flow.py"
   ],
   "docs_updated": [
     ".env.example",
@@ -94,6 +114,12 @@
         "runtime_namespace_task_id": "task-1775021064417-94rfhq",
         "runtime_event_task_id": "task-1775021064418-yesjo1",
         "docs_task_id": "task-1775021064419-iznkk2"
+      },
+      "prompt_5": {
+        "swarm_id": "swarm-1775022585165-ocypj2",
+        "api_cutover_task_id": "task-1775022585166-3pljql",
+        "report_consumer_task_id": "task-1775022585167-1fzfxn",
+        "docs_task_id": "task-1775022585168-5sgwdb"
       }
     },
     "neo4j_probe": {
@@ -304,6 +330,89 @@
           "The probe truthfully reported NEO4J_PASSWORD missing and did not overstate authenticated Graphiti ingestion."
         ]
       }
+    },
+    "prompt_5": {
+      "startup_repo_truth_check": {
+        "verify_ruflo": {
+          "command": "npm run verify:ruflo",
+          "result": "passed",
+          "notes": [
+            "Workspace-safe swarm/task orchestration still works.",
+            "Memory remains blocked by the external Ruflo sql.js dependency."
+          ]
+        },
+        "git_log": {
+          "command": "git log --oneline --decorate -4",
+          "result": "Prompt 1-4 commits confirmed on the active chain branch"
+        },
+        "env_dependency_truth": {
+          "command": "backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py",
+          "result": "failed in sandbox",
+          "notes": [
+            "The real repo .env exists.",
+            "The probe still reports NEO4J_PASSWORD missing.",
+            "The sandboxed Neo4j probe still reports PermissionError: [Errno 1] Operation not permitted."
+          ]
+        }
+      },
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_report_api_graph_tools.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/unit/test_simulation_entity_api.py backend/tests/unit/test_evidence_grounded_initialization.py -q",
+        "result": "6 failed, 6 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_report_api_graph_tools.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/unit/test_simulation_entity_api.py backend/tests/unit/test_evidence_grounded_initialization.py -q",
+        "result": "12 passed"
+      },
+      "broader_consumer_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_ensemble_storage.py -q",
+        "result": "119 passed"
+      },
+      "touched_integration_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/integration/test_structural_uncertainty_handoff.py backend/tests/integration/test_probabilistic_operator_flow.py -q",
+        "result": "9 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "passed",
+        "notes": [
+          "The wrapper now runs two deterministic pytest invocations to avoid shared-state failures.",
+          "The first invocation reported 28 passed and the second reported 21 passed."
+        ]
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed",
+        "notes": [
+          "Readiness remained honest with graphiti-core unavailable.",
+          "Readiness remained honest with NEO4J_PASSWORD missing.",
+          "The runtime integration suite reported 1 passed."
+        ]
+      },
+      "wrapper_smoke": {
+        "command": "npm run verify:smoke",
+        "result": "passed",
+        "notes": [
+          "Playwright smoke reported 10 passed.",
+          "The graph/report/simulation API consumer cutover did not regress the probabilistic runtime flow."
+        ]
+      },
+      "live_backend_probe_recheck": {
+        "command": "backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py",
+        "result": "failed",
+        "notes": [
+          "The real repo .env/defaults still resolve the Graphiti + Neo4j backend.",
+          "The probe still reports NEO4J_PASSWORD missing.",
+          "The sandboxed Neo4j probe still reports PermissionError: [Errno 1] Operation not permitted."
+        ]
+      },
+      "live_operator_coverage": {
+        "command": "npm run verify:operator:local",
+        "result": "not run",
+        "notes": [
+          "Prompt 5 did not claim live operator coverage.",
+          "Authenticated Graphiti execution remains blocked by graphiti-core missing locally and NEO4J_PASSWORD missing from the real repo .env."
+        ]
+      }
     }
   },
   "blockers": [
@@ -331,16 +440,28 @@
       "resolution": "Prompt 4 replaced the runtime updater/manager path with RuntimeGraphUpdater / RuntimeGraphUpdateManager and rewired SimulationRunner to the new backend-neutral ingestion seam."
     },
     {
+      "id": "api-consumer-zep-runtime-dependency",
+      "status": "resolved",
+      "impact": "The graph/report/simulation API and consumer lanes touched in Prompt 5 still depended on live Zep-backed readers/tools or ZEP_API_KEY gating.",
+      "resolution": "Prompt 5 introduced graph-neutral entry points and rewired the touched APIs/consumers to them."
+    },
+    {
+      "id": "graphiti-unit-wrapper-shared-state",
+      "status": "resolved",
+      "impact": "The expanded Prompt 5 graphiti unit wrapper exposed pytest shared-state failures when all suites ran in one process.",
+      "resolution": "Prompt 5 split verify:graphiti:unit into two deterministic pytest invocations."
+    },
+    {
       "id": "graphiti-core-missing",
       "status": "open",
-      "impact": "Authenticated live Graphiti query/build/runtime ingestion remains unavailable until graphiti-core is installed in the backend environment."
+      "impact": "Authenticated live Graphiti query/build/runtime ingestion and live operator coverage remain unavailable until graphiti-core is installed in the backend environment."
     },
     {
       "id": "neo4j-password-missing-in-env",
       "status": "open",
-      "impact": "The readiness surface and live runtime probe still report NEO4J_PASSWORD missing from the real repo .env."
+      "impact": "The readiness surface, live runtime probe, and live operator coverage still report NEO4J_PASSWORD missing from the real repo .env."
     }
   ],
-  "next_prompt": 5,
+  "next_prompt": 6,
   "merge_ready": false
 }

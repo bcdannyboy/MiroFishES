@@ -312,3 +312,25 @@ def test_report_agent_quick_search_works_without_zep_credentials(
 
     assert "Analyst says hiring is slowing." in tool_result
     assert "Hiring is weakening." in tool_result
+
+
+def test_report_agent_defaults_to_graph_query_tools_service(monkeypatch):
+    module = importlib.import_module("app.services.report_agent")
+
+    class _FakeGraphTools:
+        pass
+
+    monkeypatch.setattr(
+        module,
+        "GraphQueryToolsService",
+        lambda: _FakeGraphTools(),
+        raising=False,
+    )
+
+    agent = module.ReportAgent(
+        graph_id="graph-base",
+        simulation_id="sim-graph-tools",
+        simulation_requirement="Track runtime graph changes.",
+    )
+
+    assert isinstance(agent.zep_tools, _FakeGraphTools)

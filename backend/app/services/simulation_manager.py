@@ -34,7 +34,7 @@ from ..models.probabilistic import (
     validate_outcome_metric_id,
 )
 from ..utils.logger import get_logger
-from .zep_entity_reader import ZepEntityReader, FilteredEntities
+from .graph_entity_reader import GraphEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 from .grounding_bundle_builder import GroundingBundleBuilder
@@ -159,7 +159,7 @@ class SimulationManager:
     Simulation manager.
     
     Core responsibilities:
-    1. Read and filter entities from a Zep graph
+    1. Read and filter entities from the graph backend seam
     2. Generate OASIS agent profiles
     3. Use an LLM to generate simulation configuration parameters
     4. Prepare all files required by the preset scripts
@@ -2458,7 +2458,7 @@ class SimulationManager:
         
         Args:
             project_id: Project ID
-            graph_id: Zep graph ID
+            graph_id: Base graph namespace ID
             enable_twitter: Whether to enable the Twitter simulation
             enable_reddit: Whether to enable the Reddit simulation
             
@@ -2502,7 +2502,7 @@ class SimulationManager:
         Prepare the simulation environment end to end.
         
         Steps:
-        1. Read and filter entities from the Zep graph
+        1. Read and filter entities from the graph backend
         2. Generate an OASIS agent profile for each entity, optionally with LLM enhancement and parallelism
         3. Use the LLM to generate simulation configuration parameters such as time, activity, and posting frequency
         4. Save configuration and profile files
@@ -2568,9 +2568,9 @@ class SimulationManager:
             
             # ========== Stage 1: read and filter entities ==========
             if progress_callback:
-                progress_callback("reading", 0, "Connecting to the Zep graph...")
+                progress_callback("reading", 0, "Connecting to the graph backend...")
             
-            reader = ZepEntityReader()
+            reader = GraphEntityReader()
             
             if progress_callback:
                 progress_callback("reading", 30, "Reading node data...")
@@ -2672,7 +2672,7 @@ class SimulationManager:
                     total=total_entities
                 )
             
-            # Pass graph_id to enable Zep retrieval for richer context
+            # Pass graph scope so profile enrichment can gather richer graph context.
             generator = OasisProfileGenerator(graph_id=state.graph_id)
             
             def profile_progress(current, total, msg):
@@ -2705,7 +2705,7 @@ class SimulationManager:
                         entities=filtered.entities,
                         use_llm=use_llm_for_profiles,
                         progress_callback=profile_progress,
-                        graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
+                        graph_id=state.graph_id,
                         parallel_count=parallel_profile_count,  # Parallel generation count
                         realtime_output_path=realtime_output_path,  # Realtime output path
                         output_platform=realtime_platform,  # Output format
@@ -2718,7 +2718,7 @@ class SimulationManager:
                     entities=filtered.entities,
                     use_llm=use_llm_for_profiles,
                     progress_callback=profile_progress,
-                    graph_id=state.graph_id,  # Pass graph_id for Zep retrieval
+                    graph_id=state.graph_id,
                     parallel_count=parallel_profile_count,  # Parallel generation count
                     realtime_output_path=realtime_output_path,  # Realtime output path
                     output_platform=realtime_platform,  # Output format

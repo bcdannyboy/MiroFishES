@@ -494,7 +494,7 @@ def _install_prepare_stubs(monkeypatch, manager_module):
         def filter_defined_entities(self, *args, **kwargs):
             return _fake_filtered_entities()
 
-    monkeypatch.setattr(manager_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
     monkeypatch.setattr(
         manager_module,

@@ -14,6 +14,7 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.graph_backend import GraphScanService
 from ..services.phase_timing import PhaseTimingRecorder
 from ..services.text_processor import TextProcessor
 from ..services.forecast_graph import (
@@ -76,6 +77,23 @@ def _project_payload(project):
             project.project_id
         ),
     }
+
+
+def _parse_graph_ids_query(graph_id: str, raw_graph_ids: str | None) -> list[str]:
+    """Normalize an optional multigraph scope from one request query value."""
+    normalized = []
+    seen = set()
+    candidates = [graph_id]
+    if raw_graph_ids:
+        candidates.extend(
+            item.strip() for item in raw_graph_ids.split(",") if item.strip()
+        )
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
 
 
 def _upload_too_large_response():
@@ -917,14 +935,48 @@ def get_graph_data(graph_id: str):
         mode = request.args.get('mode', 'full')
         max_nodes = request.args.get('max_nodes', type=int)
         max_edges = request.args.get('max_edges', type=int)
+        graph_ids = _parse_graph_ids_query(graph_id, request.args.get("graph_ids"))
 
-        builder = GraphBuilderService()
-        graph_data = builder.get_graph_data(
-            graph_id,
-            mode=mode,
-            max_nodes=max_nodes,
-            max_edges=max_edges,
-        )
+        if len(graph_ids) > 1:
+            scan_service = GraphScanService()
+            all_nodes = scan_service.scan_nodes(
+                graph_id=graph_ids[0],
+                graph_ids=graph_ids,
+            )
+            all_edges = scan_service.scan_edges(
+                graph_id=graph_ids[0],
+                graph_ids=graph_ids,
+            )
+            resolved_max_nodes = max_nodes if max_nodes and max_nodes > 0 else len(all_nodes)
+            resolved_max_edges = max_edges if max_edges and max_edges > 0 else len(all_edges)
+            nodes = all_nodes[:resolved_max_nodes]
+            edges = all_edges[:resolved_max_edges]
+            graph_data = {
+                "graph_id": graph_ids[0],
+                "graph_ids": graph_ids,
+                "mode": mode,
+                "truncated": len(nodes) < len(all_nodes) or len(edges) < len(all_edges),
+                "returned_nodes": len(nodes),
+                "returned_edges": len(edges),
+                "total_nodes": len(all_nodes),
+                "total_edges": len(all_edges),
+                "node_count": len(all_nodes),
+                "edge_count": len(all_edges),
+                "requested_max_nodes": resolved_max_nodes,
+                "requested_max_edges": resolved_max_edges,
+                "node_pages": 1,
+                "edge_pages": 1,
+                "nodes": nodes,
+                "edges": edges,
+            }
+        else:
+            builder = GraphBuilderService()
+            graph_data = builder.get_graph_data(
+                graph_id,
+                mode=mode,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
         
         return jsonify({
             "success": True,

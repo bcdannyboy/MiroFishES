@@ -14,7 +14,7 @@ from ..models.project import ProjectManager
 from ..utils.logger import get_logger
 from .evidence_bundle_service import EvidenceBundleService
 from .grounding_bundle_builder import GroundingBundleBuilder
-from .zep_entity_reader import EntityNode
+from .graph_entity_reader import EntityNode
 
 logger = get_logger("mirofish.world_state")
 

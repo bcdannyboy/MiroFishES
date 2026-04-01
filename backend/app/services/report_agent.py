@@ -1,9 +1,9 @@
 """
 Report Agent service.
-Uses LangChain + Zep to generate simulation reports with a ReACT workflow.
+Uses LangChain plus graph-backed retrieval tools to generate simulation reports.
 
 Capabilities:
-1. Generate reports from simulation requirements and Zep graph information
+1. Generate reports from simulation requirements and graph information
 2. Plan the outline first, then generate content section by section
 3. Use multi-round ReACT reasoning and reflection for each section
 4. Support user chat with autonomous retrieval tool usage
@@ -23,8 +23,8 @@ from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
 from .phase_timing import PhaseTimingRecorder
-from .zep_tools import (
-    ZepToolsService, 
+from .graph_query_tools import (
+    GraphQueryToolsService,
     SearchResult, 
     InsightForgeResult, 
     PanoramaResult,
@@ -944,7 +944,8 @@ class ReportAgent:
         simulation_id: str,
         simulation_requirement: str,
         llm_client: Optional[LLMClient] = None,
-        zep_tools: Optional[ZepToolsService] = None,
+        graph_tools: Optional[GraphQueryToolsService] = None,
+        zep_tools: Optional[GraphQueryToolsService] = None,
         report_id: Optional[str] = None,
         probabilistic_context: Optional[Dict[str, Any]] = None,
         graph_ids: Optional[List[str]] = None,
@@ -959,7 +960,8 @@ class ReportAgent:
             simulation_id: Simulation ID
             simulation_requirement: Simulation requirement description
             llm_client: LLM client, optional
-            zep_tools: Zep tools service, optional
+            graph_tools: Graph query tools service, optional
+            zep_tools: Legacy alias for injected graph query tools, optional
         """
         self.graph_id = base_graph_id or graph_id
         self.base_graph_id = self.graph_id
@@ -975,7 +977,8 @@ class ReportAgent:
         self.probabilistic_context = probabilistic_context
         
         self.llm = llm_client or LLMClient()
-        self.zep_tools = zep_tools or ZepToolsService()
+        self.graph_tools = graph_tools or zep_tools or GraphQueryToolsService()
+        self.zep_tools = self.graph_tools
         
         # Tool definitions
         self.tools = self._define_tools()

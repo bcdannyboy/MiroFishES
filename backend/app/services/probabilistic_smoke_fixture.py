@@ -2,7 +2,7 @@
 Developer-only probabilistic smoke-fixture seeding.
 
 This module creates a prepared probabilistic simulation without relying on the
-live Zep graph or LLM-backed configuration/profile generators. It exists to
+live graph backend or LLM-backed configuration/profile generators. It exists to
 support deterministic local QA and browser smoke evidence for the Step 2 ->
 Step 3 probabilistic handoff.
 """
@@ -22,7 +22,7 @@ from .oasis_profile_generator import OasisAgentProfile, OasisProfileGenerator
 from . import simulation_manager as simulation_manager_module
 from .ensemble_manager import EnsembleManager
 from .simulation_manager import SimulationManager
-from .zep_entity_reader import EntityNode, FilteredEntities
+from .graph_entity_reader import EntityNode, FilteredEntities
 
 
 DEFAULT_PROJECT_NAME = "Probabilistic Smoke Fixture"
@@ -482,7 +482,7 @@ class _FixtureSimulationConfigGenerator:
 
 
 class _FixtureReader:
-    """Zep-reader stub that returns a small deterministic entity set."""
+    """Graph-reader stub that returns a small deterministic entity set."""
 
     def filter_defined_entities(self, *args, **kwargs) -> FilteredEntities:
         return FilteredEntities(
@@ -719,10 +719,10 @@ def seed_probabilistic_smoke_fixture(
         stack.callback(
             setattr,
             simulation_manager_module,
-            "ZepEntityReader",
-            simulation_manager_module.ZepEntityReader,
+            "GraphEntityReader",
+            simulation_manager_module.GraphEntityReader,
         )
-        simulation_manager_module.ZepEntityReader = _FixtureReader
+        simulation_manager_module.GraphEntityReader = _FixtureReader
         stack.callback(
             setattr,
             simulation_manager_module,

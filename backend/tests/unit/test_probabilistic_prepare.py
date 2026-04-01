@@ -570,7 +570,7 @@ def _install_prepare_stubs(monkeypatch, manager_module):
         def filter_defined_entities(self, *args, **kwargs):
             return _fake_filtered_entities()
 
-    monkeypatch.setattr(manager_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
     monkeypatch.setattr(
         manager_module, "SimulationConfigGenerator", _FakeSimulationConfigGenerator
@@ -753,7 +753,7 @@ def test_prepare_simulation_uses_project_entity_index_before_remote_reads(
             AssertionError("prepare should use the persisted entity index before remote edge reads")
         ),
     )
-    monkeypatch.setattr(manager_module, "ZepEntityReader", reader_module.ZepEntityReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", reader_module.ZepEntityReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
     monkeypatch.setattr(
         manager_module, "SimulationConfigGenerator", _FakeSimulationConfigGenerator
@@ -966,7 +966,7 @@ def test_prepare_simulation_persists_evidence_grounded_world_state_artifacts(
         def filter_defined_entities(self, *args, **kwargs):
             return _fake_filtered_entities()
 
-    monkeypatch.setattr(manager_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _CapturingProfileGenerator)
     monkeypatch.setattr(
         manager_module, "SimulationConfigGenerator", _CapturingSimulationConfigGenerator
@@ -1754,7 +1754,7 @@ def test_prepare_endpoint_accepts_probabilistic_inputs_and_reports_requested_met
             return _fake_filtered_entities()
 
     monkeypatch.setattr(simulation_module, "SimulationManager", _FakeManager)
-    monkeypatch.setattr(simulation_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(simulation_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(simulation_module.ProjectManager, "get_project", staticmethod(
         lambda _project_id: type("Project", (), {"simulation_requirement": "Forecast discussion spread"})()
     ))
@@ -1926,7 +1926,7 @@ def test_prepare_endpoint_can_create_or_reopen_forecast_workspace_for_inference_
 
     monkeypatch.setattr(simulation_module, "SimulationManager", _FakeManager)
     monkeypatch.setattr(simulation_module, "ForecastManager", _FakeForecastManager)
-    monkeypatch.setattr(simulation_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(simulation_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(
         simulation_module.ProjectManager,
         "get_project",
@@ -2562,7 +2562,7 @@ def test_prepare_endpoint_reprepares_probabilistic_after_legacy_prepare(
         def filter_defined_entities(self, *args, **kwargs):
             return _fake_filtered_entities()
 
-    monkeypatch.setattr(simulation_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(simulation_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(
         simulation_module.ProjectManager,
         "get_project",

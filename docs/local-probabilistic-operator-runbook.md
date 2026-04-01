@@ -152,7 +152,7 @@ For real local Step 2 through Step 5 use, the repo expects a root `.env` with re
 
 ```env
 LLM_API_KEY=...
-ZEP_API_KEY=...
+ZEP_API_KEY=...  # legacy-only until the final graph cutover cleanup
 
 PROBABILISTIC_PREPARE_ENABLED=true
 PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
@@ -179,7 +179,7 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompts 2-4 route the live Step 1 base graph build, read/query, and runtime update lanes through the Graphiti + Neo4j backend seam. Some compatibility module names still use the historical `zep_*` prefix, but the touched graph paths no longer depend on live Zep services.
+Prompts 2-5 route the live Step 1 base graph build, read/query, runtime update, and the touched graph/report/simulation consumer lanes through the Graphiti + Neo4j backend seam. Some compatibility module names still use the historical `zep_*` prefix, but the touched graph paths no longer depend on live Zep services.
 
 ### Capability check
 

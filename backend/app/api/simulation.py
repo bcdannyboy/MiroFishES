@@ -1,7 +1,7 @@
 """
 Simulation-related API routes.
 
-Step 2: Zep entity retrieval and filtering, plus OASIS simulation
+Step 2: graph entity retrieval and filtering, plus OASIS simulation
 preparation and execution (fully automated).
 """
 
@@ -32,9 +32,9 @@ from ..models.probabilistic import (
 )
 from ..services.ensemble_manager import EnsembleManager
 from ..services.forecast_manager import ForecastManager
+from ..services.graph_entity_reader import GraphEntityReader
 from ..services.scenario_clusterer import ScenarioClusterer
 from ..services.sensitivity_analyzer import SensitivityAnalyzer
-from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.report_agent import ReportManager
 from ..services.runtime_graph_manager import RuntimeGraphManager
@@ -185,6 +185,25 @@ def _build_run_summary(run_payload: dict) -> dict:
         "lifecycle": manifest.get("lifecycle", {}),
         "lineage": manifest.get("lineage", {}),
     }
+
+
+def _parse_request_graph_ids(graph_id: str, raw_graph_ids) -> list[str]:
+    """Normalize one request graph scope while preserving the path graph id first."""
+    if isinstance(raw_graph_ids, str):
+        candidates = [item.strip() for item in raw_graph_ids.split(",") if item.strip()]
+    elif isinstance(raw_graph_ids, list):
+        candidates = [str(item).strip() for item in raw_graph_ids if str(item).strip()]
+    else:
+        candidates = []
+
+    normalized = []
+    seen = set()
+    for candidate in [graph_id, *candidates]:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
 
 
 def _build_ensemble_response_payload(ensemble_payload: dict) -> dict:
@@ -1199,25 +1218,27 @@ def get_graph_entities(graph_id: str):
         enrich: Whether to include related edge information. Defaults to `true`.
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-
         entity_types_str = request.args.get('entity_types', '')
         entity_types = [t.strip() for t in entity_types_str.split(',') if t.strip()] if entity_types_str else None
         enrich = request.args.get('enrich', 'true').lower() == 'true'
+        graph_ids = _parse_request_graph_ids(graph_id, request.args.get("graph_ids"))
+        project_id = request.args.get("project_id")
 
         logger.info(
-            f"Fetching graph entities: graph_id={graph_id}, entity_types={entity_types}, enrich={enrich}"
+            "Fetching graph entities: graph_id=%s graph_ids=%s entity_types=%s enrich=%s",
+            graph_id,
+            graph_ids,
+            entity_types,
+            enrich,
         )
 
-        reader = ZepEntityReader()
+        reader = GraphEntityReader()
         result = reader.filter_defined_entities(
             graph_id=graph_id,
+            graph_ids=graph_ids,
             defined_entity_types=entity_types,
-            enrich_with_edges=enrich
+            enrich_with_edges=enrich,
+            project_id=project_id,
         )
 
         return jsonify({
@@ -1238,14 +1259,16 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """Get detailed information for a single entity."""
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
+        graph_ids = _parse_request_graph_ids(graph_id, request.args.get("graph_ids"))
+        project_id = request.args.get("project_id")
 
-        reader = ZepEntityReader()
-        entity = reader.get_entity_with_context(graph_id, entity_uuid)
+        reader = GraphEntityReader()
+        entity = reader.get_entity_with_context(
+            graph_id,
+            entity_uuid,
+            graph_ids=graph_ids,
+            project_id=project_id,
+        )
 
         if not entity:
             return jsonify({
@@ -1271,19 +1294,17 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """Get all entities of a specific type."""
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-
         enrich = request.args.get('enrich', 'true').lower() == 'true'
+        graph_ids = _parse_request_graph_ids(graph_id, request.args.get("graph_ids"))
+        project_id = request.args.get("project_id")
 
-        reader = ZepEntityReader()
+        reader = GraphEntityReader()
         entities = reader.get_entities_by_type(
             graph_id=graph_id,
             entity_type=entity_type,
-            enrich_with_edges=enrich
+            enrich_with_edges=enrich,
+            graph_ids=graph_ids,
+            project_id=project_id,
         )
 
         return jsonify({
@@ -1564,7 +1585,7 @@ def prepare_simulation():
 
     Steps:
     1. Check whether completed preparation work already exists
-    2. Read and filter entities from the Zep graph
+    2. Read and filter entities from the graph backend
     3. Generate an OASIS agent profile for each entity, with retries
     4. Use the LLM to generate simulation configuration, with retries
     5. Save configuration files and preparation artifacts
@@ -1692,7 +1713,7 @@ def prepare_simulation():
         # This lets the frontend know the expected agent count immediately after calling /prepare.
         try:
             logger.info(f"Fetching entity count synchronously: graph_id={state.graph_id}")
-            reader = ZepEntityReader()
+            reader = GraphEntityReader()
             # Read entities quickly without edge enrichment; only the count is needed here.
             filtered_preview = reader.filter_defined_entities(
                 graph_id=state.graph_id,
@@ -3797,7 +3818,7 @@ def generate_profiles():
         use_llm = data.get('use_llm', True)
         platform = data.get('platform', 'reddit')
 
-        reader = ZepEntityReader()
+        reader = GraphEntityReader()
         filtered = reader.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=entity_types,

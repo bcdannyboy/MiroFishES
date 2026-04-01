@@ -1,20 +1,9 @@
-"""
-Zep retrieval tool service.
-
-Wraps graph search, node reads, and edge queries for the Report Agent.
-
-Core retrieval tools:
-1. InsightForge (deep insight retrieval) - the strongest hybrid retrieval flow,
-   automatically generating subquestions and searching across multiple dimensions
-2. PanoramaSearch (breadth search) - captures the full picture, including expired content
-3. QuickSearch (simple search) - lightweight fast retrieval
-"""
+"""Compatibility graph query tools built on the cutover query services."""
 
 import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
-from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from .graph_backend.query_service import GraphQueryService
@@ -450,7 +439,7 @@ class HybridEvidenceSearchResult:
 
 class ZepToolsService:
     """
-    Zep retrieval tool service.
+    Graph query tool service.
 
     Core retrieval tools:
     1. `insight_forge` - deep insight retrieval with automatic subquestion generation
@@ -475,7 +464,7 @@ class ZepToolsService:
         hybrid_evidence_retriever: Optional[HybridEvidenceRetriever] = None,
         query_service: Optional[GraphQueryService] = None,
     ):
-        self.api_key = api_key or Config.ZEP_API_KEY or ""
+        _ = api_key  # Legacy constructor slot retained for compatibility only.
         self._llm_client = llm_client
         self.hybrid_evidence_retriever = hybrid_evidence_retriever
         self.query_service = query_service or GraphQueryService()
