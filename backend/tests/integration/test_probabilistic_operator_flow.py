@@ -322,7 +322,7 @@ def _build_app_client(monkeypatch):
 
 
 def _fake_filtered_entities():
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     return reader_module.FilteredEntities(
         entities=[
             reader_module.EntityNode(

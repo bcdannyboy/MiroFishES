@@ -23,7 +23,10 @@ from ..services.forecast_graph import (
     build_layered_graph_index,
     summarize_graph_snapshot,
 )
-from ..services.graph_backend import describe_graph_backend_readiness
+from ..services.graph_backend import (
+    describe_graph_backend_capabilities,
+    describe_graph_backend_readiness,
+)
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
@@ -131,6 +134,15 @@ def get_graph_backend_readiness():
     return jsonify({
         "success": True,
         "data": describe_graph_backend_readiness(),
+    })
+
+
+@graph_bp.route('/backend/capabilities', methods=['GET'])
+def get_graph_backend_capabilities():
+    """Expose the stable operator-facing Graphiti + Neo4j backend contract."""
+    return jsonify({
+        "success": True,
+        "data": describe_graph_backend_capabilities(),
     })
 
 

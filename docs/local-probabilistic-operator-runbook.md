@@ -59,9 +59,9 @@ npm run verify:graphiti:live
 npm run verify:graphiti:all
 ```
 
-These wrappers are harness checks, not end-to-end backend proof. They now cover the rewritten base and runtime graph unit/integration suites plus the truthful readiness surface.
+These wrappers are the repo-native Graphiti + Neo4j ladder. They cover the rewritten base and runtime graph unit/integration suites plus the truthful readiness and capabilities surfaces. The smoke and live wrappers automatically start the managed local Neo4j CE helper.
 
-For an explicit runtime live probe against the real repo `.env` plus the local Neo4j port binding, run:
+For an explicit runtime live probe against the current repo `.env` plus the managed local Neo4j binding, run:
 
 ```bash
 backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py
@@ -148,11 +148,10 @@ Use these terms literally.
 
 ### Live environment
 
-For real local Step 2 through Step 5 use, the repo expects a root `.env` with real keys and the probabilistic flags enabled:
+For real local Step 2 through Step 5 use, the repo expects a root `.env` with a real LLM key, the probabilistic flags enabled, and a reachable Neo4j CE instance. No Zep key is required.
 
 ```env
 LLM_API_KEY=...
-ZEP_API_KEY=...  # legacy-only until the final graph cutover cleanup
 
 PROBABILISTIC_PREPARE_ENABLED=true
 PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
@@ -164,13 +163,19 @@ CALIBRATED_PROBABILITY_ENABLED=false
 
 `CALIBRATED_PROBABILITY_ENABLED` is only a surface flag. It does not make any metric pass the confidence gate by itself.
 
-For the Graphiti cutover backend, the repo also recognizes:
+The simplest local Graphiti + Neo4j CE flow is to start the managed helper first:
+
+```bash
+sh ./scripts/ensure-graphiti-live-neo4j.sh
+```
+
+With that helper running, use:
 
 ```env
 GRAPH_BACKEND=graphiti_neo4j
-NEO4J_URI=bolt://127.0.0.1:7687
+NEO4J_URI=bolt://127.0.0.1:17687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_local_neo4j_password_here
+NEO4J_PASSWORD=mirofish-graphiti-live
 GRAPHITI_EXTRACTION_MODEL=gpt-4.1-mini
 GRAPHITI_EMBEDDING_MODEL=text-embedding-3-small
 GRAPH_BACKEND_BATCH_SIZE=3
@@ -179,15 +184,27 @@ GRAPH_BACKEND_SCAN_LIMIT=250
 GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
 ```
 
-Prompts 2-5 route the live Step 1 base graph build, read/query, runtime update, and the touched graph/report/simulation consumer lanes through the Graphiti + Neo4j backend seam. Some compatibility module names still use the historical `zep_*` prefix, but the touched graph paths no longer depend on live Zep services.
+If you already run your own Neo4j instance, keep `GRAPH_BACKEND=graphiti_neo4j` and override `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` accordingly.
 
-### Capability check
+The live Step 1 base graph build, read/query, runtime update, and the active graph/report/simulation consumer lanes now run through the Graphiti + Neo4j backend seam. No runtime Zep services or Zep credentials are required.
+
+### Readiness and capability checks
 
 Before debugging UI behavior, check the backend surface directly:
 
 ```bash
-curl http://localhost:5001/api/simulation/prepare/capabilities
+curl -sS http://127.0.0.1:5001/health | jq .
+curl -sS http://127.0.0.1:5001/api/graph/backend/readiness | jq .
+curl -sS http://127.0.0.1:5001/api/graph/backend/capabilities | jq .
+curl -sS http://127.0.0.1:5001/api/simulation/prepare/capabilities | jq .
 ```
+
+For the graph backend checks, expect:
+
+- `/api/graph/backend/readiness` to report `backend=graphiti_neo4j`
+- `/api/graph/backend/capabilities` to report merged base/runtime namespace reads and the `verify:graphiti:*` ladder
+- `verify:graphiti:integration` to reflect the real repo `.env` without managed graph defaults
+- `verify:graphiti:smoke`, `verify:graphiti:live`, and `verify:operator:local` to auto-start the managed helper and inject the managed local graph defaults when the real `.env` omits them
 
 For the bounded probabilistic path, expect:
 

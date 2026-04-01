@@ -21,7 +21,6 @@ def test_entities_endpoint_uses_graph_entity_reader_without_zep_credentials(
 ):
     simulation_module = _load_simulation_api_module()
     config_module = importlib.import_module("app.config")
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "", raising=False)
     captures = {}
 
     class _FakeFilteredEntities:
@@ -83,7 +82,6 @@ def test_entity_detail_endpoint_uses_graph_entity_reader_without_zep_credentials
 ):
     simulation_module = _load_simulation_api_module()
     config_module = importlib.import_module("app.config")
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "", raising=False)
     captures = {}
 
     class _FakeEntity:

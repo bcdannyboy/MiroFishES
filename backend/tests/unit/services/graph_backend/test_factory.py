@@ -77,7 +77,7 @@ def test_neo4j_factory_build_driver_uses_graph_database_driver(monkeypatch):
 
     class _FakeGraphDatabase:
         @staticmethod
-        def driver(uri, auth):
+        def driver(uri, *, auth):
             captures["uri"] = uri
             captures["auth"] = auth
             return _FakeDriver()

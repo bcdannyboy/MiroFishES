@@ -413,7 +413,7 @@ def _build_test_client(simulation_module):
 
 
 def _fake_filtered_entities():
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     return reader_module.FilteredEntities(
         entities=[
             reader_module.EntityNode(
@@ -737,23 +737,22 @@ def test_prepare_simulation_uses_project_entity_index_before_remote_reads(
     )
 
     config_module = importlib.import_module("app.config")
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "test-key", raising=False)
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     monkeypatch.setattr(
-        reader_module.ZepEntityReader,
+        reader_module.GraphEntityReader,
         "get_all_nodes",
         lambda self, graph_id: (_ for _ in ()).throw(
             AssertionError("prepare should use the persisted entity index before remote node reads")
         ),
     )
     monkeypatch.setattr(
-        reader_module.ZepEntityReader,
+        reader_module.GraphEntityReader,
         "get_all_edges",
         lambda self, graph_id: (_ for _ in ()).throw(
             AssertionError("prepare should use the persisted entity index before remote edge reads")
         ),
     )
-    monkeypatch.setattr(manager_module, "GraphEntityReader", reader_module.ZepEntityReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", reader_module.GraphEntityReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
     monkeypatch.setattr(
         manager_module, "SimulationConfigGenerator", _FakeSimulationConfigGenerator

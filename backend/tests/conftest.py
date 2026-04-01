@@ -38,36 +38,6 @@ def _install_test_stubs() -> None:
         openai.OpenAI = OpenAI
         sys.modules["openai"] = openai
 
-    if "zep_cloud" not in sys.modules:
-        zep_cloud = types.ModuleType("zep_cloud")
-        zep_client = types.ModuleType("zep_cloud.client")
-
-        class Zep:  # pragma: no cover - trivial stub
-            def __init__(self, *args, **kwargs):
-                self.args = args
-                self.kwargs = kwargs
-
-        class EpisodeData:  # pragma: no cover - trivial stub
-            def __init__(self, *args, **kwargs):
-                self.args = args
-                self.kwargs = kwargs
-
-        class EntityEdgeSourceTarget:  # pragma: no cover - trivial stub
-            def __init__(self, *args, **kwargs):
-                self.args = args
-                self.kwargs = kwargs
-
-        class InternalServerError(Exception):
-            pass
-
-        zep_client.Zep = Zep
-        zep_cloud.EpisodeData = EpisodeData
-        zep_cloud.EntityEdgeSourceTarget = EntityEdgeSourceTarget
-        zep_cloud.InternalServerError = InternalServerError
-        zep_cloud.client = zep_client
-        sys.modules["zep_cloud"] = zep_cloud
-        sys.modules["zep_cloud.client"] = zep_client
-
     if "app.services.simulation_runner" not in sys.modules:
         simulation_runner = types.ModuleType("app.services.simulation_runner")
 

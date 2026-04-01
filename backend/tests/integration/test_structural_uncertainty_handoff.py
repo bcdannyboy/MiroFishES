@@ -145,7 +145,7 @@ class _FakeSimulationConfigGenerator:
 
 
 def _install_prepare_stubs(monkeypatch, manager_module):
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
 
     class _FakeReader:
         def filter_defined_entities(self, *args, **kwargs):

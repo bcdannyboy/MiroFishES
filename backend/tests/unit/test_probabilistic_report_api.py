@@ -385,7 +385,7 @@ class _FakeSimulationConfigGenerator:
 
 
 def _fake_filtered_entities():
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     return reader_module.FilteredEntities(
         entities=[
             reader_module.EntityNode(
@@ -1657,7 +1657,7 @@ def test_report_agent_chat_prefers_explicit_report_id_and_saved_probabilistic_co
         simulation_id="sim-chat",
         simulation_requirement="Forecast discussion spread",
         llm_client=fake_llm,
-        zep_tools=object(),
+        graph_tools=object(),
         report_id="report-probabilistic",
         probabilistic_context=probabilistic_report.probabilistic_context,
     )
@@ -1832,7 +1832,7 @@ def test_report_agent_chat_includes_confidence_status_in_prompt_safe_context(
         simulation_id="sim-chat",
         simulation_requirement="Forecast discussion spread",
         llm_client=fake_llm,
-        zep_tools=object(),
+        graph_tools=object(),
         report_id="report-probabilistic-confidence",
         probabilistic_context=probabilistic_report.probabilistic_context,
     )
@@ -1928,7 +1928,7 @@ def test_report_agent_chat_includes_answer_confidence_status_and_ensemble_policy
         simulation_id="sim-chat",
         simulation_requirement="Forecast discussion spread",
         llm_client=fake_llm,
-        zep_tools=object(),
+        graph_tools=object(),
         report_id="report-probabilistic-answer-confidence",
         probabilistic_context=probabilistic_report.probabilistic_context,
     )
@@ -2025,7 +2025,7 @@ def test_report_agent_chat_includes_authoritative_scoped_answer_brief(
         simulation_id="sim-chat",
         simulation_requirement="Forecast discussion spread",
         llm_client=fake_llm,
-        zep_tools=object(),
+        graph_tools=object(),
         report_id="report-probabilistic-authoritative-answer-brief",
         probabilistic_context=probabilistic_report.probabilistic_context,
     )
@@ -2083,7 +2083,7 @@ def test_report_agent_generate_report_persists_report_phase_timings(
         simulation_id="sim-report",
         simulation_requirement="Forecast discussion spread",
         llm_client=object(),
-        zep_tools=object(),
+        graph_tools=object(),
     )
 
     report = agent.generate_report(report_id="report-phase-timing")

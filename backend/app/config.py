@@ -6,6 +6,7 @@ Loads settings from the repository root `.env` file.
 from __future__ import annotations
 
 import os
+import importlib
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
@@ -73,9 +74,6 @@ class Config:
         OPENAI_EMBEDDING_MODEL,
     )
     LOCAL_EMBEDDING_DIMENSIONS = os.environ.get('LOCAL_EMBEDDING_DIMENSIONS')
-    
-    # Legacy Zep settings.
-    ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
     
     # Graph backend scaffold settings for the Graphiti + Neo4j cutover.
     GRAPH_BACKEND = os.environ.get('GRAPH_BACKEND', 'graphiti_neo4j')
@@ -324,9 +322,24 @@ class Config:
         return GraphBackendSettings.from_env()
 
     @classmethod
+    def get_simulation_data_dir(cls) -> str:
+        """Resolve the simulation artifact root from the current config module."""
+        current_module = importlib.import_module("app.config")
+        current_config = getattr(current_module, "Config", cls)
+        return os.environ.get(
+            'OASIS_SIMULATION_DATA_DIR',
+            getattr(current_config, 'OASIS_SIMULATION_DATA_DIR', cls.OASIS_SIMULATION_DATA_DIR),
+        )
+
+    @classmethod
     def get_forecast_data_dir(cls) -> str:
         """Resolve the forecast artifact root."""
-        return os.environ.get('FORECAST_DATA_DIR', cls.FORECAST_DATA_DIR)
+        current_module = importlib.import_module("app.config")
+        current_config = getattr(current_module, "Config", cls)
+        return os.environ.get(
+            'FORECAST_DATA_DIR',
+            getattr(current_config, 'FORECAST_DATA_DIR', cls.FORECAST_DATA_DIR),
+        )
 
     @classmethod
     def get_local_evidence_index_path(cls) -> str:
@@ -375,6 +388,4 @@ class Config:
         errors = []
         if not cls.get_openai_api_key():
             errors.append("LLM_API_KEY or OPENAI_API_KEY is not configured")
-        if not cls.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY is not configured")
         return errors

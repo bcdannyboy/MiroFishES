@@ -4,7 +4,14 @@ from pathlib import Path
 
 
 def _load_reader_module():
-    return importlib.import_module("app.services.zep_entity_reader")
+    return importlib.import_module("app.services.graph_entity_reader")
+
+
+def test_graph_entity_reader_module_exports_only_graph_native_reader():
+    reader_module = _load_reader_module()
+
+    assert reader_module.GraphEntityReader.__name__ == "GraphEntityReader"
+    assert getattr(reader_module, "ZepEntityReader", None) is None
 
 
 def _configure_project_dir(monkeypatch, project_root: Path):
@@ -68,14 +75,13 @@ def test_filter_defined_entities_uses_project_entity_index_before_remote_reads(
     _configure_project_dir(monkeypatch, tmp_path / "projects")
 
     config_module = importlib.import_module("app.config")
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "test-key", raising=False)
     project_dir = tmp_path / "projects" / "proj-1"
     _write_json(
         project_dir / "graph_entity_index.json",
         _entity_index_payload(project_id="proj-1", graph_id="graph-1"),
     )
 
-    reader = reader_module.ZepEntityReader()
+    reader = reader_module.GraphEntityReader()
     monkeypatch.setattr(
         reader,
         "get_all_nodes",
@@ -112,14 +118,13 @@ def test_filter_defined_entities_falls_back_to_remote_when_entity_index_graph_mi
     _configure_project_dir(monkeypatch, tmp_path / "projects")
 
     config_module = importlib.import_module("app.config")
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "test-key", raising=False)
     project_dir = tmp_path / "projects" / "proj-1"
     _write_json(
         project_dir / "graph_entity_index.json",
         _entity_index_payload(project_id="proj-1", graph_id="graph-stale"),
     )
 
-    reader = reader_module.ZepEntityReader()
+    reader = reader_module.GraphEntityReader()
     node_calls = []
     edge_calls = []
     monkeypatch.setattr(
@@ -192,7 +197,7 @@ def test_build_filtered_entities_excludes_analytical_objects_by_default():
     assert claim_filtered.entities[0].name == "Rate cut likely by June"
 
 
-def test_get_entity_with_context_merges_runtime_edges_without_zep_credentials(
+def test_get_entity_with_context_merges_runtime_edges_without_legacy_credentials(
     monkeypatch, tmp_path
 ):
     reader_module = _load_reader_module()
@@ -398,7 +403,7 @@ def test_get_entity_with_context_merges_runtime_edges_without_zep_credentials(
         encoding="utf-8",
     )
 
-    reader = reader_module.ZepEntityReader()
+    reader = reader_module.GraphEntityReader()
     entity = reader.get_entity_with_context(
         graph_id="graph-base",
         entity_uuid="actor-1",

@@ -6,7 +6,6 @@ def test_config_validate_accepts_openai_api_key_alias(monkeypatch):
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
-    monkeypatch.setenv("ZEP_API_KEY", "zep-test-key")
 
     assert config_module.Config.validate() == []
 

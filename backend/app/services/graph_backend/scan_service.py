@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 from typing import Any
 
-from ...config import Config
-from ...models.project import ProjectManager
 from ...utils.graph_scan import (
     canonical_label,
     load_json_if_exists,
@@ -23,11 +22,25 @@ from ...utils.graph_scan import (
 )
 
 
+def _current_simulation_data_dir() -> str:
+    """Resolve the current simulation-data root after test/module reloads."""
+    return importlib.import_module("app.config").Config.OASIS_SIMULATION_DATA_DIR
+
+
+def _current_projects_dir() -> str:
+    """Resolve the current projects root after test/module reloads."""
+    return importlib.import_module("app.models.project").ProjectManager.PROJECTS_DIR
+
+
 class GraphScanService:
     """Scan graph artifacts and runtime transitions without vendor SDKs."""
 
     def __init__(self, *, simulation_data_dir: str | None = None) -> None:
-        self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self._simulation_data_dir_override = simulation_data_dir
+
+    @property
+    def simulation_data_dir(self) -> str:
+        return self._simulation_data_dir_override or _current_simulation_data_dir()
 
     def normalize_graph_ids(
         self,
@@ -428,7 +441,7 @@ class GraphScanService:
         project_id: str | None = None,
     ) -> dict[str, Any]:
         candidates: list[Path] = []
-        projects_root = Path(ProjectManager.PROJECTS_DIR)
+        projects_root = Path(_current_projects_dir())
         if project_id:
             candidates.append(projects_root / project_id)
         elif projects_root.exists():

@@ -13,7 +13,7 @@ def test_report_agent_hybrid_evidence_tool_uses_workspace_project_context():
         def to_text(self) -> str:
             return "Hybrid evidence:\n- [SU1] Payroll preview supports a June rate cut."
 
-    class _FakeZepTools:
+    class _FakeGraphTools:
         def __init__(self):
             self.calls = []
 
@@ -28,12 +28,12 @@ def test_report_agent_hybrid_evidence_tool_uses_workspace_project_context():
             )
             return _FakeHybridResult(query)
 
-    zep_tools = _FakeZepTools()
+    graph_tools = _FakeGraphTools()
     agent = module.ReportAgent(
         graph_id="graph-base",
         simulation_id="sim-1",
         simulation_requirement="Forecast policy easing momentum.",
-        zep_tools=zep_tools,
+        graph_tools=graph_tools,
         probabilistic_context={
             "forecast_workspace": {
                 "forecast_question": {
@@ -49,7 +49,7 @@ def test_report_agent_hybrid_evidence_tool_uses_workspace_project_context():
     )
 
     assert "Hybrid evidence:" in tool_result
-    assert zep_tools.calls == [
+    assert graph_tools.calls == [
         {
             "project_id": "proj-hybrid",
             "query": "What supports a June rate cut?",
@@ -59,7 +59,7 @@ def test_report_agent_hybrid_evidence_tool_uses_workspace_project_context():
     ]
 
 
-def test_report_agent_quick_search_works_without_zep_credentials(
+def test_report_agent_quick_search_works_without_legacy_credentials(
     tmp_path, monkeypatch
 ):
     module = importlib.import_module("app.services.report_agent")
@@ -67,7 +67,6 @@ def test_report_agent_quick_search_works_without_zep_credentials(
     project_module = importlib.import_module("app.models.project")
     json_module = importlib.import_module("json")
 
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "", raising=False)
     monkeypatch.setattr(
         config_module.Config,
         "OASIS_SIMULATION_DATA_DIR",
@@ -333,4 +332,4 @@ def test_report_agent_defaults_to_graph_query_tools_service(monkeypatch):
         simulation_requirement="Track runtime graph changes.",
     )
 
-    assert isinstance(agent.zep_tools, _FakeGraphTools)
+    assert isinstance(agent.graph_tools, _FakeGraphTools)

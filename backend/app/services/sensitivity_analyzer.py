@@ -47,7 +47,7 @@ class SensitivityAnalyzer:
     _RUN_DIR_RE = re.compile(r"^run_(\d{4})$")
 
     def __init__(self, simulation_data_dir: Optional[str] = None) -> None:
-        self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self.simulation_data_dir = simulation_data_dir or Config.get_simulation_data_dir()
         self.analytics_policy = AnalyticsPolicy()
 
     def get_sensitivity_analysis(

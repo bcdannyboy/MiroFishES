@@ -36,7 +36,7 @@ class Neo4jFactoryScaffold:
             )
         return GraphDatabase.driver(
             self.connection_kwargs["uri"],
-            self.connection_kwargs["auth"],
+            auth=self.connection_kwargs["auth"],
         )
 
     def run_healthcheck(self, driver: Any) -> bool:

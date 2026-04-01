@@ -1,9 +1,16 @@
 import importlib
 
 
+def test_graph_query_tools_module_exports_only_graph_native_service():
+    tools_module = importlib.import_module("app.services.graph_query_tools")
+
+    assert tools_module.GraphQueryToolsService.__name__ == "GraphQueryToolsService"
+    assert getattr(tools_module, "ZepToolsService", None) is None
+
+
 def test_search_graph_merges_multiple_graphs_with_deterministic_dedupe(monkeypatch):
-    module = importlib.import_module("app.services.zep_tools")
-    service = module.ZepToolsService.__new__(module.ZepToolsService)
+    module = importlib.import_module("app.services.graph_query_tools")
+    service = module.GraphQueryToolsService.__new__(module.GraphQueryToolsService)
 
     results_by_graph = {
         "graph-base": module.SearchResult(
@@ -81,8 +88,8 @@ def test_search_graph_merges_multiple_graphs_with_deterministic_dedupe(monkeypat
 
 
 def test_hybrid_evidence_search_wraps_retriever_results_with_citations(monkeypatch):
-    module = importlib.import_module("app.services.zep_tools")
-    service = module.ZepToolsService.__new__(module.ZepToolsService)
+    module = importlib.import_module("app.services.graph_query_tools")
+    service = module.GraphQueryToolsService.__new__(module.GraphQueryToolsService)
 
     class _FakeRetriever:
         def retrieve(self, *, project_id, query, question_type="binary", issue_timestamp=None, limit=6):
@@ -129,14 +136,13 @@ def test_hybrid_evidence_search_wraps_retriever_results_with_citations(monkeypat
     assert "[SU1]" in result.to_text()
 
 
-def test_search_graph_reads_artifact_backed_multigraph_without_zep_credentials(
+def test_search_graph_reads_artifact_backed_multigraph_without_legacy_credentials(
     monkeypatch, tmp_path
 ):
-    module = importlib.import_module("app.services.zep_tools")
+    module = importlib.import_module("app.services.graph_query_tools")
     config_module = importlib.import_module("app.config")
     project_module = importlib.import_module("app.models.project")
 
-    monkeypatch.setattr(config_module.Config, "ZEP_API_KEY", "", raising=False)
     monkeypatch.setattr(
         config_module.Config,
         "OASIS_SIMULATION_DATA_DIR",
@@ -364,7 +370,7 @@ def test_search_graph_reads_artifact_backed_multigraph_without_zep_credentials(
         encoding="utf-8",
     )
 
-    service = module.ZepToolsService()
+    service = module.GraphQueryToolsService()
     result = service.search_graph(
         graph_id="graph-base",
         graph_ids=["graph-base", "runtime-graph-1"],
@@ -379,3 +385,73 @@ def test_search_graph_reads_artifact_backed_multigraph_without_zep_credentials(
     ]
     assert result.edges[0]["uuid"].startswith("graph-edge-")
     assert result.edges[1]["uuid"] == "rts-fixed-claim"
+
+
+def test_panorama_search_handles_edges_without_attributes_field(monkeypatch):
+    module = importlib.import_module("app.services.graph_query_tools")
+    service = module.GraphQueryToolsService.__new__(module.GraphQueryToolsService)
+
+    class _LegacyEdge:
+        fact = "Analyst says hiring is slowing."
+        is_expired = False
+        is_invalid = False
+        valid_at = None
+        invalid_at = None
+        expired_at = None
+
+    monkeypatch.setattr(
+        service,
+        "_normalize_graph_ids",
+        lambda graph_id, graph_ids: ["graph-base"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_all_nodes",
+        lambda graph_id, graph_ids=None: [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "get_all_edges",
+        lambda graph_id, include_temporal=True, graph_ids=None: [_LegacyEdge()],
+        raising=False,
+    )
+
+    result = service.panorama_search(graph_id="graph-base", query="hiring")
+
+    assert result.active_count == 1
+    assert result.historical_count == 0
+    assert result.active_facts == ["Analyst says hiring is slowing."]
+
+
+def test_get_all_edges_preserves_runtime_transition_attributes(monkeypatch):
+    module = importlib.import_module("app.services.graph_query_tools")
+    service = module.GraphQueryToolsService.__new__(module.GraphQueryToolsService)
+
+    class _FakeQueryService:
+        def get_all_edges(self, *, graph_id, graph_ids=None):
+            return [
+                {
+                    "uuid": "edge-runtime",
+                    "name": "RUNTIME_TRANSITION",
+                    "fact": "Analyst posts runtime update about hiring pressure.",
+                    "source_node_uuid": "actor-1",
+                    "target_node_uuid": "topic-1",
+                    "attributes": {"history_kind": "runtime_transition"},
+                    "created_at": "2026-03-31T09:10:01Z",
+                    "valid_at": "2026-03-31T09:10:00Z",
+                }
+            ]
+
+    service.query_service = _FakeQueryService()
+    monkeypatch.setattr(
+        service,
+        "_normalize_graph_ids",
+        lambda graph_id, graph_ids: ["graph-base"],
+        raising=False,
+    )
+
+    edges = service.get_all_edges("graph-base", graph_ids=["graph-base"])
+
+    assert edges[0].attributes == {"history_kind": "runtime_transition"}

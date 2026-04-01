@@ -50,3 +50,15 @@ def test_graph_backend_settings_report_missing_neo4j_secret(monkeypatch):
     settings = settings_module.GraphBackendSettings.from_env()
 
     assert settings.validate() == ["NEO4J_PASSWORD is not configured"]
+
+
+def test_config_validate_no_longer_requires_zep_api_key(monkeypatch):
+    for module_name in ("app.config", "app.services.graph_backend.settings"):
+        sys.modules.pop(module_name, None)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+
+    config_module = importlib.import_module("app.config")
+
+    assert config_module.Config.validate() == []

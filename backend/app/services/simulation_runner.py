@@ -1523,9 +1523,11 @@ class SimulationRunner:
                                     # If both platforms ran, both must complete.
                                     all_completed = cls._check_all_platforms_completed(state)
                                     if all_completed:
-                                        state.runner_status = RunnerStatus.COMPLETED
-                                        state.completed_at = datetime.now().isoformat()
-                                        logger.info(f"All enabled platform simulations completed: {state.simulation_id}")
+                                        logger.info(
+                                            "All enabled platform simulations reached simulation_end; "
+                                            "awaiting monitor finalization: %s",
+                                            state.simulation_id,
+                                        )
                                 
                                 elif event_type == "round_start":
                                     round_num = action_data.get("round", 0)

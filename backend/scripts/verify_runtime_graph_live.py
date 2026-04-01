@@ -18,36 +18,17 @@ for path in (BACKEND_ROOT, REPO_ROOT):
 
 
 from app.config import project_root_env  # noqa: E402
-from app.services.graph_backend import (  # noqa: E402
-    GraphBackendSettings,
-    build_graph_backend_service,
+from app.services.graph_backend import GraphBackendSettings  # noqa: E402
+from app.services.graph_backend.live_probe import (  # noqa: E402
+    apply_managed_local_graph_defaults,
+    run_live_graphiti_probe,
 )
-from app.services.graph_backend.neo4j_factory import probe_neo4j_endpoint  # noqa: E402
-from app.services.runtime_graph_updater import RuntimeGraphActivity  # noqa: E402
 
 
 def main() -> int:
+    managed_local_defaults = apply_managed_local_graph_defaults()
     settings = GraphBackendSettings.from_env()
-    backend = build_graph_backend_service(settings)
-    descriptor = backend.create_runtime_graph(
-        simulation_id="live-probe",
-        ensemble_id="0000",
-        run_id="0000",
-        project_id="live-probe",
-        project_name="Live Probe",
-    )
-    sample_event = RuntimeGraphActivity(
-        base_graph_id="mirofish-base-live-probe",
-        runtime_graph_id=descriptor.namespace_id,
-        run_key="live-probe::0000::0000",
-        platform="twitter",
-        agent_id=1,
-        agent_name="Live Probe",
-        action_type="CREATE_POST",
-        action_args={"content": "Runtime live probe", "topic": "Live Probe"},
-        round_num=1,
-        timestamp="2026-03-31T12:00:00",
-    ).to_event_payload()
+    live_probe = run_live_graphiti_probe(settings)
 
     env_path = Path(project_root_env).resolve()
     env_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
@@ -63,8 +44,7 @@ def main() -> int:
         )
         if f"{key}=" in env_text
     ]
-    neo4j_probe = probe_neo4j_endpoint(settings, timeout_seconds=1.0)
-    passed = bool(env_path.exists() and neo4j_probe.get("reachable"))
+    passed = live_probe.get("status") == "passed"
 
     payload = {
         "status": "passed" if passed else "failed",
@@ -72,18 +52,12 @@ def main() -> int:
         "graph_backend_keys_present": graph_backend_keys_present,
         "resolved_backend": settings.backend,
         "resolved_runtime_batch_size": settings.runtime_batch_size,
-        "resolved_runtime_namespace": descriptor.to_dict(),
-        "sample_runtime_event": {
-            "artifact_type": sample_event["artifact_type"],
-            "runtime_graph_id": sample_event["runtime_graph_id"],
-            "transition_type": sample_event["transition_type"],
-            "source_artifact": sample_event["source_artifact"],
-        },
+        "managed_local_defaults": managed_local_defaults,
+        "live_probe": live_probe,
         "configuration_gaps": settings.validate(),
-        "neo4j_probe": neo4j_probe,
         "notes": [
-            "This live probe validates real .env/default resolution, runtime namespace construction, runtime event serialization, and local Neo4j reachability.",
-            "It does not claim live Graphiti ingestion succeeded when graphiti-core or Neo4j auth is not available in the local environment.",
+            "This live probe validates repo .env plus managed-local defaults, local Neo4j startup, graph export, merged search, and runtime-history reads.",
+            "The verification wrapper is green only when the graph-native probe passes end to end.",
         ],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))

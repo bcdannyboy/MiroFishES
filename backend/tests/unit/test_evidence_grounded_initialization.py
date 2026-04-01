@@ -369,7 +369,7 @@ def _write_grounding_artifacts(monkeypatch, tmp_path: Path, *, project_id: str) 
 
 
 def _build_entity():
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     return reader_module.EntityNode(
         uuid="actor-1",
         name="Central Bank",

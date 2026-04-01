@@ -90,6 +90,37 @@ def describe_graph_backend_readiness(
     return readiness.to_dict()
 
 
+def describe_graph_backend_capabilities(
+    settings: GraphBackendSettings | None = None,
+) -> dict[str, object]:
+    """Describe the stable operator-facing Graphiti + Neo4j contract."""
+    runtime = build_graph_backend_runtime(settings)
+    return {
+        "backend": runtime.backend,
+        "namespace_policy": {
+            "base_graph_id": "application-managed namespace id",
+            "runtime_graph_id": "application-managed namespace id",
+            "merged_reads": True,
+            "artifact_first_reads": True,
+            "runtime_event_ingestion": True,
+        },
+        "build_path": {
+            "base_graph_build": True,
+            "runtime_namespace_provisioning": True,
+            "runtime_event_updates": True,
+        },
+        "verification_commands": {
+            "unit": "npm run verify:graphiti:unit",
+            "integration": "npm run verify:graphiti:integration",
+            "smoke": "npm run verify:graphiti:smoke",
+            "live": "npm run verify:graphiti:live",
+            "all": "npm run verify:graphiti:all",
+        },
+        "readiness_endpoint": "/api/graph/backend/readiness",
+        "live_probe_command": "npm run verify:graphiti:live",
+    }
+
+
 __all__ = [
     "GraphNamespaceManager",
     "GraphOntologyCompiler",
@@ -101,5 +132,6 @@ __all__ = [
     "GraphBackendSettings",
     "build_graph_backend_service",
     "build_graph_backend_runtime",
+    "describe_graph_backend_capabilities",
     "describe_graph_backend_readiness",
 ]

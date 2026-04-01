@@ -34,7 +34,7 @@ class UploadedLocalArtifactEvidenceProvider:
         simulation_data_dir: Optional[str] = None,
         hybrid_retriever: Optional[HybridEvidenceRetriever] = None,
     ) -> None:
-        self.simulation_data_dir = simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+        self.simulation_data_dir = simulation_data_dir or Config.get_simulation_data_dir()
         self.grounding_builder = GroundingBundleBuilder(
             simulation_data_dir=self.simulation_data_dir
         )
