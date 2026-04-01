@@ -1,29 +1,15 @@
-"""
-Zep retrieval tool service.
+"""Graph-native query tools built on the cutover query services."""
 
-Wraps graph search, node reads, and edge queries for the Report Agent.
-
-Core retrieval tools:
-1. InsightForge (deep insight retrieval) - the strongest hybrid retrieval flow,
-   automatically generating subquestions and searching across multiple dimensions
-2. PanoramaSearch (breadth search) - captures the full picture, including expired content
-3. QuickSearch (simple search) - lightweight fast retrieval
-"""
-
-import time
 import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
-from zep_cloud.client import Zep
-
-from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
-from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from .graph_backend.query_service import GraphQueryService
 from .hybrid_evidence_retriever import HybridEvidenceRetriever
 
-logger = get_logger('mirofish.zep_tools')
+logger = get_logger('mirofish.graph_query_tools')
 
 
 @dataclass
@@ -95,6 +81,7 @@ class EdgeInfo:
     valid_at: Optional[str] = None
     invalid_at: Optional[str] = None
     expired_at: Optional[str] = None
+    attributes: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -108,7 +95,8 @@ class EdgeInfo:
             "created_at": self.created_at,
             "valid_at": self.valid_at,
             "invalid_at": self.invalid_at,
-            "expired_at": self.expired_at
+            "expired_at": self.expired_at,
+            "attributes": self.attributes,
         }
     
     def to_text(self, include_temporal: bool = False) -> str:
@@ -451,9 +439,9 @@ class HybridEvidenceSearchResult:
         return "\n".join(text_parts)
 
 
-class ZepToolsService:
+class GraphQueryToolsService:
     """
-    Zep retrieval tool service.
+    Graph query tool service.
 
     Core retrieval tools:
     1. `insight_forge` - deep insight retrieval with automatic subquestion generation
@@ -471,25 +459,18 @@ class ZepToolsService:
     - `get_entity_summary` - fetch a relation summary for one entity
     """
     
-    # Retry configuration
-    MAX_RETRIES = 3
-    RETRY_DELAY = 2.0
-    
     def __init__(
         self,
         api_key: Optional[str] = None,
         llm_client: Optional[LLMClient] = None,
         hybrid_evidence_retriever: Optional[HybridEvidenceRetriever] = None,
+        query_service: Optional[GraphQueryService] = None,
     ):
-        self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY is not configured")
-        
-        self.client = Zep(api_key=self.api_key)
-        # The LLM client is used by InsightForge to generate subquestions.
+        _ = api_key  # Legacy constructor slot retained for compatibility only.
         self._llm_client = llm_client
         self.hybrid_evidence_retriever = hybrid_evidence_retriever
-        logger.info("ZepToolsService initialized")
+        self.query_service = query_service or GraphQueryService()
+        logger.info("Graph-backed query tools initialized")
     
     @property
     def llm(self) -> LLMClient:
@@ -586,29 +567,6 @@ class ZepToolsService:
             total_count=len(merged_facts),
         )
     
-    def _call_with_retry(self, func, operation_name: str, max_retries: int = None):
-        """Call the API with retries."""
-        max_retries = max_retries or self.MAX_RETRIES
-        last_exception = None
-        delay = self.RETRY_DELAY
-        
-        for attempt in range(max_retries):
-            try:
-                return func()
-            except Exception as e:
-                last_exception = e
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Zep {operation_name} attempt {attempt + 1} failed: {str(e)[:100]}, "
-                        f"retrying in {delay:.1f}s..."
-                    )
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    logger.error(f"Zep {operation_name} still failed after {max_retries} attempts: {str(e)}")
-        
-        raise last_exception
-    
     def search_graph(
         self, 
         graph_id: Optional[str], 
@@ -618,10 +576,7 @@ class ZepToolsService:
         graph_ids: Optional[List[str]] = None,
     ) -> SearchResult:
         """
-        Semantic graph search.
-
-        Uses hybrid search (semantic + BM25) to search for related graph content.
-        Falls back to local keyword matching if the Zep Cloud search API is unavailable.
+        Semantic graph search across one or more graph namespaces.
         
         Args:
             graph_id: Graph ID (Standalone Graph)
@@ -662,168 +617,19 @@ class ZepToolsService:
         scope: str = "edges",
     ) -> SearchResult:
         """Run graph search against one concrete graph."""
-        logger.info(f"Graph search: graph_id={graph_id}, query={query[:50]}...")
-
-        # Try the Zep Cloud Search API first.
-        try:
-            search_results = self._call_with_retry(
-                func=lambda: self.client.graph.search(
-                    graph_id=graph_id,
-                    query=query,
-                    limit=limit,
-                    scope=scope,
-                    reranker="cross_encoder"
-                ),
-                operation_name=f"graph search (graph={graph_id})"
-            )
-            
-            facts = []
-            edges = []
-            nodes = []
-            
-            # Parse edge search results.
-            if hasattr(search_results, 'edges') and search_results.edges:
-                for edge in search_results.edges:
-                    if hasattr(edge, 'fact') and edge.fact:
-                        facts.append(edge.fact)
-                    edges.append({
-                        "uuid": getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', ''),
-                        "name": getattr(edge, 'name', ''),
-                        "fact": getattr(edge, 'fact', ''),
-                        "source_node_uuid": getattr(edge, 'source_node_uuid', ''),
-                        "target_node_uuid": getattr(edge, 'target_node_uuid', ''),
-                    })
-            
-            # Parse node search results.
-            if hasattr(search_results, 'nodes') and search_results.nodes:
-                for node in search_results.nodes:
-                    nodes.append({
-                        "uuid": getattr(node, 'uuid_', None) or getattr(node, 'uuid', ''),
-                        "name": getattr(node, 'name', ''),
-                        "labels": getattr(node, 'labels', []),
-                        "summary": getattr(node, 'summary', ''),
-                    })
-                    # Node summaries also count as facts.
-                    if hasattr(node, 'summary') and node.summary:
-                        facts.append(f"[{node.name}]: {node.summary}")
-            
-            logger.info(f"Search completed: found {len(facts)} related facts")
-            
-            return SearchResult(
-                facts=facts,
-                edges=edges,
-                nodes=nodes,
-                query=query,
-                total_count=len(facts)
-            )
-            
-        except Exception as e:
-            logger.warning(f"Zep Search API failed, falling back to local search: {str(e)}")
-            # Fallback: use local keyword matching.
-            return self._local_search(graph_id, query, limit, scope)
-    
-    def _local_search(
-        self, 
-        graph_id: str, 
-        query: str, 
-        limit: int = 10,
-        scope: str = "edges"
-    ) -> SearchResult:
-        """
-        Local keyword-matching search.
-
-        Used as a fallback when the Zep Search API is unavailable.
-        
-        Args:
-            graph_id: Graph ID
-            query: Search query
-            limit: Number of results to return
-            scope: Search scope
-            
-        Returns:
-            SearchResult: Search results
-        """
-        logger.info(f"Using local search: query={query[:30]}...")
-        
-        facts = []
-        edges_result = []
-        nodes_result = []
-        
-        # Extract query keywords with simple tokenization.
-        query_lower = query.lower()
-        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('\uFF0C', ' ').split() if len(w.strip()) > 1]
-        
-        def match_score(text: str) -> int:
-            """Compute a relevance score between text and the query."""
-            if not text:
-                return 0
-            text_lower = text.lower()
-            # Exact full-query match.
-            if query_lower in text_lower:
-                return 100
-            # Keyword-level matches.
-            score = 0
-            for keyword in keywords:
-                if keyword in text_lower:
-                    score += 10
-            return score
-        
-        try:
-            if scope in ["edges", "both"]:
-                # Fetch all edges and score them.
-                all_edges = self.get_all_edges(graph_id)
-                scored_edges = []
-                for edge in all_edges:
-                    score = match_score(edge.fact) + match_score(edge.name)
-                    if score > 0:
-                        scored_edges.append((score, edge))
-                
-                # Sort by score.
-                scored_edges.sort(key=lambda x: x[0], reverse=True)
-                
-                for score, edge in scored_edges[:limit]:
-                    if edge.fact:
-                        facts.append(edge.fact)
-                    edges_result.append({
-                        "uuid": edge.uuid,
-                        "name": edge.name,
-                        "fact": edge.fact,
-                        "source_node_uuid": edge.source_node_uuid,
-                        "target_node_uuid": edge.target_node_uuid,
-                    })
-            
-            if scope in ["nodes", "both"]:
-                # Fetch all nodes and score them.
-                all_nodes = self.get_all_nodes(graph_id)
-                scored_nodes = []
-                for node in all_nodes:
-                    score = match_score(node.name) + match_score(node.summary)
-                    if score > 0:
-                        scored_nodes.append((score, node))
-                
-                scored_nodes.sort(key=lambda x: x[0], reverse=True)
-                
-                for score, node in scored_nodes[:limit]:
-                    nodes_result.append({
-                        "uuid": node.uuid,
-                        "name": node.name,
-                        "labels": node.labels,
-                        "summary": node.summary,
-                    })
-                    if node.summary:
-                        facts.append(f"[{node.name}]: {node.summary}")
-            
-            logger.info(f"Local search completed: found {len(facts)} related facts")
-            
-        except Exception as e:
-            logger.error(f"Local search failed: {str(e)}")
-        
-        return SearchResult(
-            facts=facts,
-            edges=edges_result,
-            nodes=nodes_result,
+        logger.info("Artifact-backed graph search: graph_id=%s query=%s", graph_id, query[:50])
+        search_result = self.query_service.search_graph(
+            graph_id=graph_id,
             query=query,
-            total_count=len(facts)
+            limit=limit,
+            scope=scope,
+        )
+        return SearchResult(
+            facts=list(search_result["facts"]),
+            edges=list(search_result["edges"]),
+            nodes=list(search_result["nodes"]),
+            query=query,
+            total_count=int(search_result["total_count"]),
         )
     
     def get_all_nodes(
@@ -841,28 +647,20 @@ class ZepToolsService:
             Node list
         """
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
-        result: List[NodeInfo] = []
-        seen = set()
-        for current_graph_id in normalized_graph_ids:
-            logger.info(f"Fetching all nodes for graph {current_graph_id}...")
-            nodes = fetch_all_nodes(self.client, current_graph_id)
-            for node in nodes:
-                node_uuid = getattr(node, 'uuid_', None) or getattr(node, 'uuid', None) or ""
-                serialized_uuid = str(node_uuid) if node_uuid else ""
-                dedupe_key = serialized_uuid or (node.name or "", tuple(node.labels or []))
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                result.append(NodeInfo(
-                    uuid=serialized_uuid,
-                    name=node.name or "",
-                    labels=node.labels or [],
-                    summary=node.summary or "",
-                    attributes=node.attributes or {}
-                ))
-
-        logger.info("Fetched %s merged nodes across %s graphs", len(result), len(normalized_graph_ids))
-        return result
+        nodes = self.query_service.get_all_nodes(
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
+        return [
+            NodeInfo(
+                uuid=node.get("uuid", ""),
+                name=node.get("name", ""),
+                labels=list(node.get("labels", [])),
+                summary=node.get("summary", ""),
+                attributes=dict(node.get("attributes", {})),
+            )
+            for node in nodes
+        ]
 
     def get_all_edges(
         self,
@@ -881,44 +679,36 @@ class ZepToolsService:
             Edge list including `created_at`, `valid_at`, `invalid_at`, and `expired_at`
         """
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        edges = self.query_service.get_all_edges(
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+        )
         result: List[EdgeInfo] = []
-        seen = set()
-        for current_graph_id in normalized_graph_ids:
-            logger.info(f"Fetching all edges for graph {current_graph_id}...")
-            edges = fetch_all_edges(self.client, current_graph_id)
-            for edge in edges:
-                edge_uuid = getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', None) or ""
-                serialized_uuid = str(edge_uuid) if edge_uuid else ""
-                dedupe_key = serialized_uuid or (
-                    edge.name or "",
-                    edge.fact or "",
-                    edge.source_node_uuid or "",
-                    edge.target_node_uuid or "",
-                )
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-
-                edge_info = EdgeInfo(
-                    uuid=serialized_uuid,
-                    name=edge.name or "",
-                    fact=edge.fact or "",
-                    source_node_uuid=edge.source_node_uuid or "",
-                    target_node_uuid=edge.target_node_uuid or ""
-                )
-
-                if include_temporal:
-                    edge_info.created_at = getattr(edge, 'created_at', None)
-                    edge_info.valid_at = getattr(edge, 'valid_at', None)
-                    edge_info.invalid_at = getattr(edge, 'invalid_at', None)
-                    edge_info.expired_at = getattr(edge, 'expired_at', None)
-
-                result.append(edge_info)
-
-        logger.info("Fetched %s merged edges across %s graphs", len(result), len(normalized_graph_ids))
+        for edge in edges:
+            edge_info = EdgeInfo(
+                uuid=edge.get("uuid", ""),
+                name=edge.get("name", ""),
+                fact=edge.get("fact", ""),
+                source_node_uuid=edge.get("source_node_uuid", ""),
+                target_node_uuid=edge.get("target_node_uuid", ""),
+                source_node_name=edge.get("source_node_name") or None,
+                target_node_name=edge.get("target_node_name") or None,
+                attributes=dict(edge.get("attributes", {})),
+            )
+            if include_temporal:
+                edge_info.created_at = edge.get("created_at")
+                edge_info.valid_at = edge.get("valid_at")
+                edge_info.invalid_at = edge.get("invalid_at")
+                edge_info.expired_at = edge.get("expired_at")
+            result.append(edge_info)
         return result
     
-    def get_node_detail(self, node_uuid: str) -> Optional[NodeInfo]:
+    def get_node_detail(
+        self,
+        node_uuid: str,
+        graph_id: Optional[str] = None,
+        graph_ids: Optional[List[str]] = None,
+    ) -> Optional[NodeInfo]:
         """
         Fetch detailed information for a single node.
         
@@ -928,27 +718,26 @@ class ZepToolsService:
         Returns:
             Node information or `None`
         """
-        logger.info(f"Fetching node details: {node_uuid[:8]}...")
-        
-        try:
-            node = self._call_with_retry(
-                func=lambda: self.client.graph.node.get(uuid_=node_uuid),
-                operation_name=f"fetch node detail (uuid={node_uuid[:8]}...)"
-            )
-            
-            if not node:
-                return None
-            
-            return NodeInfo(
-                uuid=getattr(node, 'uuid_', None) or getattr(node, 'uuid', ''),
-                name=node.name or "",
-                labels=node.labels or [],
-                summary=node.summary or "",
-                attributes=node.attributes or {}
-            )
-        except Exception as e:
-            logger.error(f"Failed to fetch node detail: {str(e)}")
+        if graph_id is None and not graph_ids:
             return None
+        normalized_graph_ids = self._normalize_graph_ids(
+            graph_id,
+            graph_ids,
+        )
+        node = self.query_service.get_node_detail(
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+            node_uuid=node_uuid,
+        )
+        if not node:
+            return None
+        return NodeInfo(
+            uuid=node.get("uuid", ""),
+            name=node.get("name", ""),
+            labels=list(node.get("labels", [])),
+            summary=node.get("summary", ""),
+            attributes=dict(node.get("attributes", {})),
+        )
     
     def get_node_edges(
         self,
@@ -968,24 +757,29 @@ class ZepToolsService:
         Returns:
             Edge list
         """
-        logger.info(f"Fetching edges related to node {node_uuid[:8]}...")
-        
-        try:
-            # Fetch all graph edges, then filter them.
-            all_edges = self.get_all_edges(graph_id, graph_ids=graph_ids)
-            
-            result = []
-            for edge in all_edges:
-                # Keep edges where the node is either the source or the target.
-                if edge.source_node_uuid == node_uuid or edge.target_node_uuid == node_uuid:
-                    result.append(edge)
-            
-            logger.info(f"Found {len(result)} edges related to the node")
-            return result
-            
-        except Exception as e:
-            logger.warning(f"Failed to fetch node edges: {str(e)}")
-            return []
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        edges = self.query_service.get_node_edges(
+            graph_id=normalized_graph_ids[0],
+            graph_ids=normalized_graph_ids,
+            node_uuid=node_uuid,
+        )
+        return [
+            EdgeInfo(
+                uuid=edge.get("uuid", ""),
+                name=edge.get("name", ""),
+                fact=edge.get("fact", ""),
+                source_node_uuid=edge.get("source_node_uuid", ""),
+                target_node_uuid=edge.get("target_node_uuid", ""),
+                source_node_name=edge.get("source_node_name") or None,
+                target_node_name=edge.get("target_node_name") or None,
+                created_at=edge.get("created_at"),
+                valid_at=edge.get("valid_at"),
+                invalid_at=edge.get("invalid_at"),
+                expired_at=edge.get("expired_at"),
+                attributes=dict(edge.get("attributes", {})),
+            )
+            for edge in edges
+        ]
     
     def get_entities_by_type(
         self, 
@@ -1003,18 +797,21 @@ class ZepToolsService:
         Returns:
             Matching entities
         """
-        logger.info(f"Fetching entities of type {entity_type}...")
-        
-        all_nodes = self.get_all_nodes(graph_id, graph_ids=graph_ids)
-        
-        filtered = []
-        for node in all_nodes:
-            # Check whether the labels include the requested type.
-            if entity_type in node.labels:
-                filtered.append(node)
-        
-        logger.info(f"Found {len(filtered)} entities of type {entity_type}")
-        return filtered
+        normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
+        return [
+            NodeInfo(
+                uuid=node.get("uuid", ""),
+                name=node.get("name", ""),
+                labels=list(node.get("labels", [])),
+                summary=node.get("summary", ""),
+                attributes=dict(node.get("attributes", {})),
+            )
+            for node in self.query_service.get_entities_by_type(
+                graph_id=normalized_graph_ids[0],
+                graph_ids=normalized_graph_ids,
+                entity_type=entity_type,
+            )
+        ]
     
     def get_entity_summary(
         self, 
@@ -1037,41 +834,11 @@ class ZepToolsService:
         logger.info(f"Fetching relationship summary for entity {entity_name}...")
         
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
-        # Search for information related to the entity first.
-        search_result = self.search_graph(
+        return self.query_service.get_entity_summary(
             graph_id=normalized_graph_ids[0],
             graph_ids=normalized_graph_ids,
-            query=entity_name,
-            limit=20
+            entity_name=entity_name,
         )
-        
-        # Try to find the entity among all nodes.
-        all_nodes = self.get_all_nodes(
-            normalized_graph_ids[0],
-            graph_ids=normalized_graph_ids,
-        )
-        entity_node = None
-        for node in all_nodes:
-            if node.name.lower() == entity_name.lower():
-                entity_node = node
-                break
-        
-        related_edges = []
-        if entity_node:
-            # Pass through graph_id explicitly.
-            related_edges = self.get_node_edges(
-                normalized_graph_ids[0],
-                entity_node.uuid,
-                graph_ids=normalized_graph_ids,
-            )
-        
-        return {
-            "entity_name": entity_name,
-            "entity_info": entity_node.to_dict() if entity_node else None,
-            "related_facts": search_result.facts,
-            "related_edges": [e.to_dict() for e in related_edges],
-            "total_relations": len(related_edges)
-        }
     
     def get_graph_statistics(
         self,
@@ -1088,34 +855,10 @@ class ZepToolsService:
             Statistics
         """
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
-        logger.info(f"Fetching statistics for graph_ids {normalized_graph_ids}...")
-        
-        nodes = self.get_all_nodes(normalized_graph_ids[0], graph_ids=normalized_graph_ids)
-        edges = self.get_all_edges(
-            normalized_graph_ids[0],
+        return self.query_service.get_graph_statistics(
+            graph_id=normalized_graph_ids[0],
             graph_ids=normalized_graph_ids,
         )
-        
-        # Count entity type distribution.
-        entity_types = {}
-        for node in nodes:
-            for label in node.labels:
-                if label not in ["Entity", "Node"]:
-                    entity_types[label] = entity_types.get(label, 0) + 1
-        
-        # Count relation type distribution.
-        relation_types = {}
-        for edge in edges:
-            relation_types[edge.name] = relation_types.get(edge.name, 0) + 1
-        
-        return {
-            "graph_id": normalized_graph_ids[0],
-            "graph_ids": normalized_graph_ids,
-            "total_nodes": len(nodes),
-            "total_edges": len(edges),
-            "entity_types": entity_types,
-            "relation_types": relation_types
-        }
     
     def get_simulation_context(
         self, 
@@ -1140,44 +883,12 @@ class ZepToolsService:
         logger.info(f"Fetching simulation context: {simulation_requirement[:50]}...")
         
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
-        # Search for information related to the simulation requirement.
-        search_result = self.search_graph(
+        return self.query_service.get_simulation_context(
             graph_id=normalized_graph_ids[0],
             graph_ids=normalized_graph_ids,
-            query=simulation_requirement,
-            limit=limit
+            simulation_requirement=simulation_requirement,
+            limit=limit,
         )
-        
-        # Fetch graph statistics.
-        stats = self.get_graph_statistics(
-            normalized_graph_ids[0],
-            graph_ids=normalized_graph_ids,
-        )
-        
-        # Fetch all entity nodes.
-        all_nodes = self.get_all_nodes(
-            normalized_graph_ids[0],
-            graph_ids=normalized_graph_ids,
-        )
-        
-        # Keep only entities with meaningful custom labels.
-        entities = []
-        for node in all_nodes:
-            custom_labels = [l for l in node.labels if l not in ["Entity", "Node"]]
-            if custom_labels:
-                entities.append({
-                    "name": node.name,
-                    "type": custom_labels[0],
-                    "summary": node.summary
-                })
-        
-        return {
-            "simulation_requirement": simulation_requirement,
-            "related_facts": search_result.facts,
-            "graph_statistics": stats,
-            "entities": entities[:limit],  # Limit the number returned.
-            "total_entities": len(entities)
-        }
     
     # ========== Core retrieval tools ==========
     
@@ -1287,7 +998,11 @@ class ZepToolsService:
                 continue
             try:
                 # Fetch each related node individually.
-                node = self.get_node_detail(uuid)
+                node = self.get_node_detail(
+                    uuid,
+                    graph_id=normalized_graph_ids[0],
+                    graph_ids=normalized_graph_ids,
+                )
                 if node:
                     node_map[uuid] = node
                     entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "Entity")
@@ -1422,7 +1137,6 @@ Return the subquestion list as JSON."""
         result = PanoramaResult(query=query)
         normalized_graph_ids = self._normalize_graph_ids(graph_id, graph_ids)
         
-        # Fetch all nodes.
         all_nodes = self.get_all_nodes(
             normalized_graph_ids[0],
             graph_ids=normalized_graph_ids,
@@ -1431,7 +1145,6 @@ Return the subquestion list as JSON."""
         result.all_nodes = all_nodes
         result.total_nodes = len(all_nodes)
         
-        # Fetch all edges with temporal information.
         all_edges = self.get_all_edges(
             normalized_graph_ids[0],
             include_temporal=True,
@@ -1447,41 +1160,22 @@ Return the subquestion list as JSON."""
         for edge in all_edges:
             if not edge.fact:
                 continue
+
+            edge_attributes = getattr(edge, "attributes", {}) or {}
             
-            # Attach entity names to the fact context.
-            source_name = node_map.get(edge.source_node_uuid, NodeInfo('', '', [], '', {})).name or edge.source_node_uuid[:8]
-            target_name = node_map.get(edge.target_node_uuid, NodeInfo('', '', [], '', {})).name or edge.target_node_uuid[:8]
-            
-            # Decide whether the edge belongs to history.
-            is_historical = edge.is_expired or edge.is_invalid
+            is_historical = (
+                edge.is_expired
+                or edge.is_invalid
+                or bool(edge_attributes.get("history_kind") == "runtime_transition")
+            )
             
             if is_historical:
-                # Historical or expired facts include a time marker.
                 valid_at = edge.valid_at or "Unknown"
                 invalid_at = edge.invalid_at or edge.expired_at or "Unknown"
                 fact_with_time = f"[{valid_at} - {invalid_at}] {edge.fact}"
                 historical_facts.append(fact_with_time)
             else:
-                # Current valid fact.
                 active_facts.append(edge.fact)
-        
-        # Sort by relevance to the query.
-        query_lower = query.lower()
-        keywords = [w.strip() for w in query_lower.replace(',', ' ').replace('\uFF0C', ' ').split() if len(w.strip()) > 1]
-        
-        def relevance_score(fact: str) -> int:
-            fact_lower = fact.lower()
-            score = 0
-            if query_lower in fact_lower:
-                score += 100
-            for kw in keywords:
-                if kw in fact_lower:
-                    score += 10
-            return score
-        
-        # Sort and limit result size.
-        active_facts.sort(key=relevance_score, reverse=True)
-        historical_facts.sort(key=relevance_score, reverse=True)
         
         result.active_facts = active_facts[:limit]
         result.historical_facts = historical_facts[:limit] if include_expired else []
@@ -1505,7 +1199,7 @@ Return the subquestion list as JSON."""
         QuickSearch - simple search.
 
         A fast lightweight retrieval tool:
-        1. Calls Zep semantic search directly
+        1. Calls the graph-backed search path directly
         2. Returns the most relevant results
         3. Best for simple and direct retrieval needs
         

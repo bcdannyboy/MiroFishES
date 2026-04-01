@@ -11,7 +11,10 @@ const backendEnv = {
   FLASK_PORT: backendPort,
   FLASK_DEBUG: 'false',
   LLM_API_KEY: process.env.LLM_API_KEY || 'smoke-local-key',
-  ZEP_API_KEY: process.env.ZEP_API_KEY || 'smoke-local-key',
+  GRAPH_BACKEND: process.env.GRAPH_BACKEND || 'graphiti_neo4j',
+  NEO4J_URI: process.env.NEO4J_URI || 'bolt://127.0.0.1:17687',
+  NEO4J_USER: process.env.NEO4J_USER || 'neo4j',
+  NEO4J_PASSWORD: process.env.NEO4J_PASSWORD || 'mirofish-graphiti-live',
   PROBABILISTIC_PREPARE_ENABLED: 'true',
   PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED: 'true',
   PROBABILISTIC_REPORT_ENABLED: 'true',
@@ -49,7 +52,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "/bin/sh -c 'if command -v uv >/dev/null 2>&1; then cd backend && uv run python run.py; elif [ -x backend/.venv/bin/python ]; then backend/.venv/bin/python backend/run.py; else python3 backend/run.py; fi'",
+      command: "/bin/sh -c 'sh ./scripts/ensure-graphiti-live-neo4j.sh && if command -v uv >/dev/null 2>&1; then cd backend && uv run python run.py; elif [ -x backend/.venv/bin/python ]; then backend/.venv/bin/python backend/run.py; else python3 backend/run.py; fi'",
       url: `${backendBaseURL}/api/simulation/prepare/capabilities`,
       env: backendEnv,
       reuseExistingServer: false,

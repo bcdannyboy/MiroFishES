@@ -13,6 +13,10 @@ flask-cors>=6.0.0
 # OpenAI SDK (used as the standard OpenAI-compatible interface for LLM calls)
 openai>=1.0.0
 
+# ============= Graphiti + Neo4j backend core =============
+graphiti-core>=0.3.0
+neo4j>=5.23.0,<6.0.0
+
 # ============= Zep Cloud =============
 zep-cloud==3.13.0
 

@@ -10,7 +10,7 @@ from typing import Any, Optional
 from ..models.project import ProjectManager
 from ..utils.logger import get_logger
 from .ensemble_manager import EnsembleManager
-from .graph_builder import GraphBuilderService
+from .graph_backend import build_graph_backend_service
 from .runtime_graph_state_store import RuntimeGraphStateStore
 
 logger = get_logger('mirofish.runtime_graph')
@@ -22,10 +22,11 @@ class RuntimeGraphManager:
     def __init__(
         self,
         *,
-        graph_builder: Optional[GraphBuilderService] = None,
+        graph_backend: Optional[Any] = None,
+        graph_builder: Optional[Any] = None,
         ensemble_manager: Optional[EnsembleManager] = None,
     ) -> None:
-        self.graph_builder = graph_builder or GraphBuilderService()
+        self.graph_backend = graph_backend or graph_builder or build_graph_backend_service()
         self.ensemble_manager = ensemble_manager or EnsembleManager()
 
     def provision_runtime_graph(
@@ -46,16 +47,17 @@ class RuntimeGraphManager:
         if existing_runtime_graph_id:
             self._delete_graph_safe(existing_runtime_graph_id)
 
-        graph_name = self._build_runtime_graph_name(
+        runtime_namespace = self._create_runtime_namespace(
             project_name=(project.name if project else None),
             simulation_id=simulation_id,
             ensemble_id=ensemble_id,
             run_id=run_id,
+            project_id=getattr(project, "project_id", None) or getattr(state, "project_id", None),
         )
-        runtime_graph_id = self.graph_builder.create_graph(graph_name)
+        runtime_graph_id = self._extract_namespace_id(runtime_namespace)
         ontology = project.ontology if project else None
         if ontology:
-            self.graph_builder.set_ontology(runtime_graph_id, ontology)
+            self._register_ontology(runtime_graph_id, ontology)
         runtime_artifacts = self._initialize_runtime_state(
             simulation_id=simulation_id,
             ensemble_id=ensemble_id,
@@ -63,6 +65,7 @@ class RuntimeGraphManager:
             project_id=getattr(project, "project_id", None) or getattr(state, "project_id", None),
             base_graph_id=base_graph_id,
             runtime_graph_id=runtime_graph_id,
+            runtime_namespace=runtime_namespace,
         )
 
         self._persist_run_graph_ids(
@@ -71,6 +74,7 @@ class RuntimeGraphManager:
             run_id=run_id,
             base_graph_id=base_graph_id,
             runtime_graph_id=runtime_graph_id,
+            runtime_namespace=runtime_namespace,
             runtime_artifacts=runtime_artifacts,
         )
         logger.info(
@@ -165,18 +169,31 @@ class RuntimeGraphManager:
         run_id: str,
         base_graph_id: Optional[str],
         runtime_graph_id: Optional[str],
+        runtime_namespace: Optional[dict[str, Any]] = None,
         runtime_artifacts: Optional[dict[str, str]] = None,
     ) -> None:
         """Keep stored run artifacts aligned with runtime graph ownership."""
         run_dir = self.ensemble_manager._get_run_dir(simulation_id, ensemble_id, run_id)
         manifest_path = os.path.join(run_dir, EnsembleManager.RUN_MANIFEST_FILENAME)
         resolved_config_path = os.path.join(run_dir, EnsembleManager.RESOLVED_CONFIG_FILENAME)
+        base_namespace = {
+            "namespace_id": base_graph_id,
+            "group_id": base_graph_id,
+            "graph_scope": "base",
+            "display_name": base_graph_id,
+        }
 
         if os.path.exists(manifest_path):
             manifest = self._read_json(manifest_path)
             manifest["base_graph_id"] = base_graph_id
             manifest["runtime_graph_id"] = runtime_graph_id
             manifest["graph_id"] = base_graph_id
+            manifest["graph_namespace_model"] = "application-managed"
+            manifest["base_graph_namespace"] = base_namespace
+            if runtime_namespace:
+                manifest["runtime_graph_namespace"] = dict(runtime_namespace)
+            else:
+                manifest.pop("runtime_graph_namespace", None)
             artifact_paths = manifest.setdefault("artifact_paths", {})
             for key in (
                 "runtime_graph_base_snapshot",
@@ -194,6 +211,12 @@ class RuntimeGraphManager:
             resolved_config["base_graph_id"] = base_graph_id
             resolved_config["runtime_graph_id"] = runtime_graph_id
             resolved_config["graph_id"] = base_graph_id
+            resolved_config["graph_namespace_model"] = "application-managed"
+            resolved_config["base_graph_namespace"] = base_namespace
+            if runtime_namespace:
+                resolved_config["runtime_graph_namespace"] = dict(runtime_namespace)
+            else:
+                resolved_config.pop("runtime_graph_namespace", None)
             for field in (
                 "runtime_graph_base_snapshot_artifact",
                 "runtime_graph_state_artifact",
@@ -222,6 +245,7 @@ class RuntimeGraphManager:
         project_id: Optional[str],
         base_graph_id: str,
         runtime_graph_id: str,
+        runtime_namespace: Optional[dict[str, Any]] = None,
     ) -> dict[str, str]:
         sim_dir = self.ensemble_manager._get_simulation_dir(simulation_id)
         run_dir = self.ensemble_manager._get_run_dir(simulation_id, ensemble_id, run_id)
@@ -233,6 +257,8 @@ class RuntimeGraphManager:
             project_id=project_id,
             base_graph_id=base_graph_id,
             runtime_graph_id=runtime_graph_id,
+            graph_backend="graphiti_neo4j",
+            runtime_namespace_descriptor=runtime_namespace,
             prepared_world_state=self._read_json_if_exists(
                 os.path.join(sim_dir, "prepared_world_state.json")
             ),
@@ -263,9 +289,48 @@ class RuntimeGraphManager:
     def _delete_graph_safe(self, graph_id: str) -> None:
         """Delete a graph best-effort so cleanup does not wedge on stale IDs."""
         try:
-            self.graph_builder.delete_graph(graph_id)
+            self.graph_backend.delete_graph(graph_id)
         except Exception as exc:
             logger.warning("Failed to delete runtime graph %s: %s", graph_id, exc)
+
+    def _create_runtime_namespace(
+        self,
+        *,
+        project_name: Optional[str],
+        simulation_id: str,
+        ensemble_id: str,
+        run_id: str,
+        project_id: Optional[str],
+    ) -> dict[str, Any]:
+        if hasattr(self.graph_backend, "create_runtime_graph"):
+            descriptor = self.graph_backend.create_runtime_graph(
+                simulation_id=simulation_id,
+                ensemble_id=ensemble_id,
+                run_id=run_id,
+                project_id=project_id,
+                project_name=project_name,
+            )
+            return self._normalize_namespace_descriptor(descriptor)
+
+        graph_name = self._build_runtime_graph_name(
+            project_name=project_name,
+            simulation_id=simulation_id,
+            ensemble_id=ensemble_id,
+            run_id=run_id,
+        )
+        runtime_graph_id = self.graph_backend.create_graph(graph_name)
+        return {
+            "namespace_id": runtime_graph_id,
+            "group_id": runtime_graph_id,
+            "graph_scope": "runtime",
+            "display_name": graph_name,
+        }
+
+    def _register_ontology(self, runtime_graph_id: str, ontology: dict[str, Any]) -> None:
+        if hasattr(self.graph_backend, "register_ontology"):
+            self.graph_backend.register_ontology(runtime_graph_id, ontology)
+            return
+        self.graph_backend.set_ontology(runtime_graph_id, ontology)
 
     def _build_runtime_graph_name(
         self,
@@ -289,3 +354,29 @@ class RuntimeGraphManager:
     def _write_json(self, file_path: str, payload: dict[str, Any]) -> None:
         with open(file_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    def _extract_namespace_id(self, payload: Any) -> str:
+        if isinstance(payload, dict):
+            return str(payload.get("namespace_id") or payload.get("graph_id") or payload.get("group_id") or "")
+        for attr_name in ("namespace_id", "graph_id", "group_id"):
+            value = getattr(payload, attr_name, None)
+            if value:
+                return str(value)
+        return str(payload or "")
+
+    def _normalize_namespace_descriptor(self, payload: Any) -> dict[str, Any]:
+        namespace_id = self._extract_namespace_id(payload)
+        if isinstance(payload, dict):
+            descriptor = dict(payload)
+        else:
+            descriptor = {
+                "namespace_id": namespace_id,
+                "group_id": namespace_id,
+                "graph_scope": getattr(payload, "graph_scope", "runtime"),
+                "display_name": getattr(payload, "display_name", namespace_id),
+            }
+        descriptor.setdefault("namespace_id", namespace_id)
+        descriptor.setdefault("group_id", namespace_id)
+        descriptor.setdefault("graph_scope", "runtime")
+        descriptor.setdefault("display_name", namespace_id)
+        return descriptor

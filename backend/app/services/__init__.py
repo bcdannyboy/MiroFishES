@@ -5,7 +5,8 @@ Business service module.
 from .ontology_generator import OntologyGenerator
 from .graph_builder import GraphBuilderService
 from .text_processor import TextProcessor
-from .zep_entity_reader import ZepEntityReader, EntityNode, FilteredEntities
+from .graph_entity_reader import GraphEntityReader, EntityNode, FilteredEntities
+from .graph_query_tools import GraphQueryToolsService
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_manager import SimulationManager, SimulationState, SimulationStatus
 from .simulation_config_generator import (
@@ -23,10 +24,10 @@ from .simulation_runner import (
     AgentAction,
     RoundSummary
 )
-from .zep_graph_memory_updater import (
-    ZepGraphMemoryUpdater,
-    ZepGraphMemoryManager,
-    AgentActivity
+from .runtime_graph_updater import (
+    RuntimeGraphUpdater,
+    RuntimeGraphUpdateManager,
+    RuntimeGraphActivity,
 )
 from .simulation_ipc import (
     SimulationIPCClient,
@@ -41,7 +42,8 @@ __all__ = [
     'OntologyGenerator', 
     'GraphBuilderService', 
     'TextProcessor',
-    'ZepEntityReader',
+    'GraphEntityReader',
+    'GraphQueryToolsService',
     'EntityNode',
     'FilteredEntities',
     'OasisProfileGenerator',
@@ -60,9 +62,9 @@ __all__ = [
     'RunnerStatus',
     'AgentAction',
     'RoundSummary',
-    'ZepGraphMemoryUpdater',
-    'ZepGraphMemoryManager',
-    'AgentActivity',
+    'RuntimeGraphUpdater',
+    'RuntimeGraphUpdateManager',
+    'RuntimeGraphActivity',
     'SimulationIPCClient',
     'SimulationIPCServer',
     'IPCCommand',

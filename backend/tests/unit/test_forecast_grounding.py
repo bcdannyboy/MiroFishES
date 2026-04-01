@@ -169,7 +169,6 @@ def test_generate_ontology_returns_413_when_upload_exceeds_limit(monkeypatch, tm
 def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
     graph_module = _load_graph_api_module()
     project_module, projects_dir = _configure_projects_dir(monkeypatch, tmp_path)
-    monkeypatch.setattr(graph_module.Config, "ZEP_API_KEY", "test-key", raising=False)
 
     project = project_module.ProjectManager.create_project(name="Graph Grounding")
     project.simulation_requirement = "Forecast whether intervention reduces slowdown risk."
@@ -333,7 +332,6 @@ def test_build_graph_persists_graph_build_summary(monkeypatch, tmp_path):
 def test_build_graph_persists_layered_graph_index_with_provenance(monkeypatch, tmp_path):
     graph_module = _load_graph_api_module()
     project_module, projects_dir = _configure_projects_dir(monkeypatch, tmp_path)
-    monkeypatch.setattr(graph_module.Config, "ZEP_API_KEY", "test-key", raising=False)
 
     project = project_module.ProjectManager.create_project(name="Layered Graph Grounding")
     project.simulation_requirement = "Forecast whether payroll weakness drives a June cut."

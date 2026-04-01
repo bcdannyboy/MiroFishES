@@ -1,0 +1,569 @@
+{
+  "chain_name": "graphiti-neo4j-overhaul-chain",
+  "source_plan": [
+    "docs/plans/2026-03-31-graphiti-neo4j-overhaul.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-cutover-prompt-chain.md"
+  ],
+  "branch": "codex/graphiti-neo4j-overhaul-chain",
+  "baseline_dirty_manifest": "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
+  "current_prompt": 8,
+  "completed_prompts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "prompt_status": "completed",
+  "chain_owned_paths": [
+    "docs/plans/2026-03-31-graphiti-neo4j-chain.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain-status.json",
+    "docs/plans/2026-03-31-graphiti-neo4j-baseline-dirty.txt",
+    ".env.example",
+    "README.md",
+    "docs/local-probabilistic-operator-runbook.md",
+    "package.json",
+    "playwright.config.mjs",
+    "scripts/ensure-graphiti-live-neo4j.sh",
+    "backend/pyproject.toml",
+    "backend/requirements.txt",
+    "backend/uv.lock",
+    "backend/app/config.py",
+    "backend/app/api/graph.py",
+    "backend/app/api/report.py",
+    "backend/app/api/simulation.py",
+    "backend/app/services/",
+    "backend/app/services/graph_builder.py",
+    "backend/app/services/runtime_graph_manager.py",
+    "backend/app/services/runtime_graph_state_store.py",
+    "backend/app/services/runtime_graph_updater.py",
+    "backend/app/services/simulation_runner.py",
+    "backend/app/services/graph_entity_reader.py",
+    "backend/app/services/graph_query_tools.py",
+    "backend/app/services/report_agent.py",
+    "backend/app/services/oasis_profile_generator.py",
+    "backend/app/services/probabilistic_smoke_fixture.py",
+    "backend/app/services/simulation_config_generator.py",
+    "backend/app/services/simulation_manager.py",
+    "backend/app/services/world_state_compiler.py",
+    "backend/app/services/graph_backend/",
+    "backend/app/services/zep_entity_reader.py",
+    "backend/app/services/zep_graph_memory_updater.py",
+    "backend/app/services/zep_tools.py",
+    "backend/app/utils/graph_scan.py",
+    "backend/app/utils/zep_paging.py",
+    "backend/scripts/",
+    "backend/tests/conftest.py",
+    "backend/tests/integration/",
+    "backend/tests/integration/test_probabilistic_operator_flow.py",
+    "backend/tests/integration/test_structural_uncertainty_handoff.py",
+    "backend/tests/unit/",
+    "backend/tests/unit/services/graph_backend/",
+    "backend/tests/unit/test_backend_test_stubs.py",
+    "backend/tests/unit/test_graph_backend_readiness_api.py",
+    "backend/tests/unit/test_graph_builder_service.py",
+    "backend/tests/unit/test_runtime_graph_state.py",
+    "backend/tests/unit/test_runtime_graph_updater.py",
+    "backend/tests/unit/test_simulation_runner_runtime_scope.py",
+    "backend/tests/unit/test_graph_entity_reader.py",
+    "backend/tests/unit/test_graph_query_tools.py",
+    "backend/tests/unit/test_report_api_graph_tools.py",
+    "backend/tests/unit/test_simulation_entity_api.py",
+    "backend/tests/unit/test_evidence_grounded_initialization.py",
+    "backend/tests/unit/test_probabilistic_prepare.py",
+    "backend/tests/unit/test_probabilistic_report_api.py",
+    "backend/tests/unit/test_probabilistic_ensemble_api.py",
+    "backend/tests/unit/test_probabilistic_report_context.py",
+    "backend/tests/unit/test_ensemble_storage.py",
+    "backend/tests/unit/test_zep_entity_reader.py",
+    "backend/tests/unit/test_zep_tools_multigraph.py",
+    "backend/tests/unit/test_report_agent_hybrid_retrieval.py"
+  ],
+  "docs_updated": [
+    ".env.example",
+    "README.md",
+    "docs/local-probabilistic-operator-runbook.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain.md",
+    "docs/plans/2026-03-31-graphiti-neo4j-chain-status.json"
+  ],
+  "verification": {
+    "initial_branch": "main",
+    "active_branch": "codex/graphiti-neo4j-overhaul-chain",
+    "git_remote": [
+      "origin https://github.com/bcdannyboy/MiroFishES (fetch)",
+      "origin https://github.com/bcdannyboy/MiroFishES (push)"
+    ],
+    "env_file_present": true,
+    "ruflo_workspace": {
+      "status": "swarm-task-only",
+      "memory_ready": false,
+      "notes": [
+        "Repo-owned Ruflo launcher is workspace-safe for swarm/task orchestration.",
+        "Memory remains blocked by the external Ruflo sql.js dependency."
+      ]
+    },
+    "ruflo_tasks": {
+      "prompt_1": {
+        "swarm_id": "swarm-1775016400679-6itc00",
+        "docs_task_id": "task-1775016400681-a68yxm",
+        "backend_task_id": "task-1775016400681-qtb8ld"
+      },
+      "prompt_2": {
+        "swarm_id": "swarm-1775017143885-pestw3",
+        "backend_core_task_id": "task-1775017143887-79ab02",
+        "graph_build_task_id": "task-1775017143888-c6070b",
+        "docs_task_id": "task-1775017143888-peuzfw"
+      },
+      "prompt_3": {
+        "swarm_id": "swarm-1775019134311-1a0jrw",
+        "query_scan_task_id": "task-1775019134313-7u6tea",
+        "entity_reader_task_id": "task-1775019134313-055lzi",
+        "report_adapter_task_id": "task-1775019134313-zwp74t"
+      },
+      "prompt_4": {
+        "swarm_id": "swarm-1775021064414-rurbbx",
+        "runtime_namespace_task_id": "task-1775021064417-94rfhq",
+        "runtime_event_task_id": "task-1775021064418-yesjo1",
+        "docs_task_id": "task-1775021064419-iznkk2"
+      },
+      "prompt_5": {
+        "swarm_id": "swarm-1775022585165-ocypj2",
+        "api_cutover_task_id": "task-1775022585166-3pljql",
+        "report_consumer_task_id": "task-1775022585167-1fzfxn",
+        "docs_task_id": "task-1775022585168-5sgwdb"
+      },
+      "prompt_7": {
+        "swarm_id": "swarm-1775026301901-ocayti",
+        "research_audit_task_id": "task-1775026320589-u6eecf",
+        "remediation_task_id": "task-1775026320592-d0eg77",
+        "docs_task_id": "task-1775026320608-fhbckc"
+      },
+      "prompt_8": {
+        "swarm_id": "swarm-1775030125528-6jqvvv",
+        "audit_task_id": "task-1775030125529-btuult",
+        "remediation_task_id": "task-1775030125529-q1yrlq",
+        "docs_task_id": "task-1775030125529-cogudi"
+      }
+    },
+    "neo4j_probe": {
+      "bolt_7687": "reachable",
+      "http_7474": "reachable",
+      "probe_mode": "non-secret localhost probe outside the sandbox when needed"
+    },
+    "prompt_1": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_backend_readiness_api.py -q",
+        "result": "4 failed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_backend_readiness_api.py -q",
+        "result": "4 passed"
+      },
+      "wrapper_sanity": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed"
+      },
+      "broader_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_model_routing.py backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_graph_builder_service.py -q",
+        "result": "13 passed"
+      }
+    },
+    "prompt_2": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_namespace_manager.py backend/tests/unit/services/graph_backend/test_ontology_compiler.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_builder_service.py -q",
+        "result": "5 failed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_namespace_manager.py backend/tests/unit/services/graph_backend/test_ontology_compiler.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_graph_builder_service.py -q",
+        "result": "11 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "14 passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed"
+      },
+      "wrapper_all": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed"
+      },
+      "broader_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_settings.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/services/graph_backend/test_namespace_manager.py backend/tests/unit/services/graph_backend/test_ontology_compiler.py backend/tests/unit/test_graph_backend_readiness_api.py backend/tests/unit/test_graph_builder_service.py backend/tests/unit/test_forecast_grounding.py backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_runtime_graph_state.py backend/tests/integration/test_runtime_graph_state_flow.py -q",
+        "result": "25 passed"
+      }
+    },
+    "prompt_3": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/services/graph_backend/test_query_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q",
+        "result": "5 failed, 6 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/services/graph_backend/test_query_service.py backend/tests/unit/test_zep_entity_reader.py backend/tests/unit/test_zep_tools_multigraph.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q",
+        "result": "11 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "14 passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed"
+      },
+      "wrapper_smoke": {
+        "command": "npm run verify:graphiti:smoke",
+        "result": "passed"
+      },
+      "broader_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_report_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q",
+        "result": "29 passed"
+      },
+      "prepare_backend_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py -q",
+        "result": "31 passed"
+      }
+    },
+    "prompt_4": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py backend/tests/unit/test_runtime_graph_updater.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+        "result": "6 failed, 8 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_graph_state.py backend/tests/unit/services/graph_backend/test_runtime_event_ingestor.py backend/tests/unit/test_runtime_graph_updater.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+        "result": "14 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "28 passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed"
+      },
+      "broader_runtime_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_runtime_action_logger.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/integration/test_runtime_graph_state_flow.py -q",
+        "result": "38 passed"
+      },
+      "live_runtime_probe": {
+        "command": "backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py",
+        "result": "passed"
+      }
+    },
+    "prompt_5": {
+      "scoped_tests_red": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_report_api_graph_tools.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/unit/test_simulation_entity_api.py backend/tests/unit/test_evidence_grounded_initialization.py -q",
+        "result": "6 failed, 6 passed"
+      },
+      "scoped_tests_green": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graph_data_api.py backend/tests/unit/test_report_api_graph_tools.py backend/tests/unit/test_report_agent_hybrid_retrieval.py backend/tests/unit/test_simulation_entity_api.py backend/tests/unit/test_evidence_grounded_initialization.py -q",
+        "result": "12 passed"
+      },
+      "broader_consumer_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_prepare.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/unit/test_probabilistic_report_context.py backend/tests/unit/test_ensemble_storage.py -q",
+        "result": "119 passed"
+      },
+      "touched_integration_regression": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/integration/test_structural_uncertainty_handoff.py backend/tests/integration/test_probabilistic_operator_flow.py -q",
+        "result": "9 passed"
+      },
+      "wrapper_unit": {
+        "command": "npm run verify:graphiti:unit",
+        "result": "passed"
+      },
+      "wrapper_integration": {
+        "command": "npm run verify:graphiti:integration",
+        "result": "passed"
+      },
+      "wrapper_smoke": {
+        "command": "npm run verify:smoke",
+        "result": "10 passed"
+      }
+    },
+    "prompt_6_repo_truth": {
+      "status": "remediated_in_prompt_7",
+      "gaps_found": [
+        "legacy runtime Zep modules still existed in the worktree",
+        "legacy Zep-only tests still existed in the worktree",
+        "the backend test harness still installed a zep_cloud stub",
+        "smoke/live/operator verification usability was not yet locally operable enough to trust without further remediation"
+      ],
+      "resolution": [
+        "deleted runtime Zep modules and legacy Zep-only tests",
+        "removed the zep_cloud stub from backend/tests/conftest.py",
+        "added backend/tests/unit/test_backend_test_stubs.py",
+        "added helper-backed managed local graph defaults through backend/app/services/graph_backend/live_probe.py and scripts/ensure-graphiti-live-neo4j.sh"
+      ],
+      "evidence": [
+        "npm run verify:graphiti:all passed after remediation",
+        "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local passed",
+        "README, runbook, and .env.example now document the no-Zep activation flow"
+      ]
+    },
+    "prompt_7": {
+      "startup_repo_truth_check": {
+        "verify_ruflo": {
+          "command": "npm run verify:ruflo",
+          "result": "passed"
+        },
+        "git_log": {
+          "command": "git log --oneline --decorate -8",
+          "result": "Prompt 1-5 commits confirmed on the active branch; Prompt 6 required repo-truth remediation in the current worktree"
+        },
+        "branch_and_status": {
+          "command": "git branch --show-current && git status --short",
+          "result": "active branch matched chain state; only baseline dirty output/playwright paths remained outside chain-owned work"
+        }
+      },
+      "targeted_red_green": {
+        "neo4j_factory": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_factory.py -q",
+          "result": "red then green",
+          "detail": "fixed GraphDatabase.driver keyword-auth usage"
+        },
+        "runtime_scope_finalization": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+          "result": "red then green",
+          "detail": "kept run completion ownership in the monitor finalization path"
+        },
+        "managed_defaults": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_live_probe.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+          "result": "14 passed"
+        },
+        "panorama_history_edges": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_live_probe.py backend/tests/unit/test_graph_query_tools.py backend/tests/unit/services/graph_backend/test_factory.py backend/tests/unit/test_simulation_runner_runtime_scope.py -q",
+          "result": "20 passed"
+        }
+      },
+      "targeted_regressions": {
+        "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_probabilistic_ensemble_api.py backend/tests/unit/test_probabilistic_report_api.py backend/tests/unit/test_report_agent_hybrid_retrieval.py -q",
+        "result": "67 passed"
+      },
+      "verify": {
+        "command": "npm run verify",
+        "result": "passed",
+        "notes": [
+          "401 passed, 1 warning"
+        ]
+      },
+      "verify_forecasting": {
+        "command": "npm run verify:forecasting",
+        "result": "passed",
+        "notes": [
+          "Rerun outside the sandbox was required for Docker helper access."
+        ]
+      },
+      "verify_smoke": {
+        "command": "npm run verify:smoke",
+        "result": "passed",
+        "notes": [
+          "10 passed"
+        ]
+      },
+      "verify_operator_local": {
+        "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+        "result": "passed",
+        "notes": [
+          "2 passed (3.1m)"
+        ]
+      },
+      "verify_graphiti_all": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed",
+        "notes": [
+          "Unit wrapper passed across both deterministic pytest invocations.",
+          "Integration wrapper stayed honest about the real repo .env missing NEO4J_PASSWORD.",
+          "Smoke and live wrappers passed with managed-local graph defaults and helper-backed Neo4j.",
+          "Live probe reported graphiti_client_built=true, neo4j_healthcheck=true, and panorama runtime-history coverage."
+        ]
+      }
+    },
+    "prompt_8": {
+      "startup_repo_truth_check": {
+        "verify_ruflo": {
+          "command": "npm run verify:ruflo",
+          "result": "passed"
+        },
+        "branch_and_status": {
+          "command": "git branch --show-current && git status --short",
+          "result": "active branch matched chain state; baseline dirty output/playwright evidence remained unstaged"
+        },
+        "runtime_zep_audit": {
+          "command": "rg -n \"import .*zep|from .*zep|zep_cloud|ZEP_API_KEY\" backend/app frontend scripts package.json README.md docs/local-probabilistic-operator-runbook.md .env.example",
+          "result": "no live runtime Zep dependency remained in the audited paths"
+        }
+      },
+      "targeted_red_green": {
+        "cutover_alias_cleanup": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/test_graphiti_cutover_audit.py -q",
+          "result": "red then green",
+          "detail": "removed the stale _search_zep_for_entity alias and residual Zep wording in the audited services"
+        },
+        "neo4j_optional_edge_fields": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_export_service.py -q",
+          "result": "red then green",
+          "detail": "rewrote the export query to read optional edge fields from properties(r)"
+        },
+        "graph_regression_after_edge_fix": {
+          "command": "backend/.venv/bin/python -m pytest backend/tests/unit/services/graph_backend/test_scan_service.py backend/tests/unit/test_graph_data_api.py -q",
+          "result": "3 passed"
+        }
+      },
+      "verify": {
+        "command": "npm run verify",
+        "result": "passed",
+        "notes": [
+          "407 passed, 1 warning"
+        ]
+      },
+      "verify_forecasting": {
+        "command": "npm run verify:forecasting",
+        "result": "passed",
+        "notes": [
+          "Rerun outside the sandbox was required for Docker helper access.",
+          "Fixture-backed smoke inside the forecasting ladder passed with 10 passed."
+        ]
+      },
+      "verify_smoke": {
+        "command": "npm run verify:smoke",
+        "result": "passed",
+        "notes": [
+          "10 passed"
+        ]
+      },
+      "verify_operator_local": {
+        "command": "PLAYWRIGHT_LIVE_ALLOW_MUTATION=true npm run verify:operator:local",
+        "result": "passed",
+        "notes": [
+          "2 passed (3.7m)",
+          "The backend log contained no UnknownPropertyKeyWarning entries after the export-query remediation."
+        ]
+      },
+      "verify_graphiti_all": {
+        "command": "npm run verify:graphiti:all",
+        "result": "passed",
+        "notes": [
+          "Initial sandbox rerun failed only on Docker socket access for the managed helper.",
+          "Escalated rerun passed end to end.",
+          "Integration remained honest about the real repo .env missing NEO4J_PASSWORD while the helper-backed smoke/live stages stayed green."
+        ]
+      },
+      "backend_probe": {
+        "documented_commands": [
+          "curl -sS http://127.0.0.1:5001/api/graph/backend/readiness | jq .",
+          "curl -sS http://127.0.0.1:5001/api/graph/backend/capabilities | jq ."
+        ],
+        "execution_mode": "equivalent live local browser probe against the same endpoints because sandboxed curl could not reach the escalated backend process namespace",
+        "readiness": {
+          "backend": "graphiti_neo4j",
+          "configured": true,
+          "ready": true,
+          "neo4j_uri": "bolt://127.0.0.1:17687"
+        },
+        "capabilities": {
+          "base_graph_build": true,
+          "runtime_namespace_provisioning": true,
+          "runtime_event_updates": true,
+          "merged_reads": true,
+          "verification_commands": {
+            "unit": "npm run verify:graphiti:unit",
+            "integration": "npm run verify:graphiti:integration",
+            "smoke": "npm run verify:graphiti:smoke",
+            "live": "npm run verify:graphiti:live",
+            "all": "npm run verify:graphiti:all"
+          }
+        }
+      }
+    }
+  },
+  "blockers": [
+    {
+      "id": "ruflo-memory-sqljs",
+      "status": "open",
+      "impact": "Ruflo memory APIs remain blocked; the chain continues in swarm-task-only mode."
+    },
+    {
+      "id": "ruflo-direct-mcp-root-state",
+      "status": "resolved",
+      "impact": "Direct MCP task calls targeted root state directories.",
+      "resolution": "Use scripts/ruflo-mcp-workspace.sh and npm run verify:ruflo."
+    },
+    {
+      "id": "neo4j-driver-version-conflict",
+      "status": "resolved",
+      "impact": "Prompt 2 dependency verification exposed a declared Neo4j range conflict.",
+      "resolution": "Aligned backend dependency declarations to neo4j>=5.23.0,<6.0.0."
+    },
+    {
+      "id": "runtime-write-path-zep-dependency",
+      "status": "resolved",
+      "impact": "Runtime writes still depended on Zep after the early cutover prompts.",
+      "resolution": "Replaced the runtime updater/manager path with graph-backed namespace and ingestion services."
+    },
+    {
+      "id": "api-consumer-zep-runtime-dependency",
+      "status": "resolved",
+      "impact": "Touched graph/report/simulation API consumers still depended on Zep-backed readers or keys.",
+      "resolution": "Cut those consumers over to graph-backed services and DTOs."
+    },
+    {
+      "id": "graphiti-unit-wrapper-shared-state",
+      "status": "resolved",
+      "impact": "The expanded graphiti unit wrapper exposed pytest shared-state failures in one process.",
+      "resolution": "Split verify:graphiti:unit into deterministic pytest invocations."
+    },
+    {
+      "id": "legacy-zep-runtime-surfaces",
+      "status": "resolved",
+      "impact": "Prompt 6 repo truth still contained runtime Zep modules, Zep-only tests, and zep_cloud test stubs.",
+      "resolution": "Deleted the legacy modules/tests and removed the zep_cloud conftest stub."
+    },
+    {
+      "id": "neo4j-driver-positional-auth",
+      "status": "resolved",
+      "impact": "Live operator coverage hit GraphDatabase.driver positional-auth failures.",
+      "resolution": "Call GraphDatabase.driver with keyword auth."
+    },
+    {
+      "id": "runtime-run-scope-readiness-race",
+      "status": "resolved",
+      "impact": "The simulation runner could mark a run complete before monitor-thread artifact finalization.",
+      "resolution": "Keep completion/finalization ownership in the monitor path."
+    },
+    {
+      "id": "graphiti-managed-default-wrapper-gap",
+      "status": "resolved",
+      "impact": "Smoke/live/operator wrappers were not locally operable without explicit graph keys in the real repo .env.",
+      "resolution": "Inject managed-local graph defaults in smoke/live/operator wrappers and probes."
+    },
+    {
+      "id": "panorama-edgeinfo-attributes",
+      "status": "resolved",
+      "impact": "Panorama/history reads dropped edge attributes and could fail on runtime-history probes.",
+      "resolution": "Preserve normalized edge attributes and use them during panorama/history-style reads."
+    },
+    {
+      "id": "graphiti-core-availability",
+      "status": "resolved",
+      "impact": "Earlier prompts could not prove live Graphiti client construction locally.",
+      "resolution": "Prompt 7 repo truth shows graphiti-core 0.11.6 available through the backend environment/lock state and the live probe now builds the client."
+    },
+    {
+      "id": "neo4j-password-missing-in-real-env",
+      "status": "open",
+      "impact": "The integration readiness surface still reports configured=false against the real repo .env until NEO4J_PASSWORD is set explicitly.",
+      "resolution": "Smoke/live/operator wrappers remain operable through managed-local defaults; integration stays honest."
+    },
+    {
+      "id": "neo4j-optional-edge-property-warnings",
+      "status": "resolved",
+      "impact": "Live operator coverage emitted Neo4j UnknownPropertyKeyWarning noise when optional edge fields were absent.",
+      "resolution": "Prompt 8 rewrote the edge export query to read optional relation fields from properties(r) instead of direct r.invalid_at / r.expired_at / r.episodes access."
+    }
+  ],
+  "next_prompt": null,
+  "merge_ready": false
+}

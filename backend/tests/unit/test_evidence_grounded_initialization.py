@@ -369,7 +369,7 @@ def _write_grounding_artifacts(monkeypatch, tmp_path: Path, *, project_id: str) 
 
 
 def _build_entity():
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
     return reader_module.EntityNode(
         uuid="actor-1",
         name="Central Bank",
@@ -572,6 +572,57 @@ def test_oasis_profile_generator_rule_based_uses_agent_state_topics_and_signals(
     assert "Labor market softening" in profile.persona
     assert "Inflation revision risk" in profile.persona
     assert profile.interested_topics[:2] == ["Payroll growth", "Labor market softening"]
+
+
+def test_oasis_profile_generator_uses_graph_query_service_for_context_enrichment():
+    module = importlib.import_module("app.services.oasis_profile_generator")
+    captures = {}
+
+    class _FakeQueryService:
+        def get_entity_summary(
+            self,
+            *,
+            graph_id,
+            entity_name,
+            graph_ids=None,
+            project_id=None,
+        ):
+            captures["query"] = {
+                "graph_id": graph_id,
+                "entity_name": entity_name,
+                "graph_ids": graph_ids,
+                "project_id": project_id,
+            }
+            return {
+                "entity_name": entity_name,
+                "entity_info": {"uuid": "actor-1"},
+                "related_facts": ["Policy signal from runtime graph."],
+                "related_edges": [],
+                "total_relations": 1,
+            }
+
+    generator = module.OasisProfileGenerator(
+        api_key="test-key",
+        base_url="http://example.test/v1",
+        model_name="test-model",
+        graph_id="graph-base",
+        graph_ids=["graph-base", "runtime-graph-1"],
+        query_service=_FakeQueryService(),
+    )
+
+    context = generator._build_entity_context(
+        _build_entity(),
+        world_state=_build_world_state(),
+        agent_state=_build_agent_state(),
+    )
+
+    assert captures["query"] == {
+        "graph_id": "graph-base",
+        "entity_name": "Central Bank",
+        "graph_ids": ["graph-base", "runtime-graph-1"],
+        "project_id": None,
+    }
+    assert "Policy signal from runtime graph." in context
 
 
 def test_simulation_config_generator_applies_world_state_defaults_after_sparse_llm_output(monkeypatch):

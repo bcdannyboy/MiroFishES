@@ -32,7 +32,7 @@ class CalibrationManager:
 
     def __init__(self, simulation_data_dir: str | None = None) -> None:
         self.simulation_data_dir = (
-            simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+            simulation_data_dir or Config.get_simulation_data_dir()
         )
 
     def get_calibration_summary(

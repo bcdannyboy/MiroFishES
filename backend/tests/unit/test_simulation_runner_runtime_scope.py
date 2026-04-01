@@ -267,6 +267,62 @@ def test_start_simulation_uses_run_local_runtime_root_for_ensemble_member(
     assert state.runtime_key in runner_module.SimulationRunner._processes
 
 
+def test_start_simulation_uses_runtime_graph_update_manager_for_live_runtime_ingestion(
+    tmp_path, monkeypatch
+):
+    simulation_data_dir = tmp_path / "simulations"
+    simulation_id = "sim-runtime-updater"
+    ensemble_id = "0001"
+    run_id = "0001"
+    _sim_dir, run_dir = _write_ensemble_run_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+    )
+    runner_module = _configure_runner(monkeypatch, simulation_data_dir)
+    captures = _patch_runner_launch(monkeypatch, runner_module)
+
+    update_manager_calls = {}
+
+    class _FakeRuntimeGraphUpdateManager:
+        @classmethod
+        def create_updater(cls, run_key, base_graph_id, runtime_graph_id, run_dir):
+            update_manager_calls["args"] = (
+                run_key,
+                base_graph_id,
+                runtime_graph_id,
+                run_dir,
+            )
+            return object()
+
+    monkeypatch.setattr(
+        runner_module,
+        "RuntimeGraphUpdateManager",
+        _FakeRuntimeGraphUpdateManager,
+    )
+
+    state = runner_module.SimulationRunner.start_simulation(
+        simulation_id=simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+        platform="parallel",
+        close_environment_on_complete=True,
+        enable_graph_memory_update=True,
+        base_graph_id="mirofish-base-proj-runtime",
+        runtime_graph_id="mirofish-runtime-sim-runtime-updater-0001-0001",
+    )
+
+    assert state.runtime_scope == "ensemble_run"
+    assert captures["cwd"] == str(run_dir)
+    assert update_manager_calls["args"] == (
+        f"{simulation_id}::{ensemble_id}::{run_id}",
+        "mirofish-base-proj-runtime",
+        "mirofish-runtime-sim-runtime-updater-0001-0001",
+        str(run_dir),
+    )
+
+
 def test_get_all_actions_reads_only_the_requested_run_root(tmp_path, monkeypatch):
     simulation_data_dir = tmp_path / "simulations"
     simulation_id = "sim-actions"
@@ -697,3 +753,55 @@ def test_monitor_completion_does_not_downgrade_status_when_metrics_persistence_f
     assert persisted_state.runner_status == runner_module.RunnerStatus.COMPLETED
     assert (run_dir / "metrics.json").exists() is False
     assert manifest.get("artifact_paths", {}).get("metrics") is None
+
+
+def test_read_action_log_keeps_run_running_until_monitor_finalization(
+    simulation_data_dir, monkeypatch
+):
+    runner_module = _configure_runner(monkeypatch, simulation_data_dir)
+    runner = runner_module.SimulationRunner
+
+    simulation_id = "sim-log-ordering"
+    ensemble_id = "0001"
+    run_id = "0001"
+    _sim_dir, run_dir = _write_ensemble_run_root(
+        simulation_data_dir,
+        simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+    )
+
+    actions_path = run_dir / "twitter" / "actions.jsonl"
+    actions_path.parent.mkdir(parents=True, exist_ok=True)
+    actions_path.write_text(
+        json.dumps(
+            {
+                "event_type": "simulation_end",
+                "timestamp": "2026-03-08T12:01:00",
+                "platform": "twitter",
+                "total_rounds": 1,
+                "total_actions": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    state = runner_module.SimulationRunState(
+        simulation_id=simulation_id,
+        ensemble_id=ensemble_id,
+        run_id=run_id,
+        run_key=f"{simulation_id}::{ensemble_id}::{run_id}",
+        run_dir=str(run_dir),
+        config_path=str(run_dir / "resolved_config.json"),
+        platform_mode="twitter",
+        runner_status=runner_module.RunnerStatus.RUNNING,
+        twitter_running=True,
+    )
+
+    runner._read_action_log(str(actions_path), 0, state, "twitter")
+
+    assert state.twitter_completed is True
+    assert state.twitter_running is False
+    assert state.runner_status == runner_module.RunnerStatus.RUNNING
+    assert state.completed_at is None

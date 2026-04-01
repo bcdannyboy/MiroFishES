@@ -75,11 +75,10 @@ npx playwright install chromium
 cp .env.example .env
 ```
 
-For real local Step 2 through Step 5 use, the backend needs real keys plus the probabilistic flags:
+For real local Step 2 through Step 5 use, the backend needs a real LLM key, the probabilistic flags, and a reachable Neo4j CE instance. No Zep keys are used.
 
 ```env
 LLM_API_KEY=your_api_key_here
-ZEP_API_KEY=your_zep_api_key_here
 
 PROBABILISTIC_PREPARE_ENABLED=true
 PROBABILISTIC_ENSEMBLE_STORAGE_ENABLED=true
@@ -91,9 +90,35 @@ CALIBRATED_PROBABILITY_ENABLED=false
 
 The backend reads the repo-root `.env` from `backend/app/config.py`. Those rollout flags default to `false`, so a fresh local environment does not expose the bounded forecast path unless you opt in.
 
+The simplest local Graphiti + Neo4j CE flow is to start the managed helper container first:
+
+```bash
+sh ./scripts/ensure-graphiti-live-neo4j.sh
+```
+
+With that helper running, use these graph-backend values:
+
+```env
+GRAPH_BACKEND=graphiti_neo4j
+NEO4J_URI=bolt://127.0.0.1:17687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=mirofish-graphiti-live
+GRAPHITI_EXTRACTION_MODEL=gpt-4.1-mini
+GRAPHITI_EMBEDDING_MODEL=text-embedding-3-small
+GRAPH_BACKEND_BATCH_SIZE=3
+GRAPH_BACKEND_SEARCH_LIMIT=12
+GRAPH_BACKEND_SCAN_LIMIT=250
+GRAPH_BACKEND_RUNTIME_BATCH_SIZE=25
+```
+
+If you already run your own Neo4j instance, keep `GRAPH_BACKEND=graphiti_neo4j` and override `NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` accordingly.
+
+The Step 1 base build, read/query path, runtime update path, and the active graph/report/simulation consumer lanes now run through the Graphiti + Neo4j backend seam. No runtime Zep services or Zep credentials are required.
+
 ### Start the stack
 
 ```bash
+sh ./scripts/ensure-graphiti-live-neo4j.sh
 npm run dev
 ```
 
@@ -102,13 +127,21 @@ Default endpoints:
 - frontend: `http://localhost:5173`
 - backend: `http://localhost:5001`
 
-### Check capabilities
+### Check readiness and capabilities
 
 ```bash
-curl http://localhost:5001/api/simulation/prepare/capabilities
+curl -sS http://127.0.0.1:5001/health | jq .
+curl -sS http://127.0.0.1:5001/api/graph/backend/readiness | jq .
+curl -sS http://127.0.0.1:5001/api/graph/backend/capabilities | jq .
+curl -sS http://127.0.0.1:5001/api/simulation/prepare/capabilities | jq .
 ```
 
-For the bounded probabilistic path, these booleans should be `true`:
+For the graph backend checks, expect:
+
+- `/api/graph/backend/readiness` to report `backend=graphiti_neo4j`
+- `/api/graph/backend/capabilities` to report merged base/runtime namespace reads and the `verify:graphiti:*` ladder
+
+For the bounded probabilistic path, these booleans from `/api/simulation/prepare/capabilities` should be `true`:
 
 - `probabilistic_prepare_enabled`
 - `probabilistic_ensemble_storage_enabled`
@@ -151,6 +184,26 @@ npm run verify:nonbinary
 
 Use this when the change touches the active typed forecast path for `binary`, `categorical`, or `numeric` questions and you want the narrowest backend plus runtime signal before running the broader wrappers.
 
+### Graphiti scaffold verify
+
+```bash
+npm run verify:graphiti:unit
+npm run verify:graphiti:integration
+npm run verify:graphiti:smoke
+npm run verify:graphiti:live
+npm run verify:graphiti:all
+```
+
+These wrappers prove the Graphiti + Neo4j backend seam exists, that the readiness and capabilities surfaces execute, and that the repo can run the rewritten base plus runtime unit/integration tests plus smoke/live probes. The smoke, live, and local operator wrappers automatically start the managed local Neo4j CE helper and inject the managed local graph defaults when the real `.env` omits them. The integration wrapper stays stricter and reports the actual repo `.env` state without those managed fallbacks.
+
+The Prompt 5 unit wrapper now also covers the graph API multigraph read contract, report graph-query tools, simulation entity endpoints, and graph-backed consumer scaffolding.
+
+For an explicit runtime live probe against the current repo `.env` plus the managed local Neo4j binding, run:
+
+```bash
+backend/.venv/bin/python backend/scripts/verify_runtime_graph_live.py
+```
+
 ### 3. Confidence verify
 
 ```bash
@@ -192,7 +245,8 @@ It covers:
 - Step 5 scoped evidence banner and compare handoff
 - history replay back into Step 3 and Step 5
 
-It does not prove live LLM or Zep access, live Step 2 prepare, or live Report Agent chat responses.
+It does not prove live LLM access, authenticated live Graphiti ingestion against a custom external Neo4j deployment, live Step 2 prepare, or live Report Agent chat responses.
+It does start the managed local Neo4j helper and use the same managed local graph defaults as `verify:graphiti:smoke` and `verify:graphiti:live`.
 
 ### 6. Live mutating operator verify
 

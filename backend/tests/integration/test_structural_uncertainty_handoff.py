@@ -145,7 +145,7 @@ class _FakeSimulationConfigGenerator:
 
 
 def _install_prepare_stubs(monkeypatch, manager_module):
-    reader_module = importlib.import_module("app.services.zep_entity_reader")
+    reader_module = importlib.import_module("app.services.graph_entity_reader")
 
     class _FakeReader:
         def filter_defined_entities(self, *args, **kwargs):
@@ -164,7 +164,7 @@ def _install_prepare_stubs(monkeypatch, manager_module):
                 filtered_count=1,
             )
 
-    monkeypatch.setattr(manager_module, "ZepEntityReader", _FakeReader)
+    monkeypatch.setattr(manager_module, "GraphEntityReader", _FakeReader)
     monkeypatch.setattr(manager_module, "OasisProfileGenerator", _FakeProfileGenerator)
     monkeypatch.setattr(
         manager_module, "SimulationConfigGenerator", _FakeSimulationConfigGenerator

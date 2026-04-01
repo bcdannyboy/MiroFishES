@@ -40,7 +40,7 @@ from .uncertainty_resolver import UncertaintyResolver
 class EnsembleManager:
     """Persist deterministic ensemble/run storage derived from prepare artifacts."""
 
-    SIMULATION_DATA_DIR = Config.OASIS_SIMULATION_DATA_DIR
+    SIMULATION_DATA_DIR = Config.get_simulation_data_dir()
     PREPARE_ARTIFACT_FILENAMES = {
         "base_config": "simulation_config.base.json",
         "uncertainty_spec": "uncertainty_spec.json",
@@ -73,7 +73,7 @@ class EnsembleManager:
         experiment_design_service: ExperimentDesignService | None = None,
     ) -> None:
         self.simulation_data_dir = (
-            simulation_data_dir or Config.OASIS_SIMULATION_DATA_DIR
+            simulation_data_dir or Config.get_simulation_data_dir()
         )
         self.uncertainty_resolver = uncertainty_resolver or UncertaintyResolver()
         self.experiment_design_service = (

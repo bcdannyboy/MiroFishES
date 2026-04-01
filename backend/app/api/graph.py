@@ -14,6 +14,7 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.graph_backend import GraphScanService
 from ..services.phase_timing import PhaseTimingRecorder
 from ..services.text_processor import TextProcessor
 from ..services.forecast_graph import (
@@ -21,6 +22,10 @@ from ..services.forecast_graph import (
     build_episode_chunk_map,
     build_layered_graph_index,
     summarize_graph_snapshot,
+)
+from ..services.graph_backend import (
+    describe_graph_backend_capabilities,
+    describe_graph_backend_readiness,
 )
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
@@ -77,6 +82,23 @@ def _project_payload(project):
     }
 
 
+def _parse_graph_ids_query(graph_id: str, raw_graph_ids: str | None) -> list[str]:
+    """Normalize an optional multigraph scope from one request query value."""
+    normalized = []
+    seen = set()
+    candidates = [graph_id]
+    if raw_graph_ids:
+        candidates.extend(
+            item.strip() for item in raw_graph_ids.split(",") if item.strip()
+        )
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
 def _upload_too_large_response():
     """Build a consistent 413 response for multipart uploads that exceed the limit."""
     max_bytes = current_app.config.get("MAX_CONTENT_LENGTH", Config.MAX_CONTENT_LENGTH)
@@ -104,6 +126,24 @@ def _upload_too_large_response():
         ),
         "max_upload_bytes": max_bytes,
     }), 413
+
+
+@graph_bp.route('/backend/readiness', methods=['GET'])
+def get_graph_backend_readiness():
+    """Expose Prompt 1 Graphiti + Neo4j readiness without mutating graph state."""
+    return jsonify({
+        "success": True,
+        "data": describe_graph_backend_readiness(),
+    })
+
+
+@graph_bp.route('/backend/capabilities', methods=['GET'])
+def get_graph_backend_capabilities():
+    """Expose the stable operator-facing Graphiti + Neo4j backend contract."""
+    return jsonify({
+        "success": True,
+        "data": describe_graph_backend_capabilities(),
+    })
 
 
 # ============== Project management endpoints ==============
@@ -490,18 +530,7 @@ def build_graph():
     """
     try:
         logger.info("=== Starting graph build ===")
-        
-        # Check configuration
-        errors = []
-        if not Config.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY is not configured")
-        if errors:
-            logger.error(f"Configuration error: {errors}")
-            return jsonify({
-                "success": False,
-                "error": "Configuration error: " + "; ".join(errors)
-            }), 500
-        
+
         # Parse request
         data = request.get_json() or {}
         project_id = data.get('project_id')
@@ -595,11 +624,11 @@ def build_graph():
                 task_manager.update_task(
                     task_id, 
                     status=TaskStatus.PROCESSING,
-                    message="Initializing graph builder service..."
+                    message="Initializing graph backend..."
                 )
                 
                 # Create graph builder service
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+                builder = GraphBuilderService(project_id=project_id)
                 
                 # Split text
                 task_manager.update_task(
@@ -645,7 +674,7 @@ def build_graph():
                 # Create graph
                 task_manager.update_task(
                     task_id,
-                    message="Creating Zep graph...",
+                    message="Creating base graph namespace...",
                     progress=10
                 )
                 graph_id = builder.create_graph(name=graph_name)
@@ -689,10 +718,10 @@ def build_graph():
                     batch_metadata["episode_count"] = len(episode_uuids)
                 episode_chunk_map = build_episode_chunk_map(episode_uuids, chunk_records)
                 
-                # Wait for Zep processing to finish (check each episode's processed status)
+                # Wait for graph ingestion to settle.
                 task_manager.update_task(
                     task_id,
-                    message="Waiting for Zep to process data...",
+                    message="Waiting for graph ingestion to settle...",
                     progress=55
                 )
                 
@@ -915,23 +944,51 @@ def get_graph_data(graph_id: str):
     Get graph data (nodes and edges).
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-        
         mode = request.args.get('mode', 'full')
         max_nodes = request.args.get('max_nodes', type=int)
         max_edges = request.args.get('max_edges', type=int)
+        graph_ids = _parse_graph_ids_query(graph_id, request.args.get("graph_ids"))
 
-        builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
-        graph_data = builder.get_graph_data(
-            graph_id,
-            mode=mode,
-            max_nodes=max_nodes,
-            max_edges=max_edges,
-        )
+        if len(graph_ids) > 1:
+            scan_service = GraphScanService()
+            all_nodes = scan_service.scan_nodes(
+                graph_id=graph_ids[0],
+                graph_ids=graph_ids,
+            )
+            all_edges = scan_service.scan_edges(
+                graph_id=graph_ids[0],
+                graph_ids=graph_ids,
+            )
+            resolved_max_nodes = max_nodes if max_nodes and max_nodes > 0 else len(all_nodes)
+            resolved_max_edges = max_edges if max_edges and max_edges > 0 else len(all_edges)
+            nodes = all_nodes[:resolved_max_nodes]
+            edges = all_edges[:resolved_max_edges]
+            graph_data = {
+                "graph_id": graph_ids[0],
+                "graph_ids": graph_ids,
+                "mode": mode,
+                "truncated": len(nodes) < len(all_nodes) or len(edges) < len(all_edges),
+                "returned_nodes": len(nodes),
+                "returned_edges": len(edges),
+                "total_nodes": len(all_nodes),
+                "total_edges": len(all_edges),
+                "node_count": len(all_nodes),
+                "edge_count": len(all_edges),
+                "requested_max_nodes": resolved_max_nodes,
+                "requested_max_edges": resolved_max_edges,
+                "node_pages": 1,
+                "edge_pages": 1,
+                "nodes": nodes,
+                "edges": edges,
+            }
+        else:
+            builder = GraphBuilderService()
+            graph_data = builder.get_graph_data(
+                graph_id,
+                mode=mode,
+                max_nodes=max_nodes,
+                max_edges=max_edges,
+            )
         
         return jsonify({
             "success": True,
@@ -949,16 +1006,10 @@ def get_graph_data(graph_id: str):
 @graph_bp.route('/delete/<graph_id>', methods=['DELETE'])
 def delete_graph(graph_id: str):
     """
-    Delete a Zep graph.
+    Delete a graph namespace.
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY is not configured"
-            }), 500
-        
-        builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+        builder = GraphBuilderService()
         builder.delete_graph(graph_id)
         
         return jsonify({

@@ -596,7 +596,7 @@ class ForecastManager(ForecastWorkspaceStore, ForecastPhaseService):
             )
 
         grounding_bundle = GroundingBundleBuilder(
-            simulation_data_dir=Config.OASIS_SIMULATION_DATA_DIR
+            simulation_data_dir=Config.get_simulation_data_dir()
         ).load_bundle(simulation_id)
         prepare_summary = SimulationManager().get_prepare_artifact_summary(simulation_id)
         entries: list[Dict[str, Any]] = []

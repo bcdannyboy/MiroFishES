@@ -13,6 +13,7 @@ from . import report_bp
 from ..config import Config
 from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
 from ..services.ensemble_manager import EnsembleManager
+from ..services.graph_query_tools import GraphQueryToolsService
 from ..services.probabilistic_report_context import ProbabilisticReportContextBuilder
 from ..services.simulation_manager import SimulationManager
 from ..models.project import ProjectManager
@@ -127,6 +128,13 @@ def _dedupe_graph_ids(*groups):
             seen.add(normalized)
             graph_ids.append(normalized)
     return graph_ids
+
+
+def _resolve_request_graph_ids(graph_id=None, graph_ids=None):
+    """Normalize one graph scope payload into a stable ordered list."""
+    if isinstance(graph_ids, str):
+        graph_ids = [item.strip() for item in graph_ids.split(",") if item.strip()]
+    return _dedupe_graph_ids(graph_id, graph_ids)
 
 
 def _resolve_report_graph_scope(
@@ -1284,20 +1292,20 @@ def search_graph_tool():
         data = request.get_json() or {}
         
         graph_id = data.get('graph_id')
+        graph_ids = _resolve_request_graph_ids(graph_id, data.get("graph_ids"))
         query = data.get('query')
         limit = data.get('limit', 10)
         
-        if not graph_id or not query:
+        if not graph_ids or not query:
             return jsonify({
                 "success": False,
-                "error": "Please provide graph_id and query"
+                "error": "Please provide graph_id or graph_ids plus query"
             }), 400
-        
-        from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
+
+        tools = GraphQueryToolsService()
         result = tools.search_graph(
-            graph_id=graph_id,
+            graph_id=graph_ids[0],
+            graph_ids=graph_ids,
             query=query,
             limit=limit
         )
@@ -1330,17 +1338,19 @@ def get_graph_statistics_tool():
         data = request.get_json() or {}
         
         graph_id = data.get('graph_id')
+        graph_ids = _resolve_request_graph_ids(graph_id, data.get("graph_ids"))
         
-        if not graph_id:
+        if not graph_ids:
             return jsonify({
                 "success": False,
-                "error": "Please provide graph_id"
+                "error": "Please provide graph_id or graph_ids"
             }), 400
-        
-        from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
-        result = tools.get_graph_statistics(graph_id)
+
+        tools = GraphQueryToolsService()
+        result = tools.get_graph_statistics(
+            graph_id=graph_ids[0],
+            graph_ids=graph_ids,
+        )
         
         return jsonify({
             "success": True,
